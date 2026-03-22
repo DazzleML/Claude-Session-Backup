@@ -1191,7 +1191,6 @@ def cmd_detect(args):
         return 1
 
     info = extract_workflow_versions(workflow)
-    requirements = parse_requirements(_requirements_file())
 
     # Current install state
     current_frontend = get_installed_version("comfyui-frontend-package")
@@ -1812,12 +1811,12 @@ def build_parser():
         description="ComfyUI startup manager, version detective, and troubleshooting toolkit.",
         epilog=(
             "examples:\n"
-            "  comfydbg                                       default: skip comfyui-frontend-package\n"
-            "  comfydbg skip pkg1 pkg2 -- --listen 0.0.0.0      skip packages, pass args to main.py\n"
-            "  comfydbg full                                     install everything from requirements.txt\n"
-            "  comfydbg force comfyui-frontend-package==1.39.19  force specific version\n"
+            "  comfydbg                                           default: skip comfyui-frontend-package\n"
+            "  comfydbg skip pkg1 pkg2 -- --listen 0.0.0.0        skip packages, pass args to main.py\n"
+            "  comfydbg full                                      install everything from requirements.txt\n"
+            "  comfydbg force comfyui-frontend-package==1.39.19   force specific version\n"
             "  comfydbg install comfyui-frontend-package -1       rollback one PyPI version\n"
-            "  comfydbg install comfyui-frontend-package -HN 5  5th from newest on PyPI\n"
+            "  comfydbg install comfyui-frontend-package -HN 5    5th from newest on PyPI\n"
             "  comfydbg install comfyui-frontend-package -G -CN 2 two GitHub releases back from current\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
