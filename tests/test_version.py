@@ -1,6 +1,6 @@
 """Tests for version module."""
 
-from comfydbg._version import (
+from claude_session_backup._version import (
     MAJOR, MINOR, PATCH, PHASE, PROJECT_PHASE,
     get_version, get_base_version, get_display_version, get_pip_version,
     __app_name__,
@@ -8,7 +8,7 @@ from comfydbg._version import (
 
 
 def test_app_name():
-    assert __app_name__ == "comfydbg"
+    assert __app_name__ == "claude-session-backup"
 
 
 def test_version_components():
@@ -18,8 +18,8 @@ def test_version_components():
 
 
 def test_phase_valid():
-    """PHASE is None (stable release) or a string like 'alpha', 'beta', 'rc1'."""
-    assert PHASE is None or isinstance(PHASE, str)
+    """PHASE is empty string (stable release) or a string like 'alpha', 'beta', 'rc1'."""
+    assert isinstance(PHASE, str)
 
 
 def test_get_version_returns_string():
@@ -38,17 +38,13 @@ def test_display_version_includes_project_phase():
     if PROJECT_PHASE and PROJECT_PHASE != "stable":
         assert PROJECT_PHASE.upper() in display
     else:
-        # Stable releases show version only
         assert display == get_base_version()
 
 
 def test_pip_version_pep440():
     pip_v = get_pip_version()
-    # PEP 440: no hyphens allowed
     assert "-" not in pip_v
     if PHASE:
-        # Pre-release: should contain 'a' for alpha, 'b' for beta, etc.
         assert any(c.isalpha() for c in pip_v.split(".")[-1])
     else:
-        # Stable: just digits and dots
         assert all(c.isdigit() or c == "." for c in pip_v)

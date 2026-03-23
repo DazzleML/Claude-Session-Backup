@@ -3,38 +3,33 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "comfydbg"
+name = "claude-session-backup"
 dynamic = ["version"]
-description = "ComfyUI startup manager, version detective, and troubleshooting toolkit."
+description = "Git-backed Claude Code session backup with timeline view, folder analysis, deletion detection, and session restore."
 readme = "README.md"
 license = {text = "GPL-3.0-or-later"}
 requires-python = ">=3.10"
 authors = [
     {name = "djdarcy", email = "6962246+djdarcy@users.noreply.github.com"},
 ]
-keywords = ["comfyui", "debug", "troubleshoot", "pip", "version", "bisect", "workflow", "stable-diffusion"]
+keywords = ["claude", "claude-code", "session", "backup", "restore", "git", "archive", "conversation"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 2 - Pre-Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
-    "Operating System :: Microsoft :: Windows",
-    "Operating System :: Microsoft :: Windows :: Windows 10",
-    "Operating System :: Microsoft :: Windows :: Windows 11",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Topic :: Software Development :: Debuggers",
-    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Archiving :: Backup",
     "Topic :: Utilities",
 ]
 
 dependencies = [
     "rich>=13.0.0",
-    "Pillow>=9.0.0",
 ]
 
 [project.optional-dependencies]
@@ -42,28 +37,21 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
 ]
-ai = [
-    # Claude Code CLI and Codex CLI are external tools, not pip packages.
-    # Placeholder for future AI helper dependencies.
-]
 
 [project.urls]
-Homepage = "https://github.com/djdarcy/comfydbg"
-Repository = "https://github.com/djdarcy/comfydbg"
-Issues = "https://github.com/djdarcy/comfydbg/issues"
+Homepage = "https://github.com/DazzleML/Claude-Session-Backup"
+Repository = "https://github.com/DazzleML/Claude-Session-Backup"
+Issues = "https://github.com/DazzleML/Claude-Session-Backup/issues"
 
 [project.scripts]
-comfydbg = "comfydbg.cli:main"
+csb = "claude_session_backup.cli:main"
 
 [tool.setuptools.dynamic]
-version = {attr = "comfydbg._version.PIP_VERSION"}
+version = {attr = "claude_session_backup._version.PIP_VERSION"}
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["comfydbg", "comfydbg.*"]
-
-[tool.setuptools.package-data]
-comfydbg = ["ai/prompts/*.md"]
+include = ["claude_session_backup", "claude_session_backup.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

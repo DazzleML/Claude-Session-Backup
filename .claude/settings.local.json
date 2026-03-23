@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:www.elevenforum.com)",
+      "WebFetch(domain:techcommunity.microsoft.com)",
+      "Bash(python -m wtf_restarted.cli --help 2>&1)",
+      "Bash(python -m pytest tests/ -x --timeout=10 -q 2>&1)",
+      "Bash(python -m pytest tests/test_thac0_lib.py -x -v --timeout=10 2>&1)",
+      "Bash(python -m pytest tests/test_ai_analyzer.py -v --tb=short 2>&1)",
+      "Bash(cd C:/code/wtf-restarted && python -m pytest -xvs -k \"diagnosis_empty\" -p no:cacheprovider 2>&1 | head -30)",
+      "Bash(cd C:/code/wtf-restarted && python -m pytest tests/test_cli.py tests/test_golden.py -v 2>&1 | tail -30)",
+      "Bash(cd C:/code/wtf-restarted && python -m wtf_restarted --help 2>&1 | grep -A2 -E \"\\(quiet|show|Q \\)\")",
+      "Bash(python -m pytest tests/ -x --tb=short 2>&1 | head -80)",
+      "Bash(python -m pytest tests/ -x --tb=short 2>&1 | tail -30)",
+      "Bash(python -m tests.generate_golden --check 2>&1)",
+      "Bash(python -m wtf_restarted --version 2>&1)",
+      "Bash(python -m pytest tests/ -v --tb=short 2>&1 | tail -40)",
+      "Bash(cd C:/code/wtf-restarted && python -m pytest -q --tb=short 2>&1 | tail -3)",
+      "Read(//c/code/wtf-windows/**)",
+      "Bash(wtf restarted:*)",
+      "Read(//c/code/DazzleNodes/local/.github/ISSUE_TEMPLATE//**)",
+      "Read(//c/code/DazzleNodes/local/.github/workflows//**)",
+      "Bash(wtf --help)",
+      "Bash(wtf locked:*)",
+      "Skill(commit)"
+    ]
+  }
+}

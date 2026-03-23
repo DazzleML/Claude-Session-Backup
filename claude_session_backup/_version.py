@@ -1,12 +1,12 @@
 """
-Version information for comfydbg.
+Version information for claude-session-backup.
 
 This file is the canonical source for version numbers.
 The __version__ string is automatically updated by git hooks
 with build metadata (branch, build number, date, commit hash).
 
 Format: MAJOR.MINOR.PATCH[-PHASE]_BRANCH_BUILD-YYYYMMDD-COMMITHASH
-Example: 0.1.0_main_1-20260321-a1b2c3d4
+Example: 0.1.0_main_1-20260323-a1b2c3d4
 
 To sync versions: python scripts/sync-versions.py
 To bump version: python scripts/sync-versions.py --bump patch
@@ -15,14 +15,14 @@ To bump version: python scripts/sync-versions.py --bump patch
 # Version components - edit these for version bumps
 MAJOR = 0
 MINOR = 1
-PATCH = 1
+PATCH = 0
 PHASE = ""  # Per-MINOR feature set: None, "alpha", "beta", "rc1", etc.
 PRE_RELEASE_NUM = 1  # PEP 440 pre-release number (e.g., a1, b2)
-PROJECT_PHASE = "alpha"  # Project-wide: "prealpha", "alpha", "beta", "stable"
+PROJECT_PHASE = "prealpha"  # Project-wide: "prealpha", "alpha", "beta", "stable"
 
 # Auto-updated by git hooks - do not edit manually
-__version__ = "0.1.1_main_1-20260322-fd059cc6"
-__app_name__ = "comfydbg"
+__version__ = "0.1.0"
+__app_name__ = "claude-session-backup"
 
 
 def get_version():

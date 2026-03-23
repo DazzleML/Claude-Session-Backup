@@ -145,9 +145,8 @@ docs/images/bak/
 *.exe
 *.obj
 
-# comfydbg runtime state files
-.requirements_filtered.txt
-.bisect_state.json
+# claude-session-backup runtime state files
+session-backup.db
 
 # RepoKit Private Content Protection (DO NOT REMOVE)
 CLAUDE.md
