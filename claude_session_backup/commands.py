@@ -5,11 +5,12 @@ Each cmd_* function receives parsed args and returns an exit code.
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import load_config, resolve_paths, save_config
+from .config import load_config, resolve_paths, save_config, read_cleanup_period
 from .git_ops import (
     git_commit_noise,
     git_commit_user,
@@ -18,6 +19,7 @@ from .git_ops import (
     git_status,
     is_git_repo,
 )
+from .lockfile import backup_lock
 from .index import (
     get_active_session_ids,
     get_all_known_session_ids,
@@ -61,6 +63,18 @@ def cmd_backup(args) -> int:
     claude_dir = config["claude_dir"]
     quiet = getattr(args, "quiet", False)
 
+    # Acquire lock (prevent concurrent cron runs)
+    with backup_lock(claude_dir) as acquired:
+        if not acquired:
+            if not quiet:
+                print("Another csb backup is already running. Skipping.", file=sys.stderr)
+            return 0  # Not an error -- just skip
+        return _cmd_backup_inner(args, config, claude_dir, quiet)
+
+
+def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
+    """Inner backup logic (runs under lock)."""
+
     # Verify git repo
     if not is_git_repo(claude_dir):
         print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
@@ -80,28 +94,39 @@ def cmd_backup(args) -> int:
     new_count = 0
     updated_count = 0
 
-    for sf in sessions:
+    error_count = 0
+    for i, sf in enumerate(sessions):
         found_ids.add(sf.session_id)
         is_new = sf.session_id not in previously_known
 
-        # Extract metadata from JSONL
-        meta = extract_metadata(sf.jsonl_path, config["top_n_folders"])
-        meta.project = sf.project
+        try:
+            # Extract metadata from JSONL
+            meta = extract_metadata(sf.jsonl_path, config["top_n_folders"])
+            meta.project = sf.project
 
-        # Enrich with session-state info
-        if sf.state_file:
-            state = read_session_state(sf.state_file)
-            name_cache = read_name_cache(sf.name_cache) if sf.name_cache else None
-            enrich_metadata(meta, state, name_cache)
+            # Enrich with session-state info
+            if sf.state_file:
+                state = read_session_state(sf.state_file)
+                name_cache = read_name_cache(sf.name_cache) if sf.name_cache else None
+                enrich_metadata(meta, state, name_cache)
 
-        # Upsert into index
-        rel_path = str(sf.jsonl_path.relative_to(claude_dir))
-        upsert_session(conn, meta, rel_path, sf.jsonl_size, now)
+            # Upsert into index
+            rel_path = str(sf.jsonl_path.relative_to(claude_dir))
+            upsert_session(conn, meta, rel_path, sf.jsonl_size, sf.jsonl_mtime, now)
 
-        if is_new:
-            new_count += 1
-        else:
-            updated_count += 1
+            if is_new:
+                new_count += 1
+            else:
+                updated_count += 1
+        except Exception as e:
+            error_count += 1
+            if not quiet:
+                print(f"Warning: failed to process {sf.session_id}: {e}", file=sys.stderr)
+            continue
+
+        # Progress logging for large scans
+        if not quiet and len(sessions) > 20 and (i + 1) % 20 == 0:
+            print(f"  Progress: {i + 1}/{len(sessions)} sessions...", file=sys.stderr)
 
     # Detect deletions
     deleted_count = 0
@@ -149,15 +174,18 @@ def cmd_list(args) -> int:
         limit=args.n,
         show_deleted=args.deleted,
         show_all=args.all,
+        filter_keyword=getattr(args, "filter", None),
     )
     conn.close()
+
+    cleanup_days = read_cleanup_period(config["claude_dir"])
 
     if args.json:
         print(json.dumps(sessions, indent=2, default=str))
     elif HAS_RICH:
-        render_timeline_rich(sessions)
+        render_timeline_rich(sessions, cleanup_days=cleanup_days)
     else:
-        print(format_timeline(sessions))
+        print(format_timeline(sessions, cleanup_days=cleanup_days))
 
     return 0
 
@@ -363,4 +391,107 @@ def cmd_config(args) -> int:
     config[args.key] = parsed
     save_config(config, getattr(args, "claude_dir", None))
     print(f"Set {args.key} = {parsed}")
+    return 0
+
+
+def cmd_resume(args) -> int:
+    """Launch claude --resume with the full session UUID."""
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+
+    session = get_session(conn, args.session_id)
+    conn.close()
+
+    if not session:
+        print(f"No session found matching '{args.session_id}'", file=sys.stderr)
+        return 1
+
+    full_id = session["session_id"]
+    start_folder = session.get("start_folder")
+    name = session.get("session_name") or "(unnamed)"
+
+    print(f"Resuming: {name}")
+    print(f"  ID: {full_id}")
+    if start_folder:
+        print(f"  cd {start_folder}")
+    print(f"  claude --resume {full_id}")
+    print()
+
+    # Execute claude --resume (replaces this process)
+    try:
+        os.execvp("claude", ["claude", "--resume", full_id])
+    except FileNotFoundError:
+        print("Error: 'claude' command not found in PATH.", file=sys.stderr)
+        print(f"Run manually: claude --resume {full_id}", file=sys.stderr)
+        return 1
+
+
+def cmd_scan(args) -> int:
+    """Find sessions whose project path matches the given directory."""
+    from .scanner import scan_for_path
+    from .metadata import extract_metadata
+
+    config = _get_config(args)
+    root = Path(args.path).resolve()
+    quiet = getattr(args, "quiet", False)
+
+    if not quiet:
+        print(f"Scanning for sessions under {root}...\n")
+
+    sessions = scan_for_path(config["claude_dir"], str(root))
+
+    if not sessions:
+        print("  No sessions found.")
+        return 0
+
+    # Extract metadata and format as timeline
+    results = []
+    for sf in sessions[:args.n]:
+        try:
+            meta = extract_metadata(sf.jsonl_path, top_n_folders=3)
+            meta.project = sf.project
+
+            # Build a dict compatible with timeline formatting
+            entry = {
+                "session_id": sf.session_id,
+                "session_name": meta.session_name,
+                "project": meta.project,
+                "start_folder": meta.start_folder,
+                "started_at": meta.started_at,
+                "last_active_at": meta.last_active_at,
+                "last_user_at": meta.last_user_at,
+                "message_count": meta.message_count,
+                "tool_call_count": meta.tool_call_count,
+                "claude_version": meta.claude_version,
+                "folders": [
+                    {
+                        "folder_path": path,
+                        "usage_count": count,
+                        "is_start_folder": path == meta.start_folder,
+                    }
+                    for path, count in meta.folder_usage.items()
+                ],
+                "jsonl_location": str(sf.jsonl_path),
+                "jsonl_mtime": sf.jsonl_mtime,
+            }
+            results.append(entry)
+        except Exception:
+            continue
+
+    if not results:
+        print("  No valid sessions found.")
+        return 0
+
+    cleanup_days = read_cleanup_period(config["claude_dir"])
+
+    print(f"Found {len(sessions)} session(s) under {root}" +
+          (f" (showing top {args.n}):" if len(sessions) > args.n else ":"))
+    print()
+
+    if HAS_RICH:
+        render_timeline_rich(results, cleanup_days=cleanup_days)
+    else:
+        print(format_timeline(results, cleanup_days=cleanup_days))
+
     return 0

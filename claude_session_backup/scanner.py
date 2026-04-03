@@ -120,6 +120,117 @@ def scan_session_states(claude_dir: str) -> dict[str, Path]:
     return known
 
 
+def sanitize_path(path: str) -> str:
+    """
+    Convert a filesystem path to Claude Code's project folder name format.
+
+    Claude Code stores projects in ~/.claude/projects/ using sanitized names:
+      C:\\code         -> C--code
+      C:\\code\\project -> C--code-project
+      /home/user/code -> -home-user-code
+    """
+    p = str(Path(path).resolve())
+
+    # Windows: C:\foo\bar -> C--foo-bar
+    # The drive letter colon+backslash becomes drive_letter + "--"
+    if len(p) >= 2 and p[1] == ":":
+        drive = p[0]
+        rest = p[2:]  # skip the ":"
+        # Replace both / and \ with -
+        rest = rest.replace("\\", "-").replace("/", "-")
+        # Remove leading separator (the one right after colon)
+        if rest.startswith("-"):
+            rest = rest[1:]
+        return f"{drive}--{rest}"
+
+    # Unix: /home/user/code -> -home-user-code
+    return p.replace("/", "-")
+
+
+def scan_for_path(claude_dir: str, target_path: str) -> list[SessionFiles]:
+    """
+    Find all sessions in ~/.claude/projects/ whose project path starts with target_path.
+
+    Uses Claude Code's sanitized project folder naming to do a fast prefix match
+    against the projects directory -- no filesystem walking needed.
+
+    Returns a list of SessionFiles sorted by JSONL modification time (newest first).
+    """
+    projects_dir = Path(claude_dir) / "projects"
+    if not projects_dir.exists():
+        return []
+
+    # Sanitize the target path to match Claude Code's folder naming
+    prefix = sanitize_path(target_path)
+
+    # Find all project folders that match:
+    #   - exact match (sessions started in this exact directory)
+    #   - prefix + "-" (sessions started in child directories)
+    all_sessions = []
+    for project_dir in projects_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        name = project_dir.name
+        if name == prefix or name.startswith(prefix + "-"):
+            # Scan this project for sessions
+            sessions = _scan_project_dir(claude_dir, project_dir)
+            all_sessions.extend(sessions)
+
+    # Sort by modification time, newest first
+    all_sessions.sort(key=lambda s: s.jsonl_mtime, reverse=True)
+    return all_sessions
+
+
+def _scan_project_dir(claude_dir: str, project_dir: Path) -> list[SessionFiles]:
+    """Scan a single project directory for session JSONL files."""
+    claude_path = Path(claude_dir)
+    states_dir = claude_path / "session-states"
+    history_dir = claude_path / "file-history"
+    project_name = project_dir.name
+    sessions = []
+
+    for item in project_dir.iterdir():
+        if not item.is_file() or item.suffix != ".jsonl":
+            continue
+
+        session_id = item.stem
+        if not UUID_PATTERN.match(session_id):
+            continue
+
+        sf = SessionFiles(
+            session_id=session_id,
+            project=project_name,
+            jsonl_path=item,
+        )
+
+        try:
+            stat = item.stat()
+            sf.jsonl_size = stat.st_size
+            sf.jsonl_mtime = stat.st_mtime
+        except OSError:
+            pass
+
+        session_subdir = project_dir / session_id
+        if session_subdir.is_dir():
+            sf.session_dir = session_subdir
+
+        state_file = states_dir / f"{session_id}.json"
+        if state_file.exists():
+            sf.state_file = state_file
+
+        name_cache = states_dir / f"{session_id}.name-cache"
+        if name_cache.exists():
+            sf.name_cache = name_cache
+
+        hist_dir = history_dir / session_id
+        if hist_dir.is_dir():
+            sf.file_history_dir = hist_dir
+
+        sessions.append(sf)
+
+    return sessions
+
+
 def desanitize_project_path(sanitized: str) -> str:
     """
     Convert sanitized project name back to a filesystem path.

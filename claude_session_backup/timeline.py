@@ -7,6 +7,7 @@ and structured session display with folder analysis.
 Uses rich for terminal formatting when available.
 """
 
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -84,7 +85,57 @@ def _find_max_usage_folder(folders: list[dict]) -> Optional[str]:
     return max_folder.get("folder_path")
 
 
-def format_session_line(session: dict, index: int) -> str:
+# ── Purge countdown ────────────────────────────────────────────────
+
+def purge_countdown(jsonl_mtime: float, cleanup_days: int) -> tuple[Optional[int], str]:
+    """
+    Calculate days remaining before Claude Code would purge this session.
+
+    Based on JSONL file modification time (active sessions refresh mtime
+    on every interaction, so the countdown resets with use).
+
+    Args:
+        jsonl_mtime: File modification time as Unix timestamp
+        cleanup_days: Claude Code's cleanupPeriodDays setting
+
+    Returns:
+        (days_remaining, purge_text)
+        days_remaining is None if cleanup is disabled or mtime is unavailable.
+    """
+    if cleanup_days <= 0 or jsonl_mtime <= 0:
+        return None, ""
+
+    now = time.time()
+    age_days = (now - jsonl_mtime) / 86400
+    remaining = cleanup_days - age_days
+    days = int(remaining)
+
+    if days > 0:
+        return days, f"(purge in {days}d)"
+    else:
+        overdue = abs(days)
+        return days, f"(OVERDUE by {overdue}d)"
+
+
+def _purge_style(days_remaining: Optional[int]) -> str:
+    """Return a rich style string based on purge urgency."""
+    if days_remaining is None:
+        return "dim"
+    if days_remaining > 30:
+        return "dim green"
+    elif days_remaining > 14:
+        return "yellow"
+    elif days_remaining > 6:
+        return "rgb(255,165,0)"  # orange
+    elif days_remaining > 0:
+        return "red"
+    else:
+        return "bold red"
+
+
+# ── Plain text formatting ──────────────────────────────────────────
+
+def format_session_line(session: dict, index: int, cleanup_days: int = 0) -> str:
     """
     Format a single session for the timeline view (plain text fallback).
     """
@@ -95,6 +146,7 @@ def format_session_line(session: dict, index: int) -> str:
     full_id = session.get("session_id", "")
     msg_count = session.get("message_count", 0)
     deleted = session.get("deleted_at")
+    mtime = session.get("jsonl_mtime", 0)
 
     rel = relative_date(last_user)
     ts_user = format_timestamp(last_user)
@@ -104,7 +156,12 @@ def format_session_line(session: dict, index: int) -> str:
 
     lines = [f"  {index:>3}. {status}{name}  {rel} ({ts_user})"]
     if ts_started:
-        lines.append(f"       started: {ts_started}")
+        purge_text = ""
+        if cleanup_days > 0 and mtime > 0:
+            _, purge_text = purge_countdown(mtime, cleanup_days)
+            if purge_text:
+                purge_text = f" {purge_text}"
+        lines.append(f"       started: {ts_started}{purge_text}")
 
     folders = session.get("folders", [])
     start_count = 0
@@ -142,15 +199,21 @@ def format_session_line(session: dict, index: int) -> str:
     return "\n".join(lines)
 
 
-def render_session_rich(console: Console, session: dict, index: int):
+# ── Rich formatting ────────────────────────────────────────────────
+
+def render_session_rich(console: Console, session: dict, index: int,
+                        cleanup_days: int = 0):
     """
     Render a single session entry using rich formatting.
 
+    Colors:
     - Session name: bold cyan
     - Relative date: yellow
     - Timestamp: dim
+    - Purge countdown: green -> yellow -> orange -> red -> bold red
     - Most-used folder: bold green
-    - Start folder label: blue
+    - Start folder (not max): white
+    - Other folders (not max): grey70
     - Session ID: dim
     - Deleted: bold red
     """
@@ -161,10 +224,18 @@ def render_session_rich(console: Console, session: dict, index: int):
     full_id = session.get("session_id", "")
     msg_count = session.get("message_count", 0)
     deleted = session.get("deleted_at")
+    mtime = session.get("jsonl_mtime", 0)
 
     rel = relative_date(last_user)
     ts_user = format_timestamp(last_user)
     ts_started = format_timestamp(started)
+
+    # Purge countdown
+    days_remaining = None
+    purge_text = ""
+    if cleanup_days > 0 and mtime > 0:
+        days_remaining, purge_text = purge_countdown(mtime, cleanup_days)
+    purge_style = _purge_style(days_remaining)
 
     # Collect folder data
     folders = session.get("folders", [])
@@ -179,7 +250,6 @@ def render_session_rich(console: Console, session: dict, index: int):
         else:
             other_folders.append(f)
 
-    # Determine which folder has max usage (could be start or other)
     max_path = _find_max_usage_folder(folders)
 
     # Header line: index + name + last user activity
@@ -193,22 +263,20 @@ def render_session_rich(console: Console, session: dict, index: int):
     header.append(f" ({ts_user})", style="dim")
     console.print(header)
 
-    # Started date line
+    # Started date line with purge countdown
     if ts_started:
         started_line = Text("       ")
         started_line.append("started: ", style="dim blue")
         started_line.append(ts_started, style="dim")
+        if purge_text:
+            started_line.append(f" {purge_text}", style=purge_style)
         console.print(started_line)
 
     # Start folder line
-    # Color logic: all folders use green family.
-    # The single most-visited folder (start or other) gets "bold green".
-    # Start folder gets a "start at:" label; if it's NOT the max, it's "green" (not bold).
-    # Other folders that are NOT the max are "dim green".
     is_start_max = (start_folder == max_path)
     start_line = Text("       ")
     start_line.append("start at: ", style="blue")
-    start_style = "bold green" if is_start_max else "green"
+    start_style = "bold green" if is_start_max else "white"
     start_line.append(start_folder, style=start_style)
     start_line.append(f" ({start_count}x)", style=start_style)
     console.print(start_line)
@@ -220,7 +288,7 @@ def render_session_rich(console: Console, session: dict, index: int):
         fcount = f["usage_count"]
         is_max = (fpath == max_path)
         fline = Text("       ")
-        folder_style = "bold green" if is_max else "dim green"
+        folder_style = "bold green" if is_max else "grey70"
         fline.append(fpath, style=folder_style)
         fline.append(f" ({fcount}x)", style=folder_style)
         console.print(fline)
@@ -244,20 +312,23 @@ def render_session_rich(console: Console, session: dict, index: int):
     console.print(meta)
 
 
-def format_timeline(sessions: list[dict]) -> str:
+# ── Timeline renderers ─────────────────────────────────────────────
+
+def format_timeline(sessions: list[dict], cleanup_days: int = 0) -> str:
     """Format a list of sessions as a plain text timeline (fallback)."""
     if not sessions:
         return "  No sessions found."
 
     lines = []
     for i, session in enumerate(sessions, 1):
-        lines.append(format_session_line(session, i))
+        lines.append(format_session_line(session, i, cleanup_days=cleanup_days))
         lines.append("")
 
     return "\n".join(lines)
 
 
-def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None):
+def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None,
+                         cleanup_days: int = 0):
     """Render a list of sessions using rich formatting."""
     if console is None:
         console = Console()
@@ -267,5 +338,5 @@ def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None
         return
 
     for i, session in enumerate(sessions, 1):
-        render_session_rich(console, session, i)
+        render_session_rich(console, session, i, cleanup_days=cleanup_days)
         console.print()  # blank line between entries

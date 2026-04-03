@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     claude_version TEXT,
     jsonl_path TEXT,
     jsonl_size INTEGER DEFAULT 0,
+    jsonl_mtime REAL DEFAULT 0,
     last_scanned_at TEXT,
     deleted_at TEXT,
     last_git_commit TEXT
@@ -89,14 +90,14 @@ def init_schema(conn: sqlite3.Connection):
 
 def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
                    jsonl_path: str = "", jsonl_size: int = 0,
-                   scanned_at: str = ""):
+                   jsonl_mtime: float = 0.0, scanned_at: str = ""):
     """Insert or update a session in the index."""
     conn.execute("""
         INSERT INTO sessions (
             session_id, project, session_name, start_folder,
             started_at, last_active_at, last_user_at, message_count, tool_call_count,
-            claude_version, jsonl_path, jsonl_size, last_scanned_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            claude_version, jsonl_path, jsonl_size, jsonl_mtime, last_scanned_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
         ON CONFLICT(session_id) DO UPDATE SET
             session_name = COALESCE(excluded.session_name, sessions.session_name),
             start_folder = COALESCE(excluded.start_folder, sessions.start_folder),
@@ -107,13 +108,14 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
             claude_version = COALESCE(excluded.claude_version, sessions.claude_version),
             jsonl_path = excluded.jsonl_path,
             jsonl_size = excluded.jsonl_size,
+            jsonl_mtime = excluded.jsonl_mtime,
             last_scanned_at = excluded.last_scanned_at,
             deleted_at = NULL
     """, (
         meta.session_id, meta.project, meta.session_name, meta.start_folder,
         meta.started_at, meta.last_active_at, meta.last_user_at,
         meta.message_count, meta.tool_call_count,
-        meta.claude_version, jsonl_path, jsonl_size, scanned_at,
+        meta.claude_version, jsonl_path, jsonl_size, jsonl_mtime, scanned_at,
     ))
 
     # Update folder usage
@@ -139,21 +141,48 @@ def mark_deleted(conn: sqlite3.Connection, session_id: str, deleted_at: str):
 
 
 def list_sessions(conn: sqlite3.Connection, limit: int = 20,
-                  show_deleted: bool = False, show_all: bool = False) -> list[dict]:
-    """List sessions ordered by last_active_at descending."""
-    if show_all:
-        where = ""
-    elif show_deleted:
-        where = "WHERE deleted_at IS NOT NULL"
-    else:
-        where = "WHERE deleted_at IS NULL"
+                  show_deleted: bool = False, show_all: bool = False,
+                  filter_keyword: str = None) -> list[dict]:
+    """
+    List sessions ordered by last_active_at descending.
+
+    If filter_keyword is provided, only return sessions where the keyword
+    appears (case-insensitive) in session_name, project, start_folder,
+    or any tracked folder_path. This filters on metadata, not rendered output.
+    """
+    params = []
+
+    # Build WHERE conditions
+    conditions = []
+    if not show_all:
+        if show_deleted:
+            conditions.append("s.deleted_at IS NOT NULL")
+        else:
+            conditions.append("s.deleted_at IS NULL")
+
+    if filter_keyword:
+        # Match against session metadata fields OR any folder_usage path
+        pattern = f"%{filter_keyword}%"
+        conditions.append("""(
+            s.session_name LIKE ? COLLATE NOCASE
+            OR s.project LIKE ? COLLATE NOCASE
+            OR s.start_folder LIKE ? COLLATE NOCASE
+            OR s.session_id IN (
+                SELECT fu.session_id FROM folder_usage fu
+                WHERE fu.folder_path LIKE ? COLLATE NOCASE
+            )
+        )""")
+        params.extend([pattern, pattern, pattern, pattern])
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+    params.append(limit)
 
     rows = conn.execute(f"""
-        SELECT * FROM sessions
+        SELECT s.* FROM sessions s
         {where}
-        ORDER BY last_active_at DESC NULLS LAST
+        ORDER BY s.last_active_at DESC NULLS LAST
         LIMIT ?
-    """, (limit,)).fetchall()
+    """, params).fetchall()
 
     results = []
     for row in rows:

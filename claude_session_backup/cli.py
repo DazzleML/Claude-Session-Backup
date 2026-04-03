@@ -10,6 +10,8 @@ Usage:
     csb status                           # summary of sessions, deletions, git state
     csb show <session-id>                # detailed session info with folder analysis
     csb restore <session-id>             # restore deleted session from git history
+    csb resume <session-id>              # launch claude --resume with full UUID
+    csb scan [path]                      # find sessions in current dir and children
     csb search "query"                   # search session metadata
     csb rebuild-index                    # reconstruct SQLite from git history
     csb config [key] [value]             # view/edit configuration
@@ -33,12 +35,12 @@ def build_parser():
     parser.add_argument(
         "--claude-dir",
         default=None,
-        help="Path to Claude Code directory (default: ~/.claude)",
+        help="Path to Claude Code directory (default: ~/.claude or $CLAUDE_DIR)",
     )
     parser.add_argument(
         "--db",
         default=None,
-        help="Path to SQLite index database",
+        help="Path to SQLite index database (default: ~/.claude/session-backup.db or $CLAUDE_SESSION_BACKUP_DB)",
     )
     parser.add_argument(
         "--quiet", "-q",
@@ -58,6 +60,7 @@ def build_parser():
 
     # list
     p_list = sub.add_parser("list", help="Timeline view sorted by last-used")
+    p_list.add_argument("filter", nargs="?", default=None, help="Filter by keyword in session name, project, or folder paths (case-insensitive)")
     p_list.add_argument("-n", type=int, default=20, help="Number of sessions to show")
     p_list.add_argument("--deleted", action="store_true", help="Show only deleted sessions")
     p_list.add_argument("--all", action="store_true", help="Show all sessions including deleted")
@@ -74,6 +77,15 @@ def build_parser():
     p_restore = sub.add_parser("restore", help="Restore deleted session from git history")
     p_restore.add_argument("session_id", help="Session ID to restore")
     p_restore.add_argument("--dry-run", action="store_true", help="Show what would be restored")
+
+    # resume
+    p_resume = sub.add_parser("resume", help="Launch claude --resume with full UUID")
+    p_resume.add_argument("session_id", help="Session ID (prefix match supported)")
+
+    # scan
+    p_scan = sub.add_parser("scan", help="Find sessions in current directory and children")
+    p_scan.add_argument("path", nargs="?", default=".", help="Root path to scan (default: current directory)")
+    p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
 
     # search
     p_search = sub.add_parser("search", help="Search session metadata")
@@ -116,6 +128,12 @@ def main(argv=None):
     elif args.command == "restore":
         from .commands import cmd_restore
         return cmd_restore(args)
+    elif args.command == "resume":
+        from .commands import cmd_resume
+        return cmd_resume(args)
+    elif args.command == "scan":
+        from .commands import cmd_scan
+        return cmd_scan(args)
     elif args.command == "search":
         from .commands import cmd_search
         return cmd_search(args)
