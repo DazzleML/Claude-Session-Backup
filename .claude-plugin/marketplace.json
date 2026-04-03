@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dazzle-claude-plugins",
+  "description": "DazzleML Claude Code plugins",
+  "plugins": [
+    {
+      "name": "claude-session-backup",
+      "description": "Git-backed session backup -- auto-archives before compaction and on session end",
+      "version": "0.1.2",
+      "source": "https://github.com/DazzleML/Claude-Session-Backup",
+      "category": "productivity"
+    }
+  ]
+}

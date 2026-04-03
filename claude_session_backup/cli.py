@@ -23,6 +23,97 @@ import sys
 from ._version import DISPLAY_VERSION
 
 
+# ── Common flags ────────────────────────────────────────────────────
+# Flags like --quiet, --claude-dir, --db work in either position:
+#   csb --quiet backup       (before subcommand)
+#   csb backup --quiet       (after subcommand)
+#
+# Implementation: only define on subcommand parsers. In main(), do a
+# pre-parse of the raw argv to extract any global-position flags and
+# inject them into the subcommand's argv before full parsing.
+
+_COMMON_FLAGS = {
+    "--quiet": {"short": "-q", "action": "store_true", "default": False,
+                "help": "Suppress non-error output (for cron)"},
+    "--claude-dir": {"default": None,
+                     "help": "Path to Claude Code directory (default: ~/.claude or $CLAUDE_DIR)"},
+    "--db": {"default": None,
+             "help": "Path to SQLite index database (default: ~/.claude/session-backup.db or $CLAUDE_SESSION_BACKUP_DB)"},
+}
+
+# All flag strings that are common (for pre-parse extraction)
+_COMMON_FLAG_NAMES = set()
+for flag, spec in _COMMON_FLAGS.items():
+    _COMMON_FLAG_NAMES.add(flag)
+    if "short" in spec:
+        _COMMON_FLAG_NAMES.add(spec["short"])
+
+
+def _add_common_flags(parser):
+    """Add common flags to a subcommand parser."""
+    for flag, spec in _COMMON_FLAGS.items():
+        kwargs = {k: v for k, v in spec.items() if k != "short"}
+        args = [flag]
+        if "short" in spec:
+            args.append(spec["short"])
+        parser.add_argument(*args, **kwargs)
+
+
+def _hoist_common_flags(argv):
+    """
+    Move common flags from before the subcommand to after it.
+
+    Turns: ['--quiet', '--claude-dir', '/foo', 'backup', '--no-commit']
+    Into:  ['backup', '--quiet', '--claude-dir', '/foo', '--no-commit']
+
+    This lets argparse handle everything via subcommand parsers only.
+    """
+    if argv is None:
+        return None
+
+    hoisted = []
+    remainder = []
+    i = 0
+    found_subcommand = False
+
+    while i < len(argv):
+        arg = argv[i]
+
+        if found_subcommand:
+            remainder.append(arg)
+            i += 1
+            continue
+
+        if arg in _COMMON_FLAG_NAMES:
+            # Check if this flag takes a value (not store_true)
+            flag_key = arg if arg.startswith("--") else None
+            if flag_key is None:
+                # Short flag like -q -- find its long form
+                for long_flag, spec in _COMMON_FLAGS.items():
+                    if spec.get("short") == arg:
+                        flag_key = long_flag
+                        break
+
+            takes_value = _COMMON_FLAGS.get(flag_key, {}).get("action") != "store_true"
+
+            hoisted.append(arg)
+            i += 1
+            if takes_value and i < len(argv):
+                hoisted.append(argv[i])
+                i += 1
+        elif not arg.startswith("-"):
+            # This is the subcommand
+            found_subcommand = True
+            remainder.append(arg)
+            i += 1
+        else:
+            # Unknown flag before subcommand (like --version)
+            remainder.append(arg)
+            i += 1
+
+    return remainder + hoisted
+
+
 def build_parser():
     """Build the argument parser."""
     parser = argparse.ArgumentParser(
@@ -32,26 +123,12 @@ def build_parser():
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {DISPLAY_VERSION}"
     )
-    parser.add_argument(
-        "--claude-dir",
-        default=None,
-        help="Path to Claude Code directory (default: ~/.claude or $CLAUDE_DIR)",
-    )
-    parser.add_argument(
-        "--db",
-        default=None,
-        help="Path to SQLite index database (default: ~/.claude/session-backup.db or $CLAUDE_SESSION_BACKUP_DB)",
-    )
-    parser.add_argument(
-        "--quiet", "-q",
-        action="store_true",
-        help="Suppress non-error output (for cron)",
-    )
 
     sub = parser.add_subparsers(dest="command", help="Available commands")
 
     # backup
     p_backup = sub.add_parser("backup", help="Scan sessions, update index, git commit")
+    _add_common_flags(p_backup)
     p_backup.add_argument(
         "--no-commit",
         action="store_true",
@@ -60,6 +137,7 @@ def build_parser():
 
     # list
     p_list = sub.add_parser("list", help="Timeline view sorted by last-used")
+    _add_common_flags(p_list)
     p_list.add_argument("filter", nargs="?", default=None, help="Filter by keyword in session name, project, or folder paths (case-insensitive)")
     p_list.add_argument("-n", type=int, default=20, help="Number of sessions to show")
     p_list.add_argument("--deleted", action="store_true", help="Show only deleted sessions")
@@ -67,36 +145,44 @@ def build_parser():
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
 
     # status
-    sub.add_parser("status", help="Summary of sessions, deletions, git state")
+    p_status = sub.add_parser("status", help="Summary of sessions, deletions, git state")
+    _add_common_flags(p_status)
 
     # show
     p_show = sub.add_parser("show", help="Detailed session info with folder analysis")
+    _add_common_flags(p_show)
     p_show.add_argument("session_id", help="Session ID (prefix match supported)")
 
     # restore
     p_restore = sub.add_parser("restore", help="Restore deleted session from git history")
+    _add_common_flags(p_restore)
     p_restore.add_argument("session_id", help="Session ID to restore")
     p_restore.add_argument("--dry-run", action="store_true", help="Show what would be restored")
 
     # resume
     p_resume = sub.add_parser("resume", help="Launch claude --resume with full UUID")
+    _add_common_flags(p_resume)
     p_resume.add_argument("session_id", help="Session ID (prefix match supported)")
 
     # scan
     p_scan = sub.add_parser("scan", help="Find sessions in current directory and children")
+    _add_common_flags(p_scan)
     p_scan.add_argument("path", nargs="?", default=".", help="Root path to scan (default: current directory)")
     p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
 
     # search
     p_search = sub.add_parser("search", help="Search session metadata")
+    _add_common_flags(p_search)
     p_search.add_argument("query", help="Search query")
     p_search.add_argument("-n", type=int, default=10, help="Max results")
 
     # rebuild-index
-    sub.add_parser("rebuild-index", help="Reconstruct SQLite index from git history")
+    p_rebuild = sub.add_parser("rebuild-index", help="Reconstruct SQLite index from git history")
+    _add_common_flags(p_rebuild)
 
     # config
     p_config = sub.add_parser("config", help="View/edit configuration")
+    _add_common_flags(p_config)
     p_config.add_argument("key", nargs="?", help="Config key to get/set")
     p_config.add_argument("value", nargs="?", help="Value to set")
 
@@ -105,6 +191,12 @@ def build_parser():
 
 def main(argv=None):
     """Entry point for csb CLI."""
+    # Hoist common flags from before the subcommand to after it.
+    # This makes `csb --quiet backup` work the same as `csb backup --quiet`.
+    if argv is None:
+        argv = sys.argv[1:]
+    argv = _hoist_common_flags(argv)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

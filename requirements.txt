@@ -1,0 +1,6 @@
+# claude-session-backup plugin requirements
+# Install with: pip install claude-session-backup
+#
+# The csb CLI tool must be installed for hooks to work.
+# The hook script calls `csb backup --quiet` which handles all dependencies internally.
+claude-session-backup>=0.1.1
