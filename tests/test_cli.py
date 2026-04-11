@@ -82,3 +82,32 @@ def test_parse_list_with_filter_and_quiet():
     assert args.command == "list"
     assert args.filter == "vault"
     assert args.n == 5
+
+
+# ── --sort flag tests ──────────────────────────────────────────────
+
+def test_parse_list_default_sort_is_last_used():
+    parser = build_parser()
+    args = parser.parse_args(["list"])
+    assert args.sort == "last-used"
+
+
+def test_parse_list_with_sort_expiration():
+    parser = build_parser()
+    args = parser.parse_args(["list", "--sort", "expiration"])
+    assert args.sort == "expiration"
+    assert args.command == "list"
+
+
+def test_parse_list_with_sort_all_choices():
+    parser = build_parser()
+    for choice in ("last-used", "expiration", "started", "oldest", "messages", "size"):
+        args = parser.parse_args(["list", "--sort", choice])
+        assert args.sort == choice
+
+
+def test_parse_list_with_invalid_sort():
+    import pytest
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["list", "--sort", "bogus"])

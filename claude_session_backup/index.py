@@ -140,11 +140,31 @@ def mark_deleted(conn: sqlite3.Connection, session_id: str, deleted_at: str):
     conn.commit()
 
 
+# Whitelist of allowed ORDER BY clauses for list_sessions().
+# Keys MUST match the argparse choices in cli.py for `csb list --sort`.
+# Values are fixed SQL fragments -- never interpolate user input here.
+SORT_SQL = {
+    "last-used":  "s.last_active_at DESC NULLS LAST",
+    # NULLIF converts 0 (never-scanned sentinel) to NULL; NULLS LAST pushes
+    # those rows to the bottom so real expiring sessions appear first.
+    "expiration": "NULLIF(s.jsonl_mtime, 0) ASC NULLS LAST",
+    "started":    "s.started_at DESC NULLS LAST",
+    "oldest":     "s.started_at ASC NULLS LAST",
+    "messages":   "s.message_count DESC",
+    "size":       "s.jsonl_size DESC",
+}
+
+
 def list_sessions(conn: sqlite3.Connection, limit: int = 20,
                   show_deleted: bool = False, show_all: bool = False,
-                  filter_keyword: str = None) -> list[dict]:
+                  filter_keyword: str = None,
+                  sort_key: str = "last-used") -> list[dict]:
     """
-    List sessions ordered by last_active_at descending.
+    List sessions with configurable ordering.
+
+    sort_key must be a key in SORT_SQL (defaults to "last-used", which
+    preserves historical behavior). Invalid keys raise ValueError; callers
+    should rely on argparse `choices=` to prevent this in practice.
 
     If filter_keyword is provided, only return sessions where the keyword
     appears (case-insensitive) in session_name, project, start_folder,
@@ -177,10 +197,17 @@ def list_sessions(conn: sqlite3.Connection, limit: int = 20,
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(limit)
 
+    try:
+        order_by = SORT_SQL[sort_key]
+    except KeyError:
+        raise ValueError(
+            f"Unknown sort_key {sort_key!r}; expected one of {sorted(SORT_SQL)}"
+        )
+
     rows = conn.execute(f"""
         SELECT s.* FROM sessions s
         {where}
-        ORDER BY s.last_active_at DESC NULLS LAST
+        ORDER BY {order_by}
         LIMIT ?
     """, params).fetchall()
 
@@ -217,6 +244,48 @@ def get_session(conn: sqlite3.Connection, session_id_prefix: str) -> Optional[di
     ).fetchall()
     session["folders"] = [dict(f) for f in folders]
     return session
+
+
+def find_sessions_by_folder_usage(conn: sqlite3.Connection, path_prefix: str,
+                                   limit: int = 50) -> list[dict]:
+    """
+    Find sessions where any folder_usage path starts with path_prefix.
+
+    Matches:
+      - Exact path: C:\\code\\chrome
+      - Child paths: C:\\code\\chrome\\subfolder
+      - Sibling-prefix paths: C:\\code\\chrome-extension (starts with prefix)
+
+    This catches sessions started elsewhere but did real work in a
+    directory matching the prefix. Case-insensitive.
+    """
+    # Normalize separators for matching
+    prefix = path_prefix.replace("/", "\\")
+    # Match anything that starts with the prefix (covers exact, children, and
+    # sibling-prefix like chrome -> chrome-extension)
+    pattern = prefix + "%"
+
+    rows = conn.execute("""
+        SELECT DISTINCT s.* FROM sessions s
+        JOIN folder_usage fu ON s.session_id = fu.session_id
+        WHERE fu.folder_path LIKE ? COLLATE NOCASE
+          AND s.deleted_at IS NULL
+        ORDER BY s.last_active_at DESC
+        LIMIT ?
+    """, (pattern, limit)).fetchall()
+
+    results = []
+    for row in rows:
+        session = dict(row)
+        folders = conn.execute(
+            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "WHERE session_id = ? ORDER BY usage_count DESC",
+            (session["session_id"],),
+        ).fetchall()
+        session["folders"] = [dict(f) for f in folders]
+        results.append(session)
+
+    return results
 
 
 def get_all_known_session_ids(conn: sqlite3.Connection) -> set[str]:

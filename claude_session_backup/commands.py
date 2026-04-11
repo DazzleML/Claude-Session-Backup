@@ -175,6 +175,7 @@ def cmd_list(args) -> int:
         show_deleted=args.deleted,
         show_all=args.all,
         filter_keyword=getattr(args, "filter", None),
+        sort_key=getattr(args, "sort", "last-used"),
     )
     conn.close()
 
@@ -431,28 +432,38 @@ def cmd_scan(args) -> int:
     """Find sessions whose project path matches the given directory."""
     from .scanner import scan_for_path
     from .metadata import extract_metadata
+    from .index import find_sessions_by_folder_usage
 
     config = _get_config(args)
     root = Path(args.path).resolve()
     quiet = getattr(args, "quiet", False)
+    no_usage = getattr(args, "no_usage", False)
 
     if not quiet:
         print(f"Scanning for sessions under {root}...\n")
 
+    # Step 1: Prefix match on project folders (always)
     sessions = scan_for_path(config["claude_dir"], str(root))
+    seen_ids = {sf.session_id for sf in sessions}
 
-    if not sessions:
-        print("  No sessions found.")
-        return 0
+    # Step 2: Also search folder_usage in the index (unless --no-usage / -NU)
+    usage_results = []
+    if not no_usage:
+        try:
+            conn = open_db(config["index_path"])
+            init_schema(conn)
+            usage_results = find_sessions_by_folder_usage(conn, str(root))
+            conn.close()
+        except Exception:
+            pass  # Index may not exist yet -- graceful fallback
 
-    # Extract metadata and format as timeline
+    # Extract metadata from disk-scanned sessions
     results = []
-    for sf in sessions[:args.n]:
+    for sf in sessions:
         try:
             meta = extract_metadata(sf.jsonl_path, top_n_folders=3)
             meta.project = sf.project
 
-            # Build a dict compatible with timeline formatting
             entry = {
                 "session_id": sf.session_id,
                 "session_name": meta.session_name,
@@ -479,14 +490,32 @@ def cmd_scan(args) -> int:
         except Exception:
             continue
 
+    # Merge in usage-matched sessions (from index, not disk)
+    for session in usage_results:
+        if session["session_id"] not in seen_ids:
+            seen_ids.add(session["session_id"])
+            results.append(session)
+
+    # Sort all results by last activity (most recent first)
+    results.sort(
+        key=lambda s: s.get("last_user_at") or s.get("last_active_at") or "",
+        reverse=True,
+    )
+
+    # Trim to requested count
+    total_found = len(results)
+    results = results[:args.n]
+
     if not results:
-        print("  No valid sessions found.")
+        print("  No sessions found.")
+        if no_usage:
+            print("  Tip: try without -NU to also search by folder usage.")
         return 0
 
     cleanup_days = read_cleanup_period(config["claude_dir"])
 
-    print(f"Found {len(sessions)} session(s) under {root}" +
-          (f" (showing top {args.n}):" if len(sessions) > args.n else ":"))
+    print(f"Found {total_found} session(s) under {root}" +
+          (f" (showing top {args.n}):" if total_found > args.n else ":"))
     print()
 
     if HAS_RICH:

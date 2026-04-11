@@ -22,21 +22,21 @@ NOISE_DIRS = [
     "debug",
     "file-history",
     "paste-cache",
+    "projects",         # session JSONL transcripts -- the most important data to preserve
+    "session-env",      # session environment data
     "session-states",
     "sessions",
     "shell-snapshots",
     "telemetry",
     "logs",
     "tasks",
-    "projects",         # session JSONL transcripts live here
 ]
 
 NOISE_FILES = [
     "cache/changelog.md",
     ".credentials.json",
-    "mcp-needs-auth-cache.json",
     "history.jsonl",
-    "session-env",
+    "mcp-needs-auth-cache.json",
 ]
 
 USER_DIRS = [

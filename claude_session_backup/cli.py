@@ -136,10 +136,17 @@ def build_parser():
     )
 
     # list
-    p_list = sub.add_parser("list", help="Timeline view sorted by last-used")
+    p_list = sub.add_parser("list", help="Timeline view (default sort: last-used)")
     _add_common_flags(p_list)
     p_list.add_argument("filter", nargs="?", default=None, help="Filter by keyword in session name, project, or folder paths (case-insensitive)")
     p_list.add_argument("-n", type=int, default=20, help="Number of sessions to show")
+    p_list.add_argument(
+        "--sort",
+        choices=["last-used", "expiration", "started", "oldest", "messages", "size"],
+        default="last-used",
+        help="Sort order: last-used (default), expiration (soonest purge first), "
+             "started (newest first), oldest (oldest first), messages, size",
+    )
     p_list.add_argument("--deleted", action="store_true", help="Show only deleted sessions")
     p_list.add_argument("--all", action="store_true", help="Show all sessions including deleted")
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
@@ -169,6 +176,8 @@ def build_parser():
     _add_common_flags(p_scan)
     p_scan.add_argument("path", nargs="?", default=".", help="Root path to scan (default: current directory)")
     p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
+    p_scan.add_argument("--no-usage", "-NU", action="store_true",
+                        help="Only match by project start folder, skip folder usage search")
 
     # search
     p_search = sub.add_parser("search", help="Search session metadata")

@@ -44,18 +44,33 @@ csb backup
 ## Commands
 
 ```bash
-csb backup                    # Scan, index, git commit (noise + user)
-csb backup --no-commit        # Scan and index only
-csb list [-n 20]              # Timeline view sorted by last user activity
-csb list --deleted            # Show deleted sessions
-csb status                    # Summary stats
-csb show <session-id>         # Detailed session info with folder analysis
-csb search "query"            # Search by session name, project, or folder
-csb restore <session-id>      # Restore deleted session from git history
-csb resume <session-id>       # Launch claude --resume with full UUID
-csb rebuild-index             # Reconstruct SQLite from scratch
-csb config [key] [value]      # View/edit configuration
+csb backup                            # Scan, index, git commit (noise + user)
+csb backup --no-commit                # Scan and index only
+csb list [-n 20]                      # Timeline view (default sort: last-used)
+csb list [keyword]                    # Filter by keyword in name/project/folders
+csb list --sort expiration            # Sort by soonest-to-purge first
+csb list --sort {last-used|expiration|started|oldest|messages|size}
+csb list --deleted                    # Show deleted sessions
+csb scan [path]                       # Find sessions touching this directory
+csb scan [path] -NU                   # Prefix-only match (skip folder-usage search)
+csb status                            # Summary stats
+csb show <session-id>                 # Detailed session info with folder analysis
+csb search "query"                    # Search by session name, project, or folder
+csb restore <session-id>              # Restore deleted session from git history
+csb resume <session-id>               # Launch claude --resume with full UUID
+csb rebuild-index                     # Reconstruct SQLite from scratch
+csb config [key] [value]              # View/edit configuration
 ```
+
+### Finding sessions at risk of purge
+
+Claude Code auto-deletes sessions after `cleanupPeriodDays` (default 30). To see which of your sessions are closest to being purged:
+
+```bash
+csb list --sort expiration -n 20
+```
+
+Sessions are sorted by the JSONL file's modification time, so active sessions (which refresh their mtime on every interaction) stay safe while dormant sessions surface to the top of the expiration list.
 
 ## How It Works
 
@@ -84,7 +99,21 @@ flowchart LR
 
 ## Automation
 
-### Claude Code Hooks
+### Claude Code Plugin (recommended)
+
+The repository ships as a Claude Code plugin that registers PreCompact and SessionEnd hooks automatically:
+
+```bash
+# From a clone of this repo
+claude plugin marketplace add ./
+claude plugin install claude-session-backup@dazzle-claude-session-backup
+```
+
+The plugin uses a Node.js bootstrapper (`run-hook.mjs`) to find the correct Python binary on each platform, so it works reliably on Windows, Linux, and macOS without any shell quoting concerns. PreCompact fires synchronously before `/compact` to preserve full conversation detail; SessionEnd fires on exit to catch any remaining changes.
+
+### Manual hook installation
+
+If you prefer to manage hooks yourself, add this to `~/.claude/settings.json`:
 
 ```json
 {
@@ -95,7 +124,11 @@ flowchart LR
 }
 ```
 
+Or use `python install.py` in the repo to copy the hook script and print the snippet.
+
 ### Cron (Linux/Mac)
+
+Belt-and-suspenders periodic backup as a safety net:
 
 ```bash
 */15 * * * * /usr/local/bin/csb backup --quiet 2>/dev/null

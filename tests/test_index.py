@@ -85,6 +85,104 @@ def test_list_deleted_only(mock_db):
     assert deleted[0]["session_id"] == "id2"
 
 
+# ── Sort tests ───────────────────────────────────────────────────────
+
+
+def _make_meta_with(session_id, **overrides):
+    """Build a SessionMetadata with custom field values for sort tests."""
+    meta = _make_meta(session_id, f"sess-{session_id}")
+    for key, value in overrides.items():
+        setattr(meta, key, value)
+    return meta
+
+
+def test_list_sort_default_is_last_used(mock_db):
+    # Two sessions with distinct last_active_at -- default sort should
+    # return the newer one first (regression guard for backward compat).
+    meta_old = _make_meta_with("id-old", last_active_at="2026-01-01T00:00:00Z")
+    meta_new = _make_meta_with("id-new", last_active_at="2026-05-01T00:00:00Z")
+
+    upsert_session(mock_db, meta_old, "p1.jsonl", 100, 1000.0, "t1")
+    upsert_session(mock_db, meta_new, "p2.jsonl", 100, 2000.0, "t1")
+
+    result = list_sessions(mock_db)
+    assert [s["session_id"] for s in result] == ["id-new", "id-old"]
+
+
+def test_list_sort_by_expiration(mock_db):
+    # Oldest mtime = least days remaining = should appear first.
+    meta_a = _make_meta_with("id-a")
+    meta_b = _make_meta_with("id-b")
+    meta_c = _make_meta_with("id-c")
+
+    upsert_session(mock_db, meta_a, "a.jsonl", 100, 1000.0, "t1")  # oldest
+    upsert_session(mock_db, meta_b, "b.jsonl", 100, 3000.0, "t1")  # newest
+    upsert_session(mock_db, meta_c, "c.jsonl", 100, 2000.0, "t1")  # middle
+
+    result = list_sessions(mock_db, sort_key="expiration")
+    assert [s["session_id"] for s in result] == ["id-a", "id-c", "id-b"]
+
+
+def test_list_sort_by_expiration_skips_zero_mtime(mock_db):
+    # Zero mtime (never scanned) should sort to the bottom so real
+    # expiring sessions are surfaced first.
+    meta_real = _make_meta_with("id-real")
+    meta_zero = _make_meta_with("id-zero")
+
+    upsert_session(mock_db, meta_real, "real.jsonl", 100, 5000.0, "t1")
+    upsert_session(mock_db, meta_zero, "zero.jsonl", 100, 0.0, "t1")
+
+    result = list_sessions(mock_db, sort_key="expiration")
+    assert result[0]["session_id"] == "id-real"
+    assert result[-1]["session_id"] == "id-zero"
+
+
+def test_list_sort_by_messages(mock_db):
+    meta_small = _make_meta_with("id-small", message_count=5)
+    meta_big = _make_meta_with("id-big", message_count=100)
+    meta_mid = _make_meta_with("id-mid", message_count=20)
+
+    upsert_session(mock_db, meta_small, "s.jsonl", 100, 1000.0, "t1")
+    upsert_session(mock_db, meta_big, "b.jsonl", 100, 1000.0, "t1")
+    upsert_session(mock_db, meta_mid, "m.jsonl", 100, 1000.0, "t1")
+
+    result = list_sessions(mock_db, sort_key="messages")
+    assert [s["session_id"] for s in result] == ["id-big", "id-mid", "id-small"]
+
+
+def test_list_sort_by_size(mock_db):
+    meta_a = _make_meta_with("id-a")
+    meta_b = _make_meta_with("id-b")
+    meta_c = _make_meta_with("id-c")
+
+    upsert_session(mock_db, meta_a, "a.jsonl", 100, 1000.0, "t1")    # smallest
+    upsert_session(mock_db, meta_b, "b.jsonl", 5000, 1000.0, "t1")   # biggest
+    upsert_session(mock_db, meta_c, "c.jsonl", 800, 1000.0, "t1")    # middle
+
+    result = list_sessions(mock_db, sort_key="size")
+    assert [s["session_id"] for s in result] == ["id-b", "id-c", "id-a"]
+
+
+def test_list_sort_by_started_and_oldest(mock_db):
+    meta_old = _make_meta_with("id-old", started_at="2026-01-01T00:00:00Z")
+    meta_new = _make_meta_with("id-new", started_at="2026-05-01T00:00:00Z")
+
+    upsert_session(mock_db, meta_old, "o.jsonl", 100, 1000.0, "t1")
+    upsert_session(mock_db, meta_new, "n.jsonl", 100, 1000.0, "t1")
+
+    newest_first = list_sessions(mock_db, sort_key="started")
+    assert [s["session_id"] for s in newest_first] == ["id-new", "id-old"]
+
+    oldest_first = list_sessions(mock_db, sort_key="oldest")
+    assert [s["session_id"] for s in oldest_first] == ["id-old", "id-new"]
+
+
+def test_list_sort_invalid_key_raises(mock_db):
+    import pytest
+    with pytest.raises(ValueError, match="Unknown sort_key"):
+        list_sessions(mock_db, sort_key="bogus")
+
+
 def test_get_active_session_ids(mock_db):
     meta1 = _make_meta("id1", "one")
     meta2 = _make_meta("id2", "two")
