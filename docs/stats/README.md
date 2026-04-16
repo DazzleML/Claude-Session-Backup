@@ -23,7 +23,7 @@ A [GitHub Actions workflow](../../.github/workflows/traffic-badges.yml) runs dai
 
 | Source | Type | Contents |
 |--------|------|----------|
-| [Badge Gist](https://gist.github.com/djdarcy/2b9d61915effeeaa8550cced3032b8c0) | Public | Current stats, rolling 31-day daily history |
+| [Badge Gist](https://gist.github.com/djdarcy/7aa669e4d85856079eacc71f88c58f6b) | Public | Current stats, rolling 31-day daily history |
 | Archive Gist | Unlisted | Monthly snapshots with full daily breakdowns |
 | GitHub Statistics API | Public | Commit activity, code frequency, participation, contributors |
 

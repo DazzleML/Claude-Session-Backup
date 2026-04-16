@@ -9,6 +9,11 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.2] -- 2026-04-15
+
+### Fixed
+- **Stats dashboard showed "unable to load statistics"** -- `docs/stats/index.html` and `docs/stats/README.md` had orphan gist IDs hardcoded by a stray `ghtraf --configure` run. Replaced with the authoritative badge (`7aa669e4...`) and archive (`6ee098fb...`) gist IDs that `.ghtraf.json` and the repo variables point at.
+
 ## [0.2.1] -- 2026-04-15
 
 First release with the repository public. Focus: make the install path work today (GitHub-based `pip install` and URL-based Claude Code plugin install), fix broken or inaccurate pieces of the published surface, and set up repo infrastructure for later automation.
@@ -36,6 +41,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0
