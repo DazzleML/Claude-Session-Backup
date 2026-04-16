@@ -4,7 +4,7 @@
 [![Release Date](https://img.shields.io/github/release-date/DazzleML/Claude-Session-Backup?color=green)](https://github.com/DazzleML/Claude-Session-Backup/releases)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-green.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
-[![Installs](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/djdarcy/d10d1c2194e7a4842e323a9dacef2e08/raw/csb-installs.json)](https://github.com/DazzleML/Claude-Session-Backup)
+[![Installs](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/djdarcy/7aa669e4d85856079eacc71f88c58f6b/raw/installs.json)](https://dazzleml.github.io/Claude-Session-Backup/stats/#installs)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20BSD-lightgrey.svg)](docs/platforms.md)
 
 **Git-backed Claude Code session backup with timeline view, folder analysis, deletion detection, and session restore.**
@@ -15,18 +15,25 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 
 **csb** preserves every session in your existing `~/.claude` git repository, builds a searchable metadata index, detects deletions, and can restore lost sessions from git history.
 
+> [!WARNING]
+> **Prealpha software.** `csb` is functional and all tests pass, but it is not yet feature-complete and has not been broadly tested outside of active dogfooding. Expect bugs, rough edges, and breaking changes until the first alpha/beta releases. Three items gate the next milestone: distilled conversation backup (#12), end-to-end restore verification (#13), and a CLI launcher for claude-code-history-viewer (#14). By all means use it -- and please file issues -- but don't rely on `csb` as your only backup just yet.
+
 ## Quick Start
 
 ```bash
-pip install claude-session-backup
+# 1. Install the CLI (PyPI release coming shortly)
+pip install git+https://github.com/DazzleML/Claude-Session-Backup.git
 
-# Scan all sessions and build the index (no git commits)
+# 2. (recommended) Install the Claude Code plugin so pre-compact backups fire
+#    automatically. Full commands in the "Claude Code Plugin" section below.
+
+# 3. Scan all sessions and build the index (no git commits)
 csb backup --no-commit
 
-# See your session timeline
+# 4. See your session timeline
 csb list
 
-# Full backup with git commits (noise + user, separate commits, unsigned)
+# 5. Full backup with git commits (noise + user, separate commits, unsigned)
 csb backup
 ```
 
@@ -101,7 +108,17 @@ flowchart LR
 
 ### Claude Code Plugin (recommended)
 
-The repository ships as a Claude Code plugin that registers PreCompact and SessionEnd hooks automatically:
+The repository ships as a Claude Code plugin that registers PreCompact and SessionEnd hooks automatically. You can install it straight from GitHub -- no clone required:
+
+```bash
+# Add the DazzleML marketplace (one-time)
+claude plugin marketplace add "DazzleML/Claude-Session-Backup"
+
+# Install the plugin
+claude plugin install claude-session-backup@dazzle-claude-session-backup
+```
+
+Alternatively, if you already have a clone for development:
 
 ```bash
 # From a clone of this repo
@@ -149,13 +166,16 @@ schtasks /create /tn "Claude Session Backup" /tr "csb backup --quiet" /sc minute
 ## Installation
 
 ```bash
-# From PyPI
-pip install claude-session-backup
+# From GitHub (recommended until PyPI publish lands)
+pip install git+https://github.com/DazzleML/Claude-Session-Backup.git
 
-# From source (development)
+# From source (development / contributing)
 git clone https://github.com/DazzleML/Claude-Session-Backup.git
 cd Claude-Session-Backup
 pip install -e ".[dev]"
+
+# From PyPI (once published)
+pip install claude-session-backup
 ```
 
 ## Contributing
@@ -167,7 +187,7 @@ Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 This project draws inspiration and patterns from:
 
 - **[claude-vault](https://github.com/kuroko1t/claude-vault)** by [@kuroko1t](https://github.com/kuroko1t) -- FTS5 search design, JSONL parsing patterns, Claude Code hook integration. Their [blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500) was the catalyst for this project.
-- **[claude-code-history-viewer](https://github.com/pinkpixel-dev/claude-code-history-viewer)** by [@pinkpixel-dev](https://github.com/pinkpixel-dev) -- Full JSONL data model understanding, session file structure documentation, file restore patterns.
+- **[claude-code-history-viewer](https://github.com/jhlee0409/claude-code-history-viewer)** by [@jhlee0409](https://github.com/jhlee0409) -- Full JSONL data model understanding, session file structure documentation, file restore patterns.
 - **[claude-session-logger](https://github.com/DazzleML/claude-session-logger)** by [@djdarcy](https://github.com/djdarcy) -- Real-time session logging, session naming conventions, session-state file handling.
 
 ## License
