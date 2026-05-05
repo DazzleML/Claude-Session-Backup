@@ -26,11 +26,17 @@ class SessionMetadata:
     folder_usage: dict[str, int] = field(default_factory=dict)  # path -> count
 
 
-def extract_metadata(jsonl_path: Path, top_n_folders: int = 3) -> SessionMetadata:
+def extract_metadata(jsonl_path: Path) -> SessionMetadata:
     """
     Parse a session JSONL file and extract metadata.
 
     Streams the file line-by-line to handle large files efficiently.
+
+    Stores ALL distinct cwds seen in the JSONL events into ``folder_usage``
+    (keyed by absolute path, valued by occurrence count). The renderer
+    decides how many to display via ``--top N`` / ``--all-folders``;
+    truncating at index time would make those flags unable to surface
+    long-tail folders, see #21.
     """
     meta = SessionMetadata(session_id=jsonl_path.stem)
 
@@ -107,17 +113,9 @@ def extract_metadata(jsonl_path: Path, top_n_folders: int = 3) -> SessionMetadat
     meta.tool_call_count = tool_count
     meta.claude_version = version
 
-    # Build folder usage: start_folder tracked separately,
-    # plus top N other folders
-    if first_cwd:
-        meta.folder_usage[first_cwd] = folder_counter.get(first_cwd, 0)
-
-    other_folders = {
-        path: count
-        for path, count in folder_counter.most_common()
-        if path != first_cwd
-    }
-    for path, count in list(other_folders.items())[:top_n_folders]:
+    # Persist every cwd we saw, sorted by usage count descending so the
+    # SQLite ORDER BY is consistent with the in-memory counter ordering.
+    for path, count in folder_counter.most_common():
         meta.folder_usage[path] = count
 
     return meta

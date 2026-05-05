@@ -110,3 +110,67 @@ def test_format_session_line_basic():
     assert "(20x)" in line
     assert "42 messages" in line
     assert "purge in" in line
+
+
+def _session_with_n_others(n: int) -> dict:
+    """Build a fake session with `n` non-start folders for renderer tests."""
+    folders = [
+        {"folder_path": "/start", "usage_count": 100, "is_start_folder": True},
+    ]
+    for i in range(n):
+        folders.append({
+            "folder_path": f"/other-{i}",
+            "usage_count": 10 - i,  # descending; storage ordering preserved
+            "is_start_folder": False,
+        })
+    return {
+        "session_name": "fixture",
+        "session_id": "ffff-ffff-ffff-ffff",
+        "last_user_at": "2026-03-23T10:00:00Z",
+        "started_at": "2026-03-23T09:00:00Z",
+        "start_folder": "/start",
+        "message_count": 5,
+        "folders": folders,
+        "jsonl_mtime": time.time(),
+    }
+
+
+def test_format_session_line_default_top_3_caps_others_at_3():
+    session = _session_with_n_others(7)
+    line = format_session_line(session, 1, cleanup_days=0)
+    # Default top_folders=3: only first 3 of 7 others appear
+    for i in range(3):
+        assert f"/other-{i}" in line
+    for i in range(3, 7):
+        assert f"/other-{i}" not in line
+    # Meta line surfaces the remaining 4
+    assert "4 other folders seen" in line
+
+
+def test_format_session_line_top_5():
+    session = _session_with_n_others(7)
+    line = format_session_line(session, 1, cleanup_days=0, top_folders=5)
+    for i in range(5):
+        assert f"/other-{i}" in line
+    for i in range(5, 7):
+        assert f"/other-{i}" not in line
+    assert "2 other folders seen" in line
+
+
+def test_format_session_line_all_folders():
+    session = _session_with_n_others(7)
+    line = format_session_line(session, 1, cleanup_days=0, top_folders=None)
+    # All 7 others must appear
+    for i in range(7):
+        assert f"/other-{i}" in line
+    # And the "X other folders seen" tail-counter shouldn't appear
+    assert "other folders seen" not in line
+
+
+def test_format_session_line_top_zero():
+    """`--top 0` is a degenerate-but-legal request: hide all others."""
+    session = _session_with_n_others(7)
+    line = format_session_line(session, 1, cleanup_days=0, top_folders=0)
+    for i in range(7):
+        assert f"/other-{i}" not in line
+    assert "7 other folders seen" in line

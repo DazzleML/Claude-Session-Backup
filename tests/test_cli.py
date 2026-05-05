@@ -111,3 +111,77 @@ def test_parse_list_with_invalid_sort():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["list", "--sort", "bogus"])
+
+
+# ── --top / --all-folders flag tests (#21) ─────────────────────────
+
+def test_parse_list_default_no_top_flag():
+    parser = build_parser()
+    args = parser.parse_args(["list"])
+    assert args.top is None
+    assert args.all_folders is False
+
+
+def test_parse_list_top_n():
+    parser = build_parser()
+    args = parser.parse_args(["list", "--top", "10"])
+    assert args.top == 10
+    assert args.all_folders is False
+
+
+def test_parse_list_all_folders():
+    parser = build_parser()
+    args = parser.parse_args(["list", "--all-folders"])
+    assert args.top is None
+    assert args.all_folders is True
+
+
+def test_parse_list_top_and_all_folders_mutex():
+    """`--top N` and `--all-folders` are mutually exclusive."""
+    import pytest
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["list", "--top", "5", "--all-folders"])
+
+
+def test_parse_scan_top_n():
+    parser = build_parser()
+    args = parser.parse_args(["scan", "--top", "7"])
+    assert args.top == 7
+    assert args.all_folders is False
+
+
+def test_parse_scan_all_folders():
+    parser = build_parser()
+    args = parser.parse_args(["scan", "--all-folders"])
+    assert args.all_folders is True
+
+
+def test_resolve_top_folders_helper():
+    """``_resolve_top_folders`` translates argparse flags into renderer values."""
+    from claude_session_backup.commands import _resolve_top_folders
+    from claude_session_backup.timeline import DEFAULT_TOP_FOLDERS
+
+    class _Args:
+        pass
+
+    # Default: no flags -> module-level default (3)
+    args = _Args()
+    args.top = None
+    args.all_folders = False
+    assert _resolve_top_folders(args) == DEFAULT_TOP_FOLDERS
+
+    # --top N
+    args.top = 8
+    args.all_folders = False
+    assert _resolve_top_folders(args) == 8
+
+    # --all-folders -> None (renderer interprets None as "show all")
+    args.top = None
+    args.all_folders = True
+    assert _resolve_top_folders(args) is None
+
+    # Defensive: --all-folders wins even if --top is also somehow set
+    args.top = 5
+    args.all_folders = True
+    assert _resolve_top_folders(args) is None

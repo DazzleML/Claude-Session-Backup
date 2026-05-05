@@ -173,9 +173,21 @@ def _purge_style(days_remaining: Optional[int]) -> str:
 
 # ── Plain text formatting ──────────────────────────────────────────
 
-def format_session_line(session: dict, index: int, cleanup_days: int = 0) -> str:
+#: Default number of "other" folder rows shown beneath the start_folder.
+#: Override via the ``top_folders`` parameter on the renderer functions
+#: (or via ``csb list --top N`` / ``csb scan --top N``). Pass ``None`` to
+#: show every tracked folder (``--all-folders``).
+DEFAULT_TOP_FOLDERS = 3
+
+
+def format_session_line(session: dict, index: int, cleanup_days: int = 0,
+                        top_folders: Optional[int] = DEFAULT_TOP_FOLDERS) -> str:
     """
     Format a single session for the timeline view (plain text fallback).
+
+    ``top_folders`` controls how many "other" folder rows display beneath
+    the start_folder. Default 3. Pass ``None`` to display every tracked
+    folder (corresponds to ``--all-folders``).
     """
     name = session.get("session_name") or "(unnamed)"
     last_user = session.get("last_user_at") or session.get("last_active_at")
@@ -210,7 +222,7 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0) -> str
     else:
         lines.append(f"       start at: {start_folder}")
 
-    displayed_others = other_folders[:5]
+    displayed_others = other_folders if top_folders is None else other_folders[:top_folders]
     for f in displayed_others:
         lines.append(f"       {f['folder_path']} ({f['usage_count']}x)")
 
@@ -239,9 +251,14 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0) -> str
 # ── Rich formatting ────────────────────────────────────────────────
 
 def render_session_rich(console: Console, session: dict, index: int,
-                        cleanup_days: int = 0):
+                        cleanup_days: int = 0,
+                        top_folders: Optional[int] = DEFAULT_TOP_FOLDERS):
     """
     Render a single session entry using rich formatting.
+
+    ``top_folders`` controls how many "other" folder rows display beneath
+    the start_folder. Default 3. Pass ``None`` to display every tracked
+    folder (corresponds to ``--all-folders``).
 
     Colors:
     - Session name: bold cyan
@@ -313,7 +330,7 @@ def render_session_rich(console: Console, session: dict, index: int,
     console.print(start_line)
 
     # Other folders, each on own line
-    displayed_others = other_folders[:5]
+    displayed_others = other_folders if top_folders is None else other_folders[:top_folders]
     for f in displayed_others:
         fpath = f["folder_path"]
         fcount = f["usage_count"]
@@ -346,21 +363,24 @@ def render_session_rich(console: Console, session: dict, index: int,
 
 # ── Timeline renderers ─────────────────────────────────────────────
 
-def format_timeline(sessions: list[dict], cleanup_days: int = 0) -> str:
+def format_timeline(sessions: list[dict], cleanup_days: int = 0,
+                    top_folders: Optional[int] = DEFAULT_TOP_FOLDERS) -> str:
     """Format a list of sessions as a plain text timeline (fallback)."""
     if not sessions:
         return "  No sessions found."
 
     lines = []
     for i, session in enumerate(sessions, 1):
-        lines.append(format_session_line(session, i, cleanup_days=cleanup_days))
+        lines.append(format_session_line(session, i, cleanup_days=cleanup_days,
+                                         top_folders=top_folders))
         lines.append("")
 
     return "\n".join(lines)
 
 
 def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None,
-                         cleanup_days: int = 0):
+                         cleanup_days: int = 0,
+                         top_folders: Optional[int] = DEFAULT_TOP_FOLDERS):
     """Render a list of sessions using rich formatting."""
     if console is None:
         console = Console()
@@ -370,5 +390,6 @@ def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None
         return
 
     for i, session in enumerate(sessions, 1):
-        render_session_rich(console, session, i, cleanup_days=cleanup_days)
+        render_session_rich(console, session, i, cleanup_days=cleanup_days,
+                            top_folders=top_folders)
         console.print()  # blank line between entries

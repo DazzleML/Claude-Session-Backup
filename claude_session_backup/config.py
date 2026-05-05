@@ -11,7 +11,6 @@ from pathlib import Path
 DEFAULT_CONFIG = {
     "claude_dir": "~/.claude",
     "index_path": "~/.claude/session-backup.db",
-    "top_n_folders": 3,
     "auto_commit": True,
     "commit_user_files": True,
     "idle_seconds_before_commit": 5,

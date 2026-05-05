@@ -150,6 +150,15 @@ def build_parser():
     p_list.add_argument("--deleted", action="store_true", help="Show only deleted sessions")
     p_list.add_argument("--all", action="store_true", help="Show all sessions including deleted")
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
+    p_list_folders = p_list.add_mutually_exclusive_group()
+    p_list_folders.add_argument(
+        "--top", type=int, metavar="N", default=None,
+        help="Show top N other folders per session (default: 3). Use --all-folders for everything.",
+    )
+    p_list_folders.add_argument(
+        "--all-folders", action="store_true",
+        help="Show every tracked folder per session (no cap).",
+    )
 
     # status
     p_status = sub.add_parser("status", help="Summary of sessions, deletions, git state")
@@ -178,6 +187,15 @@ def build_parser():
     p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
     p_scan.add_argument("--no-usage", "-NU", action="store_true",
                         help="Only match by project start folder, skip folder usage search")
+    p_scan_folders = p_scan.add_mutually_exclusive_group()
+    p_scan_folders.add_argument(
+        "--top", type=int, metavar="N", default=None,
+        help="Show top N other folders per session (default: 3). Use --all-folders for everything.",
+    )
+    p_scan_folders.add_argument(
+        "--all-folders", action="store_true",
+        help="Show every tracked folder per session (no cap).",
+    )
 
     # search
     p_search = sub.add_parser("search", help="Search session metadata")

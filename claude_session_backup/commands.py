@@ -53,6 +53,24 @@ def _get_config(args):
     return resolve_paths(config)
 
 
+def _resolve_top_folders(args):
+    """
+    Decide the renderer's ``top_folders`` value from CLI args.
+
+    ``--all-folders`` wins over ``--top N`` (argparse's mutually exclusive
+    group prevents both, but we still defend the precedence here for
+    callers that bypass argparse). When neither flag is set, returns
+    ``None`` so the renderer falls back to its module-level default of 3.
+    """
+    if getattr(args, "all_folders", False):
+        return None  # show every folder
+    top = getattr(args, "top", None)
+    if top is not None:
+        return top
+    from .timeline import DEFAULT_TOP_FOLDERS
+    return DEFAULT_TOP_FOLDERS
+
+
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
@@ -101,7 +119,7 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
 
         try:
             # Extract metadata from JSONL
-            meta = extract_metadata(sf.jsonl_path, config["top_n_folders"])
+            meta = extract_metadata(sf.jsonl_path)
             meta.project = sf.project
 
             # Enrich with session-state info
@@ -180,13 +198,14 @@ def cmd_list(args) -> int:
     conn.close()
 
     cleanup_days = read_cleanup_period(config["claude_dir"])
+    top_folders = _resolve_top_folders(args)
 
     if args.json:
         print(json.dumps(sessions, indent=2, default=str))
     elif HAS_RICH:
-        render_timeline_rich(sessions, cleanup_days=cleanup_days)
+        render_timeline_rich(sessions, cleanup_days=cleanup_days, top_folders=top_folders)
     else:
-        print(format_timeline(sessions, cleanup_days=cleanup_days))
+        print(format_timeline(sessions, cleanup_days=cleanup_days, top_folders=top_folders))
 
     return 0
 
@@ -461,7 +480,7 @@ def cmd_scan(args) -> int:
     results = []
     for sf in sessions:
         try:
-            meta = extract_metadata(sf.jsonl_path, top_n_folders=3)
+            meta = extract_metadata(sf.jsonl_path)
             meta.project = sf.project
 
             entry = {
@@ -513,14 +532,15 @@ def cmd_scan(args) -> int:
         return 0
 
     cleanup_days = read_cleanup_period(config["claude_dir"])
+    top_folders = _resolve_top_folders(args)
 
     print(f"Found {total_found} session(s) under {root}" +
           (f" (showing top {args.n}):" if total_found > args.n else ":"))
     print()
 
     if HAS_RICH:
-        render_timeline_rich(results, cleanup_days=cleanup_days)
+        render_timeline_rich(results, cleanup_days=cleanup_days, top_folders=top_folders)
     else:
-        print(format_timeline(results, cleanup_days=cleanup_days))
+        print(format_timeline(results, cleanup_days=cleanup_days, top_folders=top_folders))
 
     return 0
