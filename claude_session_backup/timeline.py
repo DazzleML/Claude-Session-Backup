@@ -11,12 +11,50 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from .pathkit import derive_start_at
+
 try:
     from rich.console import Console
     from rich.text import Text
     HAS_RICH = True
 except ImportError:
     HAS_RICH = False
+
+
+def _resolve_start_at(session: dict) -> str:
+    """
+    Derive the "start at" value to display.
+
+    Prefers slug-decoded cwd from the JSONL path (the cwd that lets
+    ``claude --resume <uuid>`` find the file). Falls back to the legacy
+    ``start_folder`` field for sessions whose dict lacks ``jsonl_path``
+    (test fixtures, manual call sites).
+    """
+    jsonl_path = session.get("jsonl_path")
+    if jsonl_path:
+        return derive_start_at(jsonl_path)
+    return session.get("start_folder") or "(unknown)"
+
+
+def _start_count_and_others(folders: list[dict],
+                            start_folder: str) -> tuple[Optional[int], list[dict]]:
+    """
+    Look up the usage count for ``start_folder`` (if present in folders)
+    and return the remaining folders for display below.
+
+    The list of "others" excludes the start_folder entry to avoid
+    duplication when the slug-decoded path coincides with a top-N
+    folder. Returns (None, all_folders) when start_folder isn't
+    tracked (e.g., ``<unresolved:>``, drive root never traversed).
+    """
+    start_count: Optional[int] = None
+    others: list[dict] = []
+    for f in folders:
+        if f["folder_path"] == start_folder:
+            start_count = f["usage_count"]
+        else:
+            others.append(f)
+    return start_count, others
 
 
 def relative_date(iso_timestamp: Optional[str], now: Optional[datetime] = None) -> str:
@@ -142,7 +180,7 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0) -> str
     name = session.get("session_name") or "(unnamed)"
     last_user = session.get("last_user_at") or session.get("last_active_at")
     started = session.get("started_at")
-    start_folder = session.get("start_folder") or "(unknown)"
+    start_folder = _resolve_start_at(session)
     full_id = session.get("session_id", "")
     msg_count = session.get("message_count", 0)
     deleted = session.get("deleted_at")
@@ -164,25 +202,24 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0) -> str
         lines.append(f"       started: {ts_started}{purge_text}")
 
     folders = session.get("folders", [])
-    start_count = 0
-    other_folders = []
-    total_folder_count = 0
+    total_folder_count = len(folders)
+    start_count, other_folders = _start_count_and_others(folders, start_folder)
 
-    for f in folders:
-        total_folder_count += 1
-        if f.get("is_start_folder"):
-            start_count = f["usage_count"]
-        else:
-            other_folders.append(f)
-
-    lines.append(f"       start at: {start_folder} ({start_count}x)")
+    if start_count is not None:
+        lines.append(f"       start at: {start_folder} ({start_count}x)")
+    else:
+        lines.append(f"       start at: {start_folder}")
 
     displayed_others = other_folders[:5]
     for f in displayed_others:
         lines.append(f"       {f['folder_path']} ({f['usage_count']}x)")
 
     meta_parts = []
-    remaining = total_folder_count - 1 - len(displayed_others)
+    # If start_folder matched a folder_usage row, that row is excluded from
+    # other_folders -- so the displayed slice + 1 accounts for it. If not,
+    # all folders are in other_folders and no adjustment is needed.
+    accounted_for = len(displayed_others) + (1 if start_count is not None else 0)
+    remaining = total_folder_count - accounted_for
     if remaining > 0:
         meta_parts.append(f"{remaining} other folder{'s' if remaining != 1 else ''} seen")
 
@@ -220,7 +257,7 @@ def render_session_rich(console: Console, session: dict, index: int,
     name = session.get("session_name") or "(unnamed)"
     last_user = session.get("last_user_at") or session.get("last_active_at")
     started = session.get("started_at")
-    start_folder = session.get("start_folder") or "(unknown)"
+    start_folder = _resolve_start_at(session)
     full_id = session.get("session_id", "")
     msg_count = session.get("message_count", 0)
     deleted = session.get("deleted_at")
@@ -239,17 +276,8 @@ def render_session_rich(console: Console, session: dict, index: int,
 
     # Collect folder data
     folders = session.get("folders", [])
-    start_count = 0
-    other_folders = []
-    total_folder_count = 0
-
-    for f in folders:
-        total_folder_count += 1
-        if f.get("is_start_folder"):
-            start_count = f["usage_count"]
-        else:
-            other_folders.append(f)
-
+    total_folder_count = len(folders)
+    start_count, other_folders = _start_count_and_others(folders, start_folder)
     max_path = _find_max_usage_folder(folders)
 
     # Header line: index + name + last user activity
@@ -272,13 +300,16 @@ def render_session_rich(console: Console, session: dict, index: int,
             started_line.append(f" {purge_text}", style=purge_style)
         console.print(started_line)
 
-    # Start folder line
+    # Start folder line. The slug-decoded path may not be in folder_usage
+    # (e.g., bare drive roots that the session never `cd`-ed into); when
+    # that happens we omit the count rather than misleadingly showing 0x.
     is_start_max = (start_folder == max_path)
     start_line = Text("       ")
     start_line.append("start at: ", style="blue")
     start_style = "bold green" if is_start_max else "white"
     start_line.append(start_folder, style=start_style)
-    start_line.append(f" ({start_count}x)", style=start_style)
+    if start_count is not None:
+        start_line.append(f" ({start_count}x)", style=start_style)
     console.print(start_line)
 
     # Other folders, each on own line
@@ -295,7 +326,8 @@ def render_session_rich(console: Console, session: dict, index: int,
 
     # Metadata line
     meta = Text("       ")
-    remaining = total_folder_count - 1 - len(displayed_others)
+    accounted_for = len(displayed_others) + (1 if start_count is not None else 0)
+    remaining = total_folder_count - accounted_for
     if remaining > 0:
         meta.append(f"{remaining} other folder{'s' if remaining != 1 else ''} seen", style="dim")
         meta.append(" | ", style="dim")

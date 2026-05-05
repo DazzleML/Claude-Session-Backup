@@ -9,6 +9,13 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+### Fixed
+- **`csb list` / `csb scan` "start at" line now reports the cwd that lets `claude --resume` find the session** -- previously derived from a JSONL `cwd` histogram (most-common cwd across all events), which silently misled users when Claude Code was launched from a parent dir and `cd`-ed into a subdir afterwards. Now derived from the project-dir slug (`~/.claude/projects/<slug>/`) via filesystem-validated reverse decoding in the new `claude_session_backup/pathkit.py` module. Mirrors the upstream encoder at `claude-code/utils/sessionStoragePortable.ts:311-319` (`replace(/[^a-zA-Z0-9]/g, '-')`); the inverse uses `os.listdir` per directory level and the longest-encoded-entry-first heuristic to disambiguate slugs that have multiple valid filesystem decodings (e.g., a folder literally named `New--Project` vs. `New\.Project`). Returns the sentinel `<unresolved:slug>` when no candidate decodes (e.g., the original cwd has been deleted) so maintainers can still see the slug. Closes #19. (#19, prealpha-blocker)
+- **Note:** for slug-decoded cwds that fall outside the indexer's tracked top-N folders (e.g., a session launched from `C:\` that immediately `cd`-ed into a subdir and rarely returned), the "start at" line currently displays without a count. The underlying count exists in the JSONL but `metadata.py` truncates `folder_usage` to 1 + top_n_folders rows. Will close automatically when #21 (`--top N` / `--all-folders` + indexer storage refactor) lands.
+
+### Added
+- **33 new unit tests in `tests/test_pathkit.py`** covering the encoder ground truth (including the lossy `\.` separator-plus-dotfile and `-\` literal-hyphen-plus-separator cases that produce identical 2-dash slugs from genuinely different source paths), filesystem-driven decoding, ambiguity handling, drive-root and unresolvable cases, and the `<unresolved:>` / `<no-slug>` sentinel paths. Total test count: 100/100 pass.
+
 ## [0.2.2] -- 2026-04-15
 
 ### Fixed
