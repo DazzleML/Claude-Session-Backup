@@ -14,6 +14,12 @@ DEFAULT_CONFIG = {
     "auto_commit": True,
     "commit_user_files": True,
     "idle_seconds_before_commit": 5,
+    # Renderer default for ``csb list`` / ``csb scan``: how many "other"
+    # folder rows display beneath "start at". Override per-invocation
+    # with ``--top N`` / ``--all-folders``. Stored as a string in JSON
+    # config files but coerced to int on read; ``None`` / negative means
+    # "show all" (equivalent to ``--all-folders``).
+    "display_top_folders": 3,
 }
 
 # Environment variable overrides (CLI flag > env var > config file > default)

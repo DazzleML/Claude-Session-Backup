@@ -165,7 +165,7 @@ def test_resolve_top_folders_helper():
     class _Args:
         pass
 
-    # Default: no flags -> module-level default (3)
+    # Default: no flags, no config -> module-level default (3)
     args = _Args()
     args.top = None
     args.all_folders = False
@@ -185,3 +185,34 @@ def test_resolve_top_folders_helper():
     args.top = 5
     args.all_folders = True
     assert _resolve_top_folders(args) is None
+
+
+def test_resolve_top_folders_config_default():
+    """Config ``display_top_folders`` is consulted when no CLI flag is set."""
+    from claude_session_backup.commands import _resolve_top_folders
+
+    class _Args:
+        pass
+
+    args = _Args()
+    args.top = None
+    args.all_folders = False
+
+    # User config sets the renderer default
+    assert _resolve_top_folders(args, {"display_top_folders": 7}) == 7
+
+    # Negative config value -> show all
+    assert _resolve_top_folders(args, {"display_top_folders": -1}) is None
+
+    # Malformed config value -> falls back to module default rather than crash
+    from claude_session_backup.timeline import DEFAULT_TOP_FOLDERS
+    assert _resolve_top_folders(args, {"display_top_folders": "bogus"}) == DEFAULT_TOP_FOLDERS
+
+    # CLI --top N still wins over config
+    args.top = 2
+    assert _resolve_top_folders(args, {"display_top_folders": 7}) == 2
+
+    # CLI --all-folders still wins over config
+    args.top = None
+    args.all_folders = True
+    assert _resolve_top_folders(args, {"display_top_folders": 7}) is None

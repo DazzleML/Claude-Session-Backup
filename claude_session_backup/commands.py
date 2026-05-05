@@ -53,21 +53,38 @@ def _get_config(args):
     return resolve_paths(config)
 
 
-def _resolve_top_folders(args):
+def _resolve_top_folders(args, config=None):
     """
-    Decide the renderer's ``top_folders`` value from CLI args.
+    Decide the renderer's ``top_folders`` value from CLI args + config.
 
-    ``--all-folders`` wins over ``--top N`` (argparse's mutually exclusive
-    group prevents both, but we still defend the precedence here for
-    callers that bypass argparse). When neither flag is set, returns
-    ``None`` so the renderer falls back to its module-level default of 3.
+    Precedence (highest first):
+      1. ``--all-folders``        -> None (show every folder)
+      2. ``--top N``              -> N
+      3. ``config["display_top_folders"]`` if set
+      4. ``timeline.DEFAULT_TOP_FOLDERS`` (3)
+
+    ``--all-folders`` wins defensively even if ``--top N`` is also set,
+    in case a caller bypasses argparse's mutually exclusive group.
+
+    The config value may be a non-positive int (treated as "show all",
+    matching ``--all-folders``) or a malformed string (falls back to
+    the module default rather than crashing the renderer).
     """
+    from .timeline import DEFAULT_TOP_FOLDERS
+
     if getattr(args, "all_folders", False):
         return None  # show every folder
     top = getattr(args, "top", None)
     if top is not None:
         return top
-    from .timeline import DEFAULT_TOP_FOLDERS
+    if config is not None and "display_top_folders" in config:
+        try:
+            cfg_top = int(config["display_top_folders"])
+        except (TypeError, ValueError):
+            return DEFAULT_TOP_FOLDERS
+        if cfg_top < 0:
+            return None  # negative = show all
+        return cfg_top
     return DEFAULT_TOP_FOLDERS
 
 
@@ -198,7 +215,7 @@ def cmd_list(args) -> int:
     conn.close()
 
     cleanup_days = read_cleanup_period(config["claude_dir"])
-    top_folders = _resolve_top_folders(args)
+    top_folders = _resolve_top_folders(args, config)
 
     if args.json:
         print(json.dumps(sessions, indent=2, default=str))
@@ -532,7 +549,7 @@ def cmd_scan(args) -> int:
         return 0
 
     cleanup_days = read_cleanup_period(config["claude_dir"])
-    top_folders = _resolve_top_folders(args)
+    top_folders = _resolve_top_folders(args, config)
 
     print(f"Found {total_found} session(s) under {root}" +
           (f" (showing top {args.n}):" if total_found > args.n else ":"))
