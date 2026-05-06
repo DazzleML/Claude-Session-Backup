@@ -246,6 +246,236 @@ def get_session(conn: sqlite3.Connection, session_id_prefix: str) -> Optional[di
     return session
 
 
+def escape_like_value(s: str, escape_char: str = "|") -> str:
+    """
+    Escape ``%`` / ``_`` / ``escape_char`` in a string for use as a LIKE pattern.
+
+    Use together with ``ESCAPE '|'`` (or whichever escape_char) in the SQL.
+    Without this, a user-supplied path containing ``_`` or ``%`` would be
+    interpreted as a SQL LIKE wildcard. Backslashes (Windows path separators)
+    are not special in LIKE without ESCAPE, so they pass through unmodified.
+
+    Examples:
+        escape_like_value("C:\\code\\my_folder") == "C:\\code\\my|_folder"
+        escape_like_value("C:\\code\\50%-share") == "C:\\code\\50|%-share"
+    """
+    return (
+        s.replace(escape_char, escape_char * 2)
+        .replace("%", escape_char + "%")
+        .replace("_", escape_char + "_")
+    )
+
+
+def find_sessions_by_term(
+    conn: sqlite3.Connection,
+    term: str,
+    top_n: int | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    Broad metadata substring search across name, project, start_folder, folder_usage.
+
+    Mirrors ``list_sessions(filter_keyword=...)`` but applies top-N gating
+    to the folder_usage substring match (to keep scan results coherent
+    with what the renderer displays).
+
+    A session matches if any of these case-insensitively contain ``term``:
+      - ``s.session_name``, ``s.project``, ``s.start_folder`` (always eligible)
+      - One of its top-N folder_usage entries (gated when ``top_n`` is set)
+
+    Args:
+        conn: open SQLite connection.
+        term: substring to search for.
+        top_n: top-N gate for folder_usage matching, or None for no gate.
+        limit: max sessions to return.
+    """
+    pattern = f"%{escape_like_value(term)}%"
+
+    rnk_filter = ""
+    rnk_params: list = []
+    if top_n is not None:
+        rnk_filter = "AND r.rnk <= ?"
+        rnk_params = [top_n]
+
+    query = f"""
+        WITH ranked AS (
+            SELECT session_id, folder_path,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY session_id
+                       ORDER BY usage_count DESC, folder_path
+                   ) AS rnk
+            FROM folder_usage
+        )
+        SELECT DISTINCT s.* FROM sessions s
+        WHERE s.deleted_at IS NULL
+          AND (
+            s.session_name LIKE ? ESCAPE '|' COLLATE NOCASE
+            OR s.project LIKE ? ESCAPE '|' COLLATE NOCASE
+            OR s.start_folder LIKE ? ESCAPE '|' COLLATE NOCASE
+            OR EXISTS (
+                SELECT 1 FROM ranked r
+                WHERE r.session_id = s.session_id
+                  {rnk_filter}
+                  AND r.folder_path LIKE ? ESCAPE '|' COLLATE NOCASE
+            )
+          )
+        ORDER BY s.last_active_at DESC
+        LIMIT ?
+    """
+    params = [pattern, pattern, pattern] + rnk_params + [pattern, limit]
+    rows = conn.execute(query, params).fetchall()
+
+    results = []
+    for row in rows:
+        session = dict(row)
+        folders = conn.execute(
+            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "WHERE session_id = ? ORDER BY usage_count DESC",
+            (session["session_id"],),
+        ).fetchall()
+        session["folders"] = [dict(f) for f in folders]
+        results.append(session)
+
+    return results
+
+
+def find_sessions_by_directory(
+    conn: sqlite3.Connection,
+    exact_value: str | None,
+    like_match: str | None,
+    like_exclude: str | None,
+    top_n: int | None,
+    *,
+    start_folder_only: bool = False,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    Find sessions whose start_folder OR top-N folder_usage paths match.
+
+    A session matches if either:
+      - ``s.start_folder`` matches the criteria (always eligible -- special slot), OR
+      - One of its top-N folder_usage entries (ranked by usage_count desc)
+        matches the criteria.
+
+    When ``start_folder_only=True``, the folder_usage check is skipped
+    entirely -- only ``s.start_folder`` is consulted. Useful for "what
+    sessions originated here?" queries (the ``-s`` flag).
+
+    Match criteria (caller pre-builds these):
+      - ``exact_value``: path-equality match (e.g., ``"C:\\code\\amdead"``).
+        Skipped when ``None``.
+      - ``like_match``: SQL LIKE pattern (e.g., ``"C:\\code\\amdead\\%"`` for
+        descendants, or ``"C:\\code\\amdead%"`` for wildcard prefix). Skipped
+        when ``None``. Caller must pre-escape user-supplied ``%`` / ``_`` via
+        ``escape_like_value`` -- the helper applies ``ESCAPE '|'``.
+      - ``like_exclude``: SQL NOT LIKE pattern (e.g., for ``-D <pattern>*``,
+        excludes descendants). Skipped when ``None``.
+
+    Top-N gating:
+      - ``top_n=None`` -> no gate (every folder_usage entry is eligible).
+      - ``top_n=N`` -> only the top N most-used folder_usage entries per
+        session are eligible. start_folder is always eligible regardless.
+      - Has no effect when ``start_folder_only=True``.
+
+    Args:
+        conn: open SQLite connection.
+        exact_value: literal-equality path, or None.
+        like_match: LIKE pattern, or None.
+        like_exclude: NOT LIKE pattern, or None.
+        top_n: top-N gate for folder_usage matching, or None for no gate.
+        start_folder_only: when True, skip folder_usage match entirely.
+        limit: max sessions to return.
+
+    Raises:
+        ValueError: if both exact_value and like_match are None (no match
+            criteria; callers must specify at least one).
+    """
+    if exact_value is None and like_match is None:
+        raise ValueError(
+            "find_sessions_by_directory requires at least one of "
+            "exact_value or like_match"
+        )
+
+    def _build_match(field: str) -> tuple[str, list]:
+        parts: list[str] = []
+        params: list = []
+        if exact_value is not None:
+            parts.append(f"{field} = ? COLLATE NOCASE")
+            params.append(exact_value)
+        if like_match is not None:
+            if like_exclude is not None:
+                parts.append(
+                    f"({field} LIKE ? ESCAPE '|' COLLATE NOCASE "
+                    f"AND {field} NOT LIKE ? ESCAPE '|' COLLATE NOCASE)"
+                )
+                params.extend([like_match, like_exclude])
+            else:
+                parts.append(f"{field} LIKE ? ESCAPE '|' COLLATE NOCASE")
+                params.append(like_match)
+        return "(" + " OR ".join(parts) + ")", params
+
+    start_clause, start_params = _build_match("s.start_folder")
+
+    if start_folder_only:
+        # Skip folder_usage entirely -- match against start_folder only.
+        query = f"""
+            SELECT DISTINCT s.* FROM sessions s
+            WHERE s.deleted_at IS NULL
+              AND {start_clause}
+            ORDER BY s.last_active_at DESC
+            LIMIT ?
+        """
+        params = start_params + [limit]
+    else:
+        folder_clause, folder_params = _build_match("r.folder_path")
+
+        rnk_filter = ""
+        rnk_params: list = []
+        if top_n is not None:
+            rnk_filter = "AND r.rnk <= ?"
+            rnk_params = [top_n]
+
+        query = f"""
+            WITH ranked AS (
+                SELECT session_id, folder_path,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY session_id
+                           ORDER BY usage_count DESC, folder_path
+                       ) AS rnk
+                FROM folder_usage
+            )
+            SELECT DISTINCT s.* FROM sessions s
+            WHERE s.deleted_at IS NULL
+              AND (
+                {start_clause}
+                OR EXISTS (
+                    SELECT 1 FROM ranked r
+                    WHERE r.session_id = s.session_id
+                      {rnk_filter}
+                      AND {folder_clause}
+                )
+              )
+            ORDER BY s.last_active_at DESC
+            LIMIT ?
+        """
+
+        params = start_params + rnk_params + folder_params + [limit]
+    rows = conn.execute(query, params).fetchall()
+
+    results = []
+    for row in rows:
+        session = dict(row)
+        folders = conn.execute(
+            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "WHERE session_id = ? ORDER BY usage_count DESC",
+            (session["session_id"],),
+        ).fetchall()
+        session["folders"] = [dict(f) for f in folders]
+        results.append(session)
+
+    return results
+
+
 def find_sessions_by_folder_usage(conn: sqlite3.Connection, path_prefix: str,
                                    limit: int = 50) -> list[dict]:
     """

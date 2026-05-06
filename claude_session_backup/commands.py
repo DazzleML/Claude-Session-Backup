@@ -464,43 +464,231 @@ def cmd_resume(args) -> int:
         return 1
 
 
+def _resolve_directory_pattern(
+    pattern: str,
+    include_descendants: bool,
+    cwd: Path | None = None,
+) -> tuple[str, str | None, str | None, str | None]:
+    """
+    Resolve a user-supplied -d/-D PATTERN into SQL match criteria.
+
+    Args:
+        pattern: user input, e.g., ``"amdead"``, ``"amdead*"``, ``"C:\\code\\amdead"``.
+            Trailing ``*`` is the only wildcard supported in v1.
+        include_descendants: True for ``-d`` (folder + descendants), False for ``-D``.
+        cwd: cwd for resolving relative patterns. Defaults to ``Path.cwd()``.
+
+    Returns:
+        ``(resolved_path, exact_value, like_match, like_exclude)`` where:
+        - ``resolved_path``: human-readable absolute path for messages.
+            For wildcard patterns, this is the parent + the literal prefix
+            (with the wildcard stripped) -- not a real filesystem path.
+        - ``exact_value``: pass to ``find_sessions_by_directory`` (or None).
+        - ``like_match``: pass to ``find_sessions_by_directory`` (or None).
+        - ``like_exclude``: pass to ``find_sessions_by_directory`` (or None).
+    """
+    from .index import escape_like_value
+
+    if cwd is None:
+        cwd = Path.cwd()
+    cwd = Path(cwd)
+
+    has_wildcard = pattern.endswith("*")
+    bare = pattern[:-1] if has_wildcard else pattern
+
+    # Resolve to an absolute path against the provided cwd (NOT process cwd
+    # via .resolve(), so callers can control the resolution context for tests).
+    bare_path = Path(bare) if bare else Path("")
+    if bare_path.is_absolute():
+        full = str(bare_path)
+    else:
+        joined = (cwd / bare_path) if bare else cwd
+        full = str(joined)
+
+    escaped_full = escape_like_value(full)
+    sep = os.sep  # Platform separator
+
+    if has_wildcard:
+        if include_descendants:
+            # -d amdead*: any path starting with the prefix (siblings + descendants)
+            return full + "*", None, escaped_full + "%", None
+        # -D amdead*: paths starting with prefix BUT no separator after
+        return (
+            full + "*",
+            None,
+            escaped_full + "%",
+            escaped_full + "%" + sep + "%",
+        )
+
+    # No wildcard
+    if include_descendants:
+        # -d amdead: exact OR descendants
+        descendants_pattern = escaped_full + sep + "%"
+        return full, full, descendants_pattern, None
+    # -D amdead: exact only
+    return full, full, None, None
+
+
+def _maybe_promote_dot_prefix(term: str | None) -> tuple[str | None, str | None]:
+    """
+    Auto-promote a ``./`` / ``.\\`` prefixed positional into an implicit ``-d`` pattern.
+
+    Conventional shorthand: when a user types ``csb scan ./amdead`` or
+    ``csb scan .\\amdead``, they are clearly indicating a path -- not a
+    metadata search term. Same for a bare ``csb scan .`` (cwd).
+
+    Returns ``(remaining_term, promoted_pattern)``:
+      - If ``term`` had a path-prefix indicator -> promoted pattern (e.g.,
+        ``"amdead"``, or ``"."`` for bare-dot inputs); remaining_term is None.
+      - Otherwise -> term passes through; promoted_pattern is None.
+
+    The caller decides whether to honor the promotion (it should be
+    suppressed if the user already passed ``-d`` or ``-D`` explicitly).
+    """
+    if not term:
+        return term, None
+    if term in (".", "./", ".\\"):
+        return None, "."
+    if term.startswith("./") or term.startswith(".\\"):
+        return None, term[2:]
+    return term, None
+
+
 def cmd_scan(args) -> int:
-    """Find sessions whose project path matches the given directory."""
+    """Find sessions by term, location, or both."""
     from .scanner import scan_for_path
     from .metadata import extract_metadata
-    from .index import find_sessions_by_folder_usage
+    from .index import (
+        find_sessions_by_directory,
+        find_sessions_by_term,
+        escape_like_value,
+    )
 
     config = _get_config(args)
-    root = Path(args.path).resolve()
     quiet = getattr(args, "quiet", False)
     no_usage = getattr(args, "no_usage", False)
+    top_n = _resolve_top_folders(args, config)
 
-    if not quiet:
-        print(f"Scanning for sessions under {root}...\n")
+    # Resolve mode from argparse output
+    directories_below = getattr(args, "directories_below", None)
+    directory_only = getattr(args, "directory_only", None)
+    start_dir_only = getattr(args, "start_dir_only", None)
+    term = getattr(args, "term", None)
 
-    # Step 1: Prefix match on project folders (always)
-    sessions = scan_for_path(config["claude_dir"], str(root))
-    seen_ids = {sf.session_id for sf in sessions}
+    # Auto-promote ./ or .\ prefixed positional to implicit -d
+    # (only when -d/-D/-s are not already set explicitly).
+    if directories_below is None and directory_only is None and start_dir_only is None:
+        term, promoted = _maybe_promote_dot_prefix(term)
+        if promoted is not None:
+            directories_below = promoted
 
-    # Step 2: Also search folder_usage in the index (unless --no-usage / -NU)
-    usage_results = []
-    if not no_usage:
+    # Pattern + descendant flag (None pattern means: bare, treat as implicit "-d .")
+    pattern: str | None = directories_below or directory_only or start_dir_only
+    include_descendants = directory_only is None  # -D excludes descendants; -d/-s/bare include
+    sql_start_folder_only = start_dir_only is not None
+
+    is_path_mode = (pattern is not None) or (term is None)
+    is_term_only = (pattern is None) and (term is not None)
+
+    # ── Term-only mode: broad metadata search ──────────────────────
+    if is_term_only:
+        # Hint: if term coincides with a cwd subfolder, suggest -d
+        cwd_match = (Path.cwd() / term)
+        if cwd_match.is_dir():
+            print(
+                f"[info] '{term}' is also a folder under cwd. "
+                f"Use 'csb scan -d {term}' for path-strict search.",
+                file=sys.stderr,
+            )
+
         try:
             conn = open_db(config["index_path"])
             init_schema(conn)
-            usage_results = find_sessions_by_folder_usage(conn, str(root))
+            results = find_sessions_by_term(conn, term, top_n=top_n)
+            conn.close()
+        except Exception:
+            results = []
+
+        return _render_scan_results(
+            results, args, config,
+            scope_label=f"matching '{term}'",
+            quiet=quiet,
+        )
+
+    # ── Path-strict mode (or bare): -d / -D / no-args ──────────────
+    if pattern is None:
+        # Bare csb scan -> implicit -d .
+        pattern_input = "."
+        bare_mode = True
+    else:
+        pattern_input = pattern
+        bare_mode = False
+
+    resolved_path, exact_value, like_match, like_exclude = _resolve_directory_pattern(
+        pattern_input, include_descendants
+    )
+
+    # Validate that the resolved path exists (warning, not blocker)
+    has_wildcard = pattern_input.endswith("*")
+    if not has_wildcard:
+        if exact_value and not Path(exact_value).exists():
+            print(
+                f"[warning] '{pattern_input}' (resolved: {exact_value}) does not exist; "
+                f"falling back to broad-term search if a term was provided.",
+                file=sys.stderr,
+            )
+            if term is not None:
+                # Fall back to broad term search
+                try:
+                    conn = open_db(config["index_path"])
+                    init_schema(conn)
+                    results = find_sessions_by_term(conn, term, top_n=top_n)
+                    conn.close()
+                except Exception:
+                    results = []
+                return _render_scan_results(
+                    results, args, config,
+                    scope_label=f"matching '{term}'",
+                    quiet=quiet,
+                )
+            else:
+                # No fallback term -> empty result set
+                return _render_scan_results(
+                    [], args, config,
+                    scope_label=f"under {exact_value}",
+                    quiet=quiet,
+                )
+
+    # Step 1: Filesystem scan (only when pattern resolves to a concrete path).
+    # For wildcard patterns we skip the filesystem step -- scan_for_path doesn't
+    # speak wildcards. SQLite covers these via the LIKE pattern.
+    sessions_fs: list = []
+    if not has_wildcard and exact_value:
+        sessions_fs = scan_for_path(config["claude_dir"], exact_value)
+
+    # Step 2: SQLite directory match (unless -NU)
+    sql_results: list = []
+    if not no_usage and (exact_value is not None or like_match is not None):
+        try:
+            conn = open_db(config["index_path"])
+            init_schema(conn)
+            sql_results = find_sessions_by_directory(
+                conn, exact_value, like_match, like_exclude, top_n,
+                start_folder_only=sql_start_folder_only,
+            )
             conn.close()
         except Exception:
             pass  # Index may not exist yet -- graceful fallback
 
-    # Extract metadata from disk-scanned sessions
-    results = []
-    for sf in sessions:
+    # Merge: filesystem-scanned (with fresh metadata extraction) + SQLite-only
+    seen_ids: set[str] = set()
+    results: list = []
+
+    for sf in sessions_fs:
         try:
             meta = extract_metadata(sf.jsonl_path)
             meta.project = sf.project
-
-            entry = {
+            results.append({
                 "session_id": sf.session_id,
                 "session_name": meta.session_name,
                 "project": meta.project,
@@ -521,24 +709,58 @@ def cmd_scan(args) -> int:
                 ],
                 "jsonl_location": str(sf.jsonl_path),
                 "jsonl_mtime": sf.jsonl_mtime,
-            }
-            results.append(entry)
+            })
+            seen_ids.add(sf.session_id)
         except Exception:
             continue
 
-    # Merge in usage-matched sessions (from index, not disk)
-    for session in usage_results:
+    for session in sql_results:
         if session["session_id"] not in seen_ids:
             seen_ids.add(session["session_id"])
             results.append(session)
 
-    # Sort all results by last activity (most recent first)
+    # Combined mode: also filter by term within the path-scoped results
+    if term is not None:
+        term_lower = term.lower()
+        def _matches_term(s: dict) -> bool:
+            for field in ("session_name", "project", "start_folder"):
+                v = s.get(field) or ""
+                if term_lower in str(v).lower():
+                    return True
+            for f in s.get("folders") or []:
+                if term_lower in (f.get("folder_path") or "").lower():
+                    return True
+            return False
+        results = [s for s in results if _matches_term(s)]
+
+    # Build human-readable scope label
+    if bare_mode:
+        scope_label = f"under {resolved_path}"
+    elif has_wildcard:
+        scope_label = f"matching pattern {resolved_path}"
+        if term:
+            scope_label += f" filtered by '{term}'"
+    else:
+        scope_label = f"under {resolved_path}"
+        if term:
+            scope_label += f" filtered by '{term}'"
+
+    return _render_scan_results(results, args, config, scope_label=scope_label, quiet=quiet)
+
+
+def _render_scan_results(results, args, config, scope_label: str, quiet: bool) -> int:
+    """Sort, trim, and render scan results. Shared by all scan modes."""
+    no_usage = getattr(args, "no_usage", False)
+
+    if not quiet:
+        print(f"Scanning for sessions {scope_label}...\n")
+
+    # Sort by last activity (most recent first)
     results.sort(
         key=lambda s: s.get("last_user_at") or s.get("last_active_at") or "",
         reverse=True,
     )
 
-    # Trim to requested count
     total_found = len(results)
     results = results[:args.n]
 
@@ -551,7 +773,11 @@ def cmd_scan(args) -> int:
     cleanup_days = read_cleanup_period(config["claude_dir"])
     top_folders = _resolve_top_folders(args, config)
 
-    print(f"Found {total_found} session(s) under {root}" +
+    if args.__dict__.get("json"):  # not all parsers have --json yet for scan
+        print(json.dumps(results, indent=2, default=str))
+        return 0
+
+    print(f"Found {total_found} session(s) {scope_label}" +
           (f" (showing top {args.n}):" if total_found > args.n else ":"))
     print()
 

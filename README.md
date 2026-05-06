@@ -58,8 +58,15 @@ csb list [keyword]                    # Filter by keyword in name/project/folder
 csb list --sort expiration            # Sort by soonest-to-purge first
 csb list --sort {last-used|expiration|started|oldest|messages|size}
 csb list --deleted                    # Show deleted sessions
-csb scan [path]                       # Find sessions touching this directory
-csb scan [path] -NU                   # Prefix-only match (skip folder-usage search)
+csb scan                              # Find sessions touching cwd (path-prefix)
+csb scan <term>                       # Filter by term: name, project, folder paths
+csb scan ./<dirname>                  # Shortcut: same as -d <dirname> (no flag to remember)
+csb scan -d <pattern>                 # Path-strict: folder + descendants
+csb scan -D <pattern>                 # Path-strict: this folder only, no descendants
+csb scan -s <pattern>                 # start_folder only ("what sessions originated here?")
+csb scan -d <pattern> <term>          # Scope-then-filter combined
+csb scan -d <pattern>* / -D <pattern>* / -s <pattern>*  # Trailing-* wildcard
+csb scan ... -NU                      # Skip folder-usage search (start_folder only)
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
 csb search "query"                    # Search by session name, project, or folder

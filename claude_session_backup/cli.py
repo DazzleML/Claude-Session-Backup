@@ -181,20 +181,56 @@ def build_parser():
     p_resume.add_argument("session_id", help="Session ID (prefix match supported)")
 
     # scan
-    p_scan = sub.add_parser("scan", help="Find sessions in current directory and children")
+    p_scan = sub.add_parser(
+        "scan",
+        help="Find sessions by term, location, or both",
+        description=(
+            "Find sessions by term, location, or both.\n\n"
+            "  csb scan                  cwd path-prefix (today's default)\n"
+            "  csb scan <term>           broad metadata substring (name, project, folder paths)\n"
+            "  csb scan ./dirname        shortcut: same as -d dirname (no flag to remember)\n"
+            "  csb scan -d <pattern>     path-strict: folder + descendants (start_folder OR top-N folder_usage)\n"
+            "  csb scan -D <pattern>     path-strict: this folder only (no descendants)\n"
+            "  csb scan -s <pattern>     start_folder only: 'what sessions originated here?' (skips folder_usage)\n"
+            "  csb scan -d|-D|-s <pat> <term>   scope-then-filter combined\n\n"
+            "Patterns accept a trailing '*' for sibling-prefix expansion (amdead* matches amdead, amdead-fork, ...)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _add_common_flags(p_scan)
-    p_scan.add_argument("path", nargs="?", default=".", help="Root path to scan (default: current directory)")
+    p_scan.add_argument(
+        "term", nargs="?", default=None,
+        help="Filter sessions whose name, project, or folder paths contain term (case-insensitive)",
+    )
     p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
-    p_scan.add_argument("--no-usage", "-NU", action="store_true",
-                        help="Only match by project start folder, skip folder usage search")
+    p_scan.add_argument(
+        "--no-usage", "-NU", action="store_true",
+        help="Skip folder_usage match; only consider session start_folder",
+    )
+    # -d / -D / -s mutually exclusive: path-strict modes
+    p_scan_dir = p_scan.add_mutually_exclusive_group()
+    p_scan_dir.add_argument(
+        "-d", "--directories-below", metavar="PATTERN", default=None,
+        help="Path-strict: match this folder + its descendants. Trailing '*' for sibling-prefix.",
+    )
+    p_scan_dir.add_argument(
+        "-D", "--directory-only", metavar="PATTERN", default=None,
+        help="Path-strict: match this folder only, no descendants. Trailing '*' for sibling-prefix.",
+    )
+    p_scan_dir.add_argument(
+        "-s", "--start-dir-only", metavar="PATTERN", default=None,
+        help="Path-strict: only match sessions whose start_folder is this folder + descendants. "
+             "Skips folder_usage entirely. Useful for 'what sessions originated from here?'",
+    )
+    # --top / --all-folders mutually exclusive: display + folder_usage matching gate
     p_scan_folders = p_scan.add_mutually_exclusive_group()
     p_scan_folders.add_argument(
         "--top", type=int, metavar="N", default=None,
-        help="Show top N other folders per session (default: 3). Use --all-folders for everything.",
+        help="Show top N other folders per session (default: 3). Also gates -d/-D folder_usage matching.",
     )
     p_scan_folders.add_argument(
         "--all-folders", action="store_true",
-        help="Show every tracked folder per session (no cap).",
+        help="Show every tracked folder per session (no cap). Also removes top-N gate from -d/-D matching.",
     )
 
     # search
