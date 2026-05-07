@@ -232,3 +232,273 @@ def test_derive_start_at_real_drive_root():
     fake_jsonl = "C:\\Users\\Extreme\\.claude\\projects\\C--\\fake-uuid.jsonl"
     result = derive_start_at(fake_jsonl)
     assert result == "C:\\"
+
+
+# ── Multi-candidate disambiguation (#23) ──────────────────────────────
+#
+# `_collect_candidates` and `_disambiguate` are new helpers that surface ALL
+# real filesystem decodings of an ambiguous slug, then pick a winner using
+# JSONL signals (first_cwd, folder_usage). When the slug is unambiguous (a
+# single decoding resolves), behavior matches #19. When ambiguous, the
+# Tier 1 -> Tier 2 -> Tier 3 fallback chain disambiguates.
+
+from claude_session_backup import pathkit as _pathkit
+
+
+@pytest.fixture
+def ambiguous_fs(tmp_path):
+    """
+    Filesystem state where slug `code-New--Project` has TWO real decodings:
+
+      <tmp_path>/code/New--Project          (literal `--`)
+      <tmp_path>/code/New/.Project          (separator + dotfile)
+
+    Both sanitize to `code-New--Project`. Tests use this to exercise
+    multi-candidate disambiguation paths.
+    """
+    code_dir = tmp_path / "code"
+    code_dir.mkdir()
+    literal = code_dir / "New--Project"
+    literal.mkdir()
+    (literal / "marker_literal").write_text("L")
+    nested_parent = code_dir / "New"
+    nested_parent.mkdir()
+    nested = nested_parent / ".Project"
+    nested.mkdir()
+    (nested / "marker_nested").write_text("N")
+
+    class _NS:
+        pass
+    ns = _NS()
+    ns.root = str(tmp_path)
+    ns.code = str(code_dir)
+    ns.literal = str(literal)
+    ns.nested = str(nested)
+    ns.nested_parent = str(nested_parent)
+    return ns
+
+
+# -- _collect_candidates --
+
+def test_collect_candidates_returns_both_for_ambiguous_slug(ambiguous_fs):
+    """`_collect_candidates` returns ALL real folders that decode validly."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    assert sorted(candidates) == sorted([ambiguous_fs.literal, ambiguous_fs.nested])
+
+
+def test_collect_candidates_single_for_unambiguous(tmp_path):
+    """When only one decoding exists on disk, returns a one-element list."""
+    code = tmp_path / "code"
+    code.mkdir()
+    only = code / "amdead"
+    only.mkdir()
+    candidates = _pathkit._collect_candidates(str(code), "amdead")
+    assert candidates == [str(only)]
+
+
+def test_collect_candidates_empty_when_no_match(tmp_path):
+    """When no entry matches, returns empty list."""
+    code = tmp_path / "code"
+    code.mkdir()
+    (code / "different").mkdir()
+    candidates = _pathkit._collect_candidates(str(code), "amdead")
+    assert candidates == []
+
+
+def test_collect_candidates_nonexistent_parent(tmp_path):
+    """Non-existent parent returns empty list (defensive)."""
+    candidates = _pathkit._collect_candidates(str(tmp_path / "nope"), "x")
+    assert candidates == []
+
+
+# -- Tier 1: first_cwd matches one candidate --
+
+def test_tier1_first_cwd_exact_match_picks_that_candidate(ambiguous_fs):
+    """If first_cwd equals one candidate exactly, that candidate wins."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(
+        candidates,
+        first_cwd=ambiguous_fs.literal,
+        folder_usage=None,
+    )
+    assert chosen == ambiguous_fs.literal
+
+
+def test_tier1_first_cwd_subdirectory_match_picks_ancestor(ambiguous_fs):
+    """If first_cwd is a SUBDIRECTORY of one candidate, that candidate wins (prefix match)."""
+    deep = os.path.join(ambiguous_fs.literal, "deep", "subdir")
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(candidates, first_cwd=deep, folder_usage=None)
+    assert chosen == ambiguous_fs.literal
+
+
+def test_tier1_first_cwd_picks_other_direction(ambiguous_fs):
+    """Tier 1 must work in the OTHER direction too (nested candidate wins)."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(
+        candidates,
+        first_cwd=ambiguous_fs.nested,
+        folder_usage=None,
+    )
+    assert chosen == ambiguous_fs.nested
+
+
+def test_tier1_first_cwd_no_match_falls_through(ambiguous_fs):
+    """If first_cwd matches NEITHER candidate, fall through to Tier 2/3."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(
+        candidates,
+        first_cwd="/completely/unrelated/path",
+        folder_usage=None,
+    )
+    # Tier 3: encoded-length heuristic. Literal `New--Project` (encoded len 13)
+    # beats `New` (encoded len 3) for the first dir-walk step.
+    assert chosen == ambiguous_fs.literal
+
+
+# -- Tier 2: folder_usage histogram --
+
+def test_tier2_folder_usage_picks_highest_count(ambiguous_fs):
+    """When first_cwd misses, the candidate with the highest folder_usage sum wins."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(
+        candidates,
+        first_cwd=None,
+        folder_usage={ambiguous_fs.nested: 10, ambiguous_fs.literal: 50},
+    )
+    assert chosen == ambiguous_fs.literal
+
+
+def test_tier2_folder_usage_includes_subdirectory_counts(ambiguous_fs):
+    """folder_usage entries that are subdirectories of a candidate count toward that candidate."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    nested_subdir = os.path.join(ambiguous_fs.nested, "deeper")
+    chosen = _pathkit._disambiguate(
+        candidates,
+        first_cwd=None,
+        folder_usage={
+            ambiguous_fs.literal: 5,
+            ambiguous_fs.nested: 20,
+            nested_subdir: 100,  # rolls up to nested
+        },
+    )
+    assert chosen == ambiguous_fs.nested
+
+
+def test_tier2_no_matching_folder_usage_falls_through(ambiguous_fs):
+    """If folder_usage has no entries matching either candidate, fall through to Tier 3."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(
+        candidates,
+        first_cwd=None,
+        folder_usage={"/totally/unrelated": 100},
+    )
+    assert chosen == ambiguous_fs.literal  # Tier 3 fallback
+
+
+# -- Tier 3: encoded-length heuristic (no JSONL signals) --
+
+def test_tier3_no_signals_uses_encoded_length(ambiguous_fs):
+    """No first_cwd, no folder_usage -> encoded-length heuristic picks longest match."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    chosen = _pathkit._disambiguate(candidates, first_cwd=None, folder_usage=None)
+    assert chosen == ambiguous_fs.literal
+
+
+def test_tier3_single_candidate_short_circuits(tmp_path):
+    """Single-candidate list returns directly without consulting JSONL info."""
+    code = tmp_path / "code"
+    code.mkdir()
+    only = code / "amdead"
+    only.mkdir()
+    candidates = _pathkit._collect_candidates(str(code), "amdead")
+    chosen = _pathkit._disambiguate(candidates, first_cwd=None, folder_usage=None)
+    assert chosen == str(only)
+
+
+def test_disambiguate_empty_candidates_returns_none():
+    assert _pathkit._disambiguate([], first_cwd=None, folder_usage=None) is None
+
+
+# -- Path-comparison normalization --
+
+def test_path_matches_case_insensitive_on_windows(ambiguous_fs):
+    """Windows paths compare case-insensitively (POSIX is strict; skip there)."""
+    if os.name != "nt":
+        pytest.skip("case-insensitivity is Windows-specific")
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    upper = ambiguous_fs.literal.upper()
+    chosen = _pathkit._disambiguate(candidates, first_cwd=upper, folder_usage=None)
+    assert chosen == ambiguous_fs.literal
+
+
+def test_path_matches_mixed_separators(ambiguous_fs):
+    """Forward and backward slashes compare equal after normalization."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    forward = ambiguous_fs.literal.replace(os.sep, "/")
+    chosen = _pathkit._disambiguate(candidates, first_cwd=forward, folder_usage=None)
+    assert chosen == ambiguous_fs.literal
+
+
+def test_path_matches_trailing_separator(ambiguous_fs):
+    """Trailing slashes don't break equality."""
+    candidates = _pathkit._collect_candidates(ambiguous_fs.code, "New--Project")
+    with_trail = ambiguous_fs.literal + os.sep
+    chosen = _pathkit._disambiguate(candidates, first_cwd=with_trail, folder_usage=None)
+    assert chosen == ambiguous_fs.literal
+
+
+# -- decode_project_slug + derive_start_at: signature compat with new kwargs --
+
+def test_decode_project_slug_accepts_new_kwargs():
+    """decode_project_slug must accept first_cwd and folder_usage as keyword args."""
+    result = decode_project_slug(
+        "ZZZZZ-not-a-real-slug",
+        first_cwd="/fake",
+        folder_usage={"/fake": 1},
+    )
+    assert result is None
+
+
+def test_derive_start_at_accepts_new_kwargs(tmp_path):
+    """derive_start_at must accept first_cwd and folder_usage as keyword args."""
+    slug_dir = tmp_path / "Z--zzzz-fake"
+    slug_dir.mkdir()
+    jsonl = slug_dir / "abcd.jsonl"
+    jsonl.write_text("")
+    result = derive_start_at(
+        str(jsonl),
+        first_cwd="/somewhere",
+        folder_usage={"/somewhere": 5},
+    )
+    # Z:\ unlikely to exist; expect <unresolved:> sentinel
+    assert isinstance(result, str)
+    assert result.startswith("<unresolved:") or result == "<no-slug>"
+
+
+def test_derive_start_at_no_kwargs_preserves_existing_behavior(tmp_path):
+    """Calling without new kwargs works exactly as before -- backward compat."""
+    slug_dir = tmp_path / "Z--zzzz-fake"
+    slug_dir.mkdir()
+    jsonl = slug_dir / "abcd.jsonl"
+    jsonl.write_text("")
+    result = derive_start_at(str(jsonl))
+    assert isinstance(result, str)
+
+
+# -- End-to-end: decode_project_slug uses Tier 1 when called with first_cwd --
+#
+# These tests skip on POSIX because decode_project_slug is hard-wired to drive-letter
+# slugs (Claude Code's Windows-specific convention). The disambiguation logic is fully
+# exercised by the unit tests above against tmp_path; these end-to-end tests are
+# additional smoke coverage on Windows.
+
+@pytest.mark.skipif(os.name != "nt", reason="decode_project_slug is Windows-specific")
+def test_e2e_drive_root_with_first_cwd_argument():
+    """Passing first_cwd to decode_project_slug doesn't break the unambiguous case."""
+    result = decode_project_slug(
+        "C--",
+        first_cwd="C:\\Users\\Extreme",
+        folder_usage={"C:\\Users\\Extreme": 100},
+    )
+    assert result == "C:\\"

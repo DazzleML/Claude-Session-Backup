@@ -200,7 +200,14 @@ def build_parser():
     _add_common_flags(p_scan)
     p_scan.add_argument(
         "term", nargs="?", default=None,
-        help="Filter sessions whose name, project, or folder paths contain term (case-insensitive)",
+        help="Filter sessions whose name, project, or folder paths contain term (case-insensitive). "
+             "If this starts with `./` or `.\\` (or is a bare `.`), it's auto-promoted to implicit -d.",
+    )
+    p_scan.add_argument(
+        "term2", nargs="?", default=None,
+        help="Optional second positional. Only valid when the first positional is a "
+             "`./dirname` / `.\\dirname` shortcut -- in that case `term2` is the actual term "
+             "filter (equivalent to `csb scan -d dirname term2`). Otherwise rejected.",
     )
     p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
     p_scan.add_argument(

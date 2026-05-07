@@ -26,13 +26,20 @@ def _resolve_start_at(session: dict) -> str:
     Derive the "start at" value to display.
 
     Prefers slug-decoded cwd from the JSONL path (the cwd that lets
-    ``claude --resume <uuid>`` find the file). Falls back to the legacy
-    ``start_folder`` field for sessions whose dict lacks ``jsonl_path``
-    (test fixtures, manual call sites).
+    ``claude --resume <uuid>`` find the file). When the slug decodes to
+    multiple real folders, ``start_folder`` (= ``first_cwd``) and the
+    ``folders`` histogram are passed to pathkit for disambiguation
+    (Tier 1 / Tier 2 / Tier 3 fallback per #23).
+
+    Falls back to the legacy ``start_folder`` field for sessions whose
+    dict lacks ``jsonl_path`` (test fixtures, manual call sites).
     """
     jsonl_path = session.get("jsonl_path")
     if jsonl_path:
-        return derive_start_at(jsonl_path)
+        first_cwd = session.get("start_folder")
+        folders = session.get("folders") or []
+        folder_usage = {f["folder_path"]: f.get("usage_count", 0) for f in folders}
+        return derive_start_at(jsonl_path, first_cwd=first_cwd, folder_usage=folder_usage)
     return session.get("start_folder") or "(unknown)"
 
 

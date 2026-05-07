@@ -433,6 +433,8 @@ def cmd_config(args) -> int:
 
 def cmd_resume(args) -> int:
     """Launch claude --resume with the full session UUID."""
+    from .pathkit import derive_start_at
+
     config = _get_config(args)
     conn = open_db(config["index_path"])
     init_schema(conn)
@@ -445,22 +447,67 @@ def cmd_resume(args) -> int:
         return 1
 
     full_id = session["session_id"]
-    start_folder = session.get("start_folder")
     name = session.get("session_name") or "(unnamed)"
+
+    # Resolve cd target via pathkit (slug-decoded path = the only cwd whose
+    # slug matches the JSONL's parent directory; per the upstream-source audit,
+    # that's the only cwd from which `claude --resume <uuid>` will find the
+    # file). Falls back to start_folder for sessions without a jsonl_path
+    # (e.g., legacy index rows pre-#19).
+    target = None
+    jsonl_path = session.get("jsonl_path")
+    if jsonl_path:
+        first_cwd = session.get("start_folder")
+        folders = session.get("folders") or []
+        folder_usage = {f["folder_path"]: f.get("usage_count", 0) for f in folders}
+        decoded = derive_start_at(jsonl_path, first_cwd=first_cwd, folder_usage=folder_usage)
+        if decoded and not decoded.startswith("<"):
+            target = decoded
+    if target is None:
+        target = session.get("start_folder")
 
     print(f"Resuming: {name}")
     print(f"  ID: {full_id}")
-    if start_folder:
-        print(f"  cd {start_folder}")
+    if target:
+        print(f"  cd {target}")
     print(f"  claude --resume {full_id}")
     print()
 
-    # Execute claude --resume (replaces this process)
+    # Launch claude --resume as a child process. We use subprocess.run with
+    # cwd=target rather than os.chdir + os.execvp because Python's os.execvp
+    # on Windows is _spawnv(P_OVERLAY, ...) -- the parent process exits and
+    # spawns a child, but the controlling-TTY relationship doesn't transfer
+    # cleanly. Symptom: claude TUI renders to stdout but stdin keystrokes
+    # don't reach claude (they go into the void). subprocess.run inherits
+    # the parent's stdin/stdout/stderr handles, which are still attached to
+    # the user's terminal, so the TUI works correctly.
+    #
+    # Trade-off: the python process stays alive in memory while claude
+    # runs (~30MB cost). When claude exits, its return code propagates.
+    import subprocess
     try:
-        os.execvp("claude", ["claude", "--resume", full_id])
-    except FileNotFoundError:
+        result = subprocess.run(
+            ["claude", "--resume", full_id],
+            cwd=target if target else None,
+            check=False,
+        )
+        return result.returncode
+    except FileNotFoundError as e:
+        # FileNotFoundError can fire from two places:
+        #   (a) the cwd= path doesn't exist (target folder deleted)
+        #   (b) the `claude` binary isn't in PATH
+        # Disambiguate by checking whether the target itself is the issue.
+        if target and not os.path.isdir(target):
+            print(f"Error: cannot cd to {target}: {e}", file=sys.stderr)
+            print("The folder may have been deleted. Run manually:", file=sys.stderr)
+            print(f"  cd <correct-folder> && claude --resume {full_id}", file=sys.stderr)
+            return 1
         print("Error: 'claude' command not found in PATH.", file=sys.stderr)
         print(f"Run manually: claude --resume {full_id}", file=sys.stderr)
+        return 1
+    except NotADirectoryError as e:
+        # Edge case: target exists but isn't a directory (file with same name).
+        print(f"Error: cannot cd to {target}: {e}", file=sys.stderr)
         return 1
 
 
@@ -574,6 +621,24 @@ def cmd_scan(args) -> int:
     directory_only = getattr(args, "directory_only", None)
     start_dir_only = getattr(args, "start_dir_only", None)
     term = getattr(args, "term", None)
+    term2 = getattr(args, "term2", None)
+
+    # Two positionals are only valid when the FIRST is a `./` / `.\` / `.` shortcut.
+    # In that case the second positional is the actual term filter (equivalent to
+    # `csb scan -d <dirname> <term>`). Otherwise we reject -- a bare two-positional
+    # form like `csb scan amdead my-paper` is ambiguous.
+    if term2 is not None:
+        first_is_dot_prefix = term in (".", "./", ".\\") or (
+            term and (term.startswith("./") or term.startswith(".\\"))
+        )
+        if not first_is_dot_prefix:
+            print(
+                "Error: too many positional arguments. The two-positional form requires the "
+                "first to be `./<dir>`, `.\\<dir>`, or bare `.` -- otherwise use "
+                "`csb scan -d <dir> <term>` for the explicit form.",
+                file=sys.stderr,
+            )
+            return 2
 
     # Auto-promote ./ or .\ prefixed positional to implicit -d
     # (only when -d/-D/-s are not already set explicitly).
@@ -581,6 +646,10 @@ def cmd_scan(args) -> int:
         term, promoted = _maybe_promote_dot_prefix(term)
         if promoted is not None:
             directories_below = promoted
+            # If the user gave two positionals (dot-prefix + term), the SECOND is
+            # the actual term filter to apply within the path-strict scope.
+            if term2 is not None:
+                term = term2
 
     # Pattern + descendant flag (None pattern means: bare, treat as implicit "-d .")
     pattern: str | None = directories_below or directory_only or start_dir_only

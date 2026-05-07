@@ -24,6 +24,14 @@ function, not from JSONL content. See GH issue
 https://github.com/DazzleML/Claude-Session-Backup/issues/19 for the full
 rationale.
 
+Multi-candidate disambiguation (#23): when a slug has more than one valid
+on-disk decoding (e.g., a literal ``New--Project`` folder AND a sibling
+``New\.Project`` folder), ``decode_project_slug(slug, first_cwd, folder_usage)``
+picks the right one via a three-tier fallback (see the function docstring).
+Callers without JSONL signals (``first_cwd=None, folder_usage=None``) get the
+encoded-length heuristic -- preserving the original #19 behavior for which
+``_decode_under`` is now a thin wrapper.
+
 Known corner cases NOT yet handled (will return ``None`` rather than wrong):
   * Long slugs (>200 sanitized chars). Upstream truncates to a 200-char
     prefix + ``-`` + hash (``Bun.hash`` in CLI, ``djb2`` in Node SDK).
@@ -65,68 +73,149 @@ def sanitize_path(name: str) -> str:
     return _NON_ALNUM.sub("-", name)
 
 
-def _decode_under(parent_dir: str, remaining: str) -> Optional[str]:
+def _normalize_path(p: str) -> str:
     """
-    Find a path under ``parent_dir`` whose sanitized-relative-form equals
-    ``remaining``. Returns the absolute path or ``None``.
+    Normalize a path for case/separator/trailing-slash-tolerant comparison.
 
-    The slug encoding is lossy: every non-alphanumeric character (path
-    separator, ``:``, ``.``, ``-``, space, ...) collapses to ``-``. So a single
-    ``-`` in the slug has multiple candidate decodings:
+    Uses stdlib helpers: ``os.path.normcase`` (case-fold on Windows, identity
+    on POSIX) + ``os.path.normpath`` (collapse separators, drop trailing
+    separator, eliminate ``..``). Does NOT resolve symlinks (no I/O).
 
-        ``New-Project``    <- sanitize("New-Project") = "New-Project"  (literal hyphen)
-        ``New-Project``    <- sanitize("New.Project") = "New-Project"  (literal dot)
-        ``New-Project``    <- sanitize("New Project") = "New-Project"  (space)
+    A ``dazzle_filekit.paths.normalize_path_no_resolve``-style helper would
+    be a drop-in replacement here when that consolidation pass happens.
+    """
+    return os.path.normcase(os.path.normpath(p))
 
-    And a ``--`` can decode as any pair of those, e.g.
 
-        ``New--Project``   <- "New--Project"   (literal double-hyphen)
-        ``New--Project``   <- "New\\.Project"  (separator + dotfile)
-        ``New--Project``   <- "New-\\Project"  (trailing hyphen + separator)
+def _path_matches(p1: str, p2: str) -> bool:
+    """
+    True if ``p1`` equals ``p2`` exactly, OR ``p1`` is a descendant of ``p2``
+    (``p1`` starts with ``p2`` followed by a separator). Both sides are
+    normalized for case + separator + trailing-slash insensitivity.
+    """
+    if not p1 or not p2:
+        return False
+    n1 = _normalize_path(p1)
+    n2 = _normalize_path(p2)
+    if n1 == n2:
+        return True
+    return n1.startswith(n2 + os.sep)
 
-    Disambiguation is purely contextual: enumerate actual filesystem entries
-    under ``parent_dir`` and accept any entry whose ``sanitize_path`` form is
-    a prefix of ``remaining``. If the remainder after that prefix is empty,
-    we have a full match. If it begins with ``-`` (consume one as the
-    next-level separator) we recurse. Longer-encoded entries are tried first
-    so a literal ``New--Project`` folder beats the alternative ``New`` +
-    nested ``.Project`` decoding when both exist.
+
+def _collect_candidates(parent_dir: str, remaining: str) -> list[str]:
+    """
+    Find ALL paths under ``parent_dir`` whose sanitized-relative-form equals
+    ``remaining``. Returns a list ordered by encoded-length descending (so the
+    Tier 3 fallback in ``_disambiguate`` can pick the most-literal match by
+    taking ``[0]``).
+
+    See ``_decode_under`` for the slug-decoding semantics. The difference
+    here: ``_collect_candidates`` does NOT short-circuit on the first match;
+    it walks all eligible filesystem entries and accumulates every valid
+    decoding. Empty list if no decoding resolves on disk.
     """
     if not remaining:
-        return parent_dir if os.path.isdir(parent_dir) else None
+        return [parent_dir] if os.path.isdir(parent_dir) else []
     if not os.path.isdir(parent_dir):
-        return None
+        return []
 
     try:
         entries = os.listdir(parent_dir)
     except (OSError, PermissionError):
-        return None
+        return []
 
-    # Sort by encoded-length descending so the most-literal interpretation
-    # wins when the slug is ambiguous between a single longer name and a
-    # shorter name plus subpath.
     encoded_entries = [(entry, sanitize_path(entry)) for entry in entries]
     encoded_entries.sort(key=lambda pair: len(pair[1]), reverse=True)
 
+    found: list[str] = []
     for entry, encoded in encoded_entries:
         if not remaining.startswith(encoded):
             continue
         rest = remaining[len(encoded):]
         child = os.path.join(parent_dir, entry)
         if not rest:
-            return child
+            if os.path.isdir(child):
+                found.append(child)
+            continue
         if rest.startswith("-"):
-            # The dash represents the path separator between this entry
-            # and the next level. Consume it and recurse.
-            sub = _decode_under(child, rest[1:])
-            if sub is not None:
-                return sub
-        # Otherwise: encoded was a prefix but next char isn't `-` -- the
-        # match doesn't extend cleanly into a sub-path. Try the next entry.
-    return None
+            found.extend(_collect_candidates(child, rest[1:]))
+    return found
 
 
-def decode_project_slug(slug: str) -> Optional[str]:
+def _disambiguate(
+    candidates: list[str],
+    first_cwd: Optional[str] = None,
+    folder_usage: Optional[dict] = None,
+) -> Optional[str]:
+    """
+    Pick the right candidate from a list of slug-decoded paths using JSONL signals.
+
+    Three-tier fallback:
+      Tier 1 (definitive, O(N)): if ``first_cwd`` matches any candidate
+        (exact or prefix-with-separator after normalization), return that
+        candidate. This is the canonical "session-open cwd" answer.
+      Tier 2 (full histogram, O(N * M) where M = len(folder_usage)):
+        if no candidate matches ``first_cwd`` but ``folder_usage`` is
+        provided, find the candidate with the highest sum of matching
+        cwd-counts (exact + prefix). Return that candidate.
+      Tier 3 (no signal): fall back to ``candidates[0]``, which is the
+        encoded-length-longest match per ``_collect_candidates``'s sort.
+        Preserves #19's first-match behavior for callers without JSONL info.
+
+    Empty ``candidates`` -> ``None``. Single-candidate -> that candidate
+    (Tiers 1/2 are skipped; performance equivalent to #19 for the
+    unambiguous case).
+    """
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Tier 1: first_cwd match
+    if first_cwd:
+        for c in candidates:
+            if _path_matches(first_cwd, c):
+                return c
+
+    # Tier 2: folder_usage sum
+    if folder_usage:
+        best_candidate = None
+        best_score = 0
+        for c in candidates:
+            score = sum(
+                count for path, count in folder_usage.items()
+                if _path_matches(path, c)
+            )
+            if score > best_score:
+                best_score = score
+                best_candidate = c
+        if best_candidate is not None:
+            return best_candidate
+
+    # Tier 3: encoded-length heuristic (candidates already sorted)
+    return candidates[0]
+
+
+def _decode_under(parent_dir: str, remaining: str) -> Optional[str]:
+    """
+    Find a path under ``parent_dir`` whose sanitized-relative-form equals
+    ``remaining``. Returns the absolute path or ``None``.
+
+    Backward-compatible wrapper: collects all candidates and returns the
+    encoded-length-longest one (Tier 3 behavior). Callers that have JSONL
+    signals should call ``_collect_candidates`` + ``_disambiguate`` directly.
+
+    See ``_collect_candidates`` for the slug-decoding semantics.
+    """
+    candidates = _collect_candidates(parent_dir, remaining)
+    return _disambiguate(candidates, first_cwd=None, folder_usage=None)
+
+
+def decode_project_slug(
+    slug: str,
+    first_cwd: Optional[str] = None,
+    folder_usage: Optional[dict] = None,
+) -> Optional[str]:
     """
     Reverse Claude Code's ``sanitizePath`` for a project-dir slug.
 
@@ -140,6 +229,16 @@ def decode_project_slug(slug: str) -> Optional[str]:
         ``C--code-New--Project``     -> ``C:\\code\\New--Project`` if it exists,
                                         else ``C:\\code\\New\\.Project`` if THAT
                                         exists. Filesystem disambiguates.
+
+    Args:
+        slug: project-dir slug (e.g., ``C--code-amdead``).
+        first_cwd: optional cwd from the JSONL's first event. When the slug
+            decodes to multiple real folders, this is the Tier 1 oracle for
+            picking the right one. Set to ``None`` for unambiguous slugs or
+            callers without JSONL access.
+        folder_usage: optional dict mapping cwd-paths to event counts (the
+            JSONL's full cwd histogram). Used for Tier 2 disambiguation when
+            ``first_cwd`` doesn't match any candidate.
 
     Returns:
         - The decoded cwd (string) if a candidate resolves on disk.
@@ -161,18 +260,29 @@ def decode_project_slug(slug: str) -> Optional[str]:
     if not rest:
         return drive_root if os.path.exists(drive_root) else None
 
-    return _decode_under(drive_root, rest)
+    candidates = _collect_candidates(drive_root, rest)
+    return _disambiguate(candidates, first_cwd=first_cwd, folder_usage=folder_usage)
 
 
-def derive_start_at(jsonl_path: Union[str, Path]) -> str:
+def derive_start_at(
+    jsonl_path: Union[str, Path],
+    first_cwd: Optional[str] = None,
+    folder_usage: Optional[dict] = None,
+) -> str:
     """
     Compute the cwd from which ``claude --resume <uuid>`` will find this JSONL.
 
     Walks up to the JSONL's parent directory (the project-dir slug) and
-    reverses Claude Code's encoding via filesystem-validated candidate decoding.
+    reverses Claude Code's encoding via filesystem-validated candidate
+    decoding. When the slug decodes to multiple real folders, the ``first_cwd``
+    and ``folder_usage`` arguments disambiguate via ``decode_project_slug``'s
+    Tier 1/2/3 fallback chain.
 
     Args:
         jsonl_path: Absolute or relative path to the session JSONL file.
+        first_cwd: cwd from the JSONL's first event (Tier 1 oracle). Optional.
+        folder_usage: full cwd histogram from the JSONL (Tier 2 oracle).
+            Optional. Pass when available to handle ambiguous slugs robustly.
 
     Returns:
         - The decoded cwd if filesystem validation succeeds.
@@ -191,7 +301,7 @@ def derive_start_at(jsonl_path: Union[str, Path]) -> str:
     slug = p.parent.name
     if not slug:
         return "<no-slug>"
-    decoded = decode_project_slug(slug)
+    decoded = decode_project_slug(slug, first_cwd=first_cwd, folder_usage=folder_usage)
     if decoded is not None:
         return decoded
     return f"<unresolved:{slug}>"

@@ -7,12 +7,16 @@ human test checklist at ``tests/checklists/v0.2.3__Feature__csb-scan-disambiguat
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
+import claude_session_backup.commands as commands_module
 from claude_session_backup.commands import (
     _resolve_directory_pattern,
     _maybe_promote_dot_prefix,
+    cmd_resume,
 )
 
 
@@ -238,3 +242,258 @@ def test_promote_handles_empty():
     term, promoted = _maybe_promote_dot_prefix("")
     assert term == ""
     assert promoted is None
+
+
+# ── cmd_resume: subprocess-based launch (#24) ─────────────────────────
+#
+# cmd_resume must launch `claude --resume <uuid>` with cwd set to the
+# slug-decoded path so that claude finds the JSONL. We use subprocess.run
+# (not os.execvp) because Python's os.execvp on Windows is _spawnv with
+# P_OVERLAY -- the parent exits and a child spawns, but the controlling
+# TTY relationship doesn't transfer cleanly (claude TUI renders but stdin
+# keystrokes go into the void). subprocess.run inherits the parent's
+# stdin/stdout/stderr handles so the TUI works.
+#
+# Path resolution: target is derived from pathkit.derive_start_at (slug-
+# decoded path) when the session row has jsonl_path, else falls back to
+# session['start_folder'] for legacy rows.
+
+
+@pytest.fixture
+def mock_resume_env(monkeypatch):
+    """Set up cmd_resume's environment with mocks for subprocess and DB access."""
+    # subprocess.run is imported INSIDE cmd_resume (`import subprocess`), so
+    # patch the subprocess module attribute directly -- the inline import
+    # picks up the patched version.
+    import subprocess as subprocess_module
+    run_mock = MagicMock(return_value=SimpleNamespace(returncode=0))
+    monkeypatch.setattr(subprocess_module, "run", run_mock)
+
+    # Mock DB layer so the test doesn't need a real SQLite file.
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+
+    return SimpleNamespace(run=run_mock)
+
+
+def _make_args(session_id="abcd1234", **kwargs):
+    """Build a fake argparse namespace for cmd_resume."""
+    defaults = {"session_id": session_id, "claude_dir": None, "db": None, "quiet": False}
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
+def _make_session(session_id="abcd1234-full-uuid", start_folder="/work/amdead", name="test-session"):
+    """Build a fake session row dict (matches what get_session returns)."""
+    return {
+        "session_id": session_id,
+        "start_folder": start_folder,
+        "session_name": name,
+    }
+
+
+def test_resume_calls_subprocess_with_target_cwd(monkeypatch, mock_resume_env):
+    """The fix: subprocess.run gets cwd=target so claude inherits the right cwd.
+
+    Replaces the prior os.chdir + os.execvp pattern. cwd= is preferred because
+    it (a) doesn't mutate the parent's cwd and (b) doesn't trigger Windows'
+    broken P_OVERLAY TTY handoff.
+    """
+    session = _make_session(session_id="full-uuid-123", start_folder="/work/amdead")
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+
+    rc = cmd_resume(_make_args())
+
+    mock_resume_env.run.assert_called_once_with(
+        ["claude", "--resume", "full-uuid-123"],
+        cwd="/work/amdead",
+        check=False,
+    )
+    assert rc == 0  # default mock returncode
+
+
+def test_resume_returncode_propagates(monkeypatch, mock_resume_env):
+    """Whatever returncode claude exits with must be the rc that csb returns."""
+    session = _make_session(start_folder="/work/amdead")
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+    mock_resume_env.run.return_value = SimpleNamespace(returncode=42)
+
+    rc = cmd_resume(_make_args())
+
+    assert rc == 42
+
+
+def test_resume_no_target_passes_cwd_none(monkeypatch, mock_resume_env):
+    """If session has no start_folder AND no jsonl_path, target is None -> cwd=None."""
+    session = _make_session(start_folder=None)
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+
+    cmd_resume(_make_args())
+
+    mock_resume_env.run.assert_called_once_with(
+        ["claude", "--resume", "abcd1234-full-uuid"],
+        cwd=None,
+        check=False,
+    )
+
+
+def test_resume_filenotfound_for_missing_target_returns_1(monkeypatch, mock_resume_env):
+    """FileNotFoundError when the target folder doesn't exist (subprocess.run cwd= check)."""
+    session = _make_session(start_folder="/no/such/folder")
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+    monkeypatch.setattr(commands_module.os.path, "isdir", MagicMock(return_value=False))
+    mock_resume_env.run.side_effect = FileNotFoundError(
+        "[WinError 2] The system cannot find the file specified"
+    )
+
+    rc = cmd_resume(_make_args())
+
+    assert rc == 1
+
+
+def test_resume_filenotfound_for_missing_claude_returns_1(monkeypatch, mock_resume_env, tmp_path):
+    """FileNotFoundError when `claude` itself isn't in PATH (target dir exists)."""
+    # Use a real tmp_path as the target so os.path.isdir(target) is True.
+    session = _make_session(start_folder=str(tmp_path))
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+    mock_resume_env.run.side_effect = FileNotFoundError("claude not in PATH")
+
+    rc = cmd_resume(_make_args())
+
+    assert rc == 1
+
+
+def test_resume_session_not_found_returns_1_no_subprocess(monkeypatch, mock_resume_env):
+    """If get_session returns None, return 1 without spawning anything."""
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=None))
+
+    rc = cmd_resume(_make_args(session_id="nonexistent"))
+
+    assert rc == 1
+    mock_resume_env.run.assert_not_called()
+
+
+# ── cmd_resume Layer 2: target via pathkit.derive_start_at ───────────
+#
+# When the session row has a jsonl_path, cmd_resume must derive its cd target
+# from pathkit (slug-decoded path) rather than from start_folder. Per the
+# upstream-source audit, the slug-decoded path is the only cwd whose slug
+# matches the JSONL's parent directory -- and that's the only cwd from which
+# `claude --resume <uuid>` will find the file.
+
+
+def test_resume_layer2_uses_slug_decoded_path_not_start_folder(monkeypatch, mock_resume_env):
+    """Layer 2: cwd = derive_start_at(jsonl_path), not session['start_folder']."""
+    session = {
+        "session_id": "full-uuid-123",
+        "session_name": "test",
+        "start_folder": "/some/other/path",  # different from slug-decoded
+        "jsonl_path": "/fake/jsonl/path.jsonl",
+        "folders": [{"folder_path": "/work/amdead", "usage_count": 100}],
+    }
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+
+    # Mock pathkit.derive_start_at to return a known slug-decoded path.
+    derive_mock = MagicMock(return_value="/slug/decoded/cwd")
+    monkeypatch.setattr("claude_session_backup.pathkit.derive_start_at", derive_mock)
+
+    cmd_resume(_make_args())
+
+    derive_mock.assert_called_once_with(
+        "/fake/jsonl/path.jsonl",
+        first_cwd="/some/other/path",
+        folder_usage={"/work/amdead": 100},
+    )
+    # Verify subprocess.run cwd= is the slug-decoded path, not start_folder
+    mock_resume_env.run.assert_called_once_with(
+        ["claude", "--resume", "full-uuid-123"],
+        cwd="/slug/decoded/cwd",
+        check=False,
+    )
+
+
+def test_resume_layer2_falls_back_to_start_folder_on_unresolved_sentinel(monkeypatch, mock_resume_env):
+    """If derive_start_at returns a `<unresolved:slug>` sentinel, fall back to start_folder."""
+    session = {
+        "session_id": "full-uuid-123",
+        "session_name": "test",
+        "start_folder": "/work/amdead",
+        "jsonl_path": "/fake/jsonl/path.jsonl",
+        "folders": [],
+    }
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+    monkeypatch.setattr(
+        "claude_session_backup.pathkit.derive_start_at",
+        MagicMock(return_value="<unresolved:Z--zzzz-deleted>"),
+    )
+
+    cmd_resume(_make_args())
+
+    mock_resume_env.run.assert_called_once_with(
+        ["claude", "--resume", "full-uuid-123"],
+        cwd="/work/amdead",
+        check=False,
+    )
+
+
+def test_resume_layer2_no_jsonl_path_uses_start_folder(monkeypatch, mock_resume_env):
+    """Legacy session row (pre-#19) with no jsonl_path: skip pathkit, use start_folder."""
+    session = {
+        "session_id": "full-uuid-123",
+        "session_name": "test",
+        "start_folder": "/work/amdead",
+        # NO jsonl_path
+    }
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+    derive_mock = MagicMock()
+    monkeypatch.setattr("claude_session_backup.pathkit.derive_start_at", derive_mock)
+
+    cmd_resume(_make_args())
+
+    derive_mock.assert_not_called()
+    mock_resume_env.run.assert_called_once_with(
+        ["claude", "--resume", "full-uuid-123"],
+        cwd="/work/amdead",
+        check=False,
+    )
+
+
+# ── cmd_scan: two-positional form (./dirname + term) ─────────────────
+#
+# Regression for the v0.2.3 checklist case 2a.4: `csb scan ./amdead my-paper`
+# must work as `csb scan -d amdead my-paper`. The fix added a second optional
+# positional `term2` to the parser; cmd_scan validates that the first is a
+# dot-prefix when both are present, and uses the second as the actual term.
+#
+# These tests exercise cmd_scan's positional handling without invoking the
+# downstream SQL/index machinery (which is covered by test_index.py).
+
+
+def test_scan_rejects_two_positionals_when_first_not_dot_prefix(monkeypatch, capsys):
+    """Two positionals where the first is a plain term (not ./...) must be rejected."""
+    from claude_session_backup.commands import cmd_scan
+
+    # Stub out everything cmd_scan touches AFTER the two-positional check.
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+    monkeypatch.setattr(commands_module, "_get_config", MagicMock(return_value={}))
+    monkeypatch.setattr(commands_module, "_resolve_top_folders", MagicMock(return_value=3))
+
+    args = SimpleNamespace(
+        term="amdead",
+        term2="my-paper",
+        directories_below=None,
+        directory_only=None,
+        start_dir_only=None,
+        no_usage=False,
+        n=20,
+        json=False,
+        quiet=False,
+        claude_dir=None,
+        db=None,
+    )
+    rc = cmd_scan(args)
+
+    assert rc == 2
+    captured = capsys.readouterr()
+    assert "too many positional arguments" in captured.err.lower()

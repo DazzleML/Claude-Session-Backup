@@ -1,5 +1,7 @@
 """Tests for CLI argument parsing and flag hoisting."""
 
+import pytest
+
 from claude_session_backup.cli import _hoist_common_flags, build_parser
 
 
@@ -293,6 +295,31 @@ def test_scan_D_with_term():
     args = parser.parse_args(["scan", "-D", "amdead", "my-paper"])
     assert args.directory_only == "amdead"
     assert args.term == "my-paper"
+
+
+def test_scan_dot_prefix_shortcut_with_term():
+    """csb scan ./amdead my-paper -> dot-prefix shortcut + term filter (parses as 2 positionals)."""
+    parser = build_parser()
+    args = parser.parse_args(["scan", "./amdead", "my-paper"])
+    # Parser-level: term = first positional, term2 = second positional.
+    # cmd_scan handles the dot-prefix promotion + term2 swap.
+    assert args.term == "./amdead"
+    assert args.term2 == "my-paper"
+
+
+def test_scan_bare_term_no_term2():
+    """Single positional (no dot-prefix): term2 is None."""
+    parser = build_parser()
+    args = parser.parse_args(["scan", "amdead"])
+    assert args.term == "amdead"
+    assert args.term2 is None
+
+
+def test_scan_three_positionals_rejected():
+    """Three positionals should be rejected by argparse (only term + term2 defined)."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scan", "./amdead", "my-paper", "extra"])
 
 
 def test_scan_d_with_wildcard():
