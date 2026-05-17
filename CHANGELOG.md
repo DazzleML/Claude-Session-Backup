@@ -9,6 +9,23 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.9] -- 2026-05-17 (prealpha)
+
+`csb search --sessions-only` for "which sessions mention X" summary queries, plus a small CLI cleanup: `--session` is renamed to `--session-id` and now accepts comma-separated UUID prefixes for multi-session OR-match. The three output modes (`--json`, `--files-only`, `--sessions-only`) are now wrapped in an argparse mutex group so accidental combinations fail loud at parse time. 384/384 tests pass.
+
+### Added
+- **`--sessions-only`** -- per-session summary mode for `csb search`. Output shows one block per matching session: name + UUID + project on the first line, `start at: <folder>    [csb resume <uuid>]` on the second, plus a `Next: csb search "<query>" --session-id <first-uuid> -A 3 -B 1` hint to drill into excerpts. When the user doesn't pass `--limit`, sessions-only mode auto-raises the per-call limit (effective 10,000) so a single noisy session can't crowd out other sessions from the summary. Combines cleanly with `--shortid` for compact UUID display.
+- **`--session-id` accepts comma-separated UUID prefixes** -- e.g. `csb search foo --session-id abc1,def2,xyz9` OR-matches across three sessions. Empty entries (trailing/leading commas, whitespace-only) are tolerated and stripped before the SQL query. Prefix minimum is the resolver's standard 4 hex chars. (Name-based multi-match isn't supported in the comma form: names contain underscores and hyphens that conflict with the splitter; use `csb scan <name>` for name-based discovery.)
+- **`Hit.start_folder`** -- new field on `search.Hit` populated from `sessions.start_folder` so renderers don't need to query the DB. Used by `--sessions-only` for the start-at line.
+- **23 new tests** -- 12 in `test_search_render.py` (sessions-only grouping, ordering, shortid threading, full-UUID default, singular/plural grammar, unknown-folder fallback, Next-hint with/without query, empty-hits no-op, dispatcher routing), 5 in `test_search.py` (list-of-prefixes, empty-list-is-all, bare-string-still-works, tolerates-empty-entries, Hit.start_folder populated), 6 in `test_cli.py` (--session-id accepts, --session rejected, three mutex combinations, --sessions-only parses). Total 384/384 pass.
+
+### Changed (BREAKING)
+- **`--session` -> `--session-id`** -- the `csb search` flag is renamed for clarity. `--session` always took a UUID prefix (never a session name); the new name makes that unambiguous and aligns with the `<session_id>` vocabulary used by `csb show` / `csb resume` / `csb restore`. No deprecation alias -- the flag is hours old in real-world terms, very unlikely anyone scripted it yet.
+
+### Notes
+- `--files-only`, `--json`, and `--sessions-only` are now mutually exclusive via argparse's `add_mutually_exclusive_group()`. Combining them fails at parse time with a clear error. The default (no flag) remains the grouped human-readable excerpt mode.
+- Why `--sessions-only` auto-raises the limit: with `--limit 20` (the search default), a single session with 25+ matches would yield all 20 hits before the iterator visited the second session. Sessions-only mode's semantic is "show me ALL sessions that mention this," not "show me 20 hits' worth of sessions." If the user explicitly passes `--limit N`, that value is respected.
+
 ## [0.2.7] -- 2026-05-17 (prealpha)
 
 Short-UUID sugar: type `csb show 7250ddce` (prefix), `csb resume c6793d73adaf` (suffix), or even `csb show 916441e6-...-1d090ef5` (the compact display form copied from `csb list --shortid` / `csb search`) instead of typing the full 36-char UUID. One shared resolver and one shared display helper, used by every csb command that takes or shows a session ID. `csb show` output is now Rich-colorized to match the `csb list` / `csb scan` visual style, and `Started:` / `Last active:` / `DELETED at:` timestamps now show local time alongside the original ISO 8601 UTC string for easier reading without losing exact searchability. 361/361 tests pass.
@@ -130,7 +147,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...HEAD
 [0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.5

@@ -468,3 +468,48 @@ def test_scan_s_requires_value():
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["scan", "-s"])
+
+
+# ── csb search: v0.2.8 output-mode mutex + --session-id rename ───────
+
+
+def test_search_session_id_accepts_value():
+    """--session-id replaces --session; comma-separated values pass through."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--session-id", "abc1,def2"])
+    assert args.session_id == "abc1,def2"
+
+
+def test_search_old_session_flag_no_longer_accepted():
+    """--session is gone (renamed); argparse should reject it."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--session", "abc1"])
+
+
+def test_search_output_mode_mutex_json_vs_files_only():
+    """--json + --files-only is rejected."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--json", "--files-only"])
+
+
+def test_search_output_mode_mutex_json_vs_sessions_only():
+    """--json + --sessions-only is rejected."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--json", "--sessions-only"])
+
+
+def test_search_output_mode_mutex_files_vs_sessions():
+    """--files-only + --sessions-only is rejected."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--files-only", "--sessions-only"])
+
+
+def test_search_sessions_only_flag_parses():
+    """--sessions-only alone is accepted."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--sessions-only"])
+    assert args.sessions_only is True
