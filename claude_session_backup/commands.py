@@ -385,22 +385,77 @@ def cmd_restore(args) -> int:
 
 
 def cmd_search(args) -> int:
-    """Search session metadata."""
+    """Search transcript content (USER / AI / AGENT messages).
+
+    Phase 1 of #3: walks ``session_sources``-recorded paths for every
+    indexed session, parses USER / AI / AGENT[:subtype] blocks (in
+    ``.convo`` / ``.sesslog``) or ``type:user`` / ``type:assistant``
+    events (in JSONL), and prints hits with optional surrounding
+    context. Replaces the v0.2.3 metadata-LIKE behavior (breaking
+    change -- metadata search lives in ``csb list <filter>`` and
+    ``csb scan <term>`` which already cover it).
+    """
+    from .search import search as run_search
+    from .search_render import render
+
+    # Force UTF-8 on stdout so cp1252 doesn't choke on em-dashes / smart
+    # quotes that appear in transcripts. See CLAUDE.md's Windows
+    # codepage section for the rationale.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            pass
+
     config = _get_config(args)
     conn = open_db(config["index_path"])
-    init_schema(conn)
+    init_schema(conn, quiet=getattr(args, "quiet", False))
 
-    sessions = search_sessions(conn, args.query, args.n)
+    # Resolve -C N into above/below
+    above = args.before
+    below = args.after
+    if args.context is not None:
+        above = below = args.context
+
+    source_override = None if args.source == "auto" else args.source
+
+    try:
+        hits = list(run_search(
+            conn,
+            args.query,
+            regex=args.regex,
+            case_sensitive=args.case_sensitive,
+            above=above,
+            below=below,
+            session_filter=args.session,
+            source_override=source_override,
+            include_deleted=args.all,
+            only_deleted=args.deleted,
+            limit=args.limit,
+        ))
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        conn.close()
+        return 2
     conn.close()
 
-    if not sessions:
-        print(f"No sessions matching '{args.query}'")
+    if not hits:
+        print(f"No content matches for {args.query!r}")
+        print(
+            "  Hint: for metadata search use 'csb list <filter>' or 'csb scan <term>'",
+            file=sys.stderr,
+        )
         return 0
 
-    print(f"Found {len(sessions)} session(s) matching '{args.query}':\n")
-    for i, session in enumerate(sessions, 1):
-        print(format_session_line(session, i))
-        print()
+    if args.json:
+        mode = "json"
+    elif args.files_only:
+        mode = "files"
+    else:
+        mode = "human"
+
+    use_color = None if not args.no_color else False
+    render(hits, mode=mode, use_color=use_color, full_match=args.full_match)
 
     return 0
 

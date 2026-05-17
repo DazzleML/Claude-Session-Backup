@@ -69,12 +69,40 @@ csb scan -d <pattern>* / -D <pattern>* / -s <pattern>*  # Trailing-* wildcard
 csb scan ... -NU                      # Skip folder-usage search (start_folder only)
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
-csb search "query"                    # Search by session name, project, or folder
+csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
+csb search -E "regex.*pattern"        # Regex mode (Python re)
+csb search "X" -C 3                   # Show 3 events of context before AND after each hit
+csb search "X" -A 5 -B 2              # Asymmetric context (5 after, 2 before)
+csb search "X" --source convo         # Force a source channel; auto = convo > sesslog > jsonl
+csb search "X" --session <uuid>       # Constrain to one session by UUID prefix
+csb search "X" --json                 # NDJSON output for piping into jq
 csb restore <session-id>              # Restore deleted session from git history
 csb resume <session-id>               # Launch claude --resume with full UUID
 csb rebuild-index                     # Reconstruct SQLite from scratch
 csb config [key] [value]              # View/edit configuration
 ```
+
+### Searching conversations
+
+Use `csb search` to find old sessions by **what was discussed**, not just by folder or name. The query is a case-insensitive literal substring by default; `-E` switches to Python regex.
+
+```bash
+# Find every session where you talked about OAuth callbacks
+csb search "oauth callback"
+
+# Regex with context (3 events above and below each hit)
+csb search -E "refresh.*token" -C 3
+
+# Constrain to one session and one source channel
+csb search "auth flow" --session 916441e6 --source convo
+
+# Pipe results into another tool
+csb search "rate limit" --json | jq -r '.session_id' | sort -u
+```
+
+Per-session source preference is `.convo*` (preferred, USER/AI/AGENT-only) -> `.sesslog*` (filtered to USER/AI/AGENT) -> `<uuid>.jsonl` (authoritative fallback). New sessions logged by [claude-session-logger](https://github.com/DazzleML/claude-session-logger) get the cleanest `.convo*` source; older sessions fall through to JSONL automatically. Hits are sorted by session last-used time, so the most recent matches surface first.
+
+For metadata search (folder paths, project, session name), use `csb list <filter>` or `csb scan <term>` -- those are the right tools for "find sessions in this folder" rather than "find sessions about this topic."
 
 ### Finding sessions at risk of purge
 

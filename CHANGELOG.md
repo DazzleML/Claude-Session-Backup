@@ -9,6 +9,26 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.6] -- 2026-05-16 (prealpha)
+
+`csb search` now searches transcript content. Phase 1 of #3 (FTS5 epic) is complete -- the breaking change to `csb search`'s semantics is live, and `cmd_search` walks the `session_sources` paths populated by 0.2.5's backup integration. Metadata search (which `csb search` used to do) lives in `csb list <filter>` and `csb scan <term>`. 327/327 tests pass.
+
+### Changed (BREAKING)
+- **`csb search <query>` now searches transcript content** -- previously it ran a SQL `LIKE` against session name / project / start folder. It now walks every indexed session's `.convo_*.log` (preferred) or `.sesslog_*.log` (USER/AI/AGENT filter) or `<uuid>.jsonl` (authoritative fallback) for matches in conversation text. Hit output groups results by session, shows role tag + timestamp + line number + optional context window, and truncates long matches at 500 chars. Empty-result output emits a stderr hint pointing at `csb list <filter>` / `csb scan <term>` for metadata search. (Phase 1 of #3.)
+- **`csb search` flag set rewritten** -- new flags: `-E/--regex` (Python re), `-s/--case-sensitive`, `-A N` / `-B N` / `-C N` (grep-style context, in events not lines), `--session UUID` (constrain to one session by UUID prefix), `--source {auto,convo,sesslog,jsonl}` (force a source channel), `--all` (include deleted), `--deleted` (only deleted), `--limit N` (default 20), `--full-match`, `--no-color`, `--json` (NDJSON), `--files-only`. The old `-n N` (max results) is replaced by `--limit N`.
+
+### Added
+- **`claude_session_backup/search.py`** -- the content search engine. `search()` is a generator yielding `Hit` dataclasses; `parse_log_blocks()` handles `.convo` and `.sesslog` multi-line block format (`[[ts]] {ROLE: ... }` with closing `}` on its own line) and accepts USER, AI, AGENT, and AGENT:`<subtype>` role tags (the subtype is preserved for filtering / display); `parse_jsonl_events()` walks `type:user` / `type:assistant` events and flattens assistant content blocks to text. Per-session source preference is `.convo > .sesslog > jsonl` with override; `_build_matcher()` switches between literal substring and Python regex.
+- **`claude_session_backup/search_render.py`** -- three output modes: `human` (default, ANSI-colored, session-grouped), `files-only` (one source path per line), and `json` (NDJSON, one hit per line). Long matched text truncates at 500 chars; context lines at 200. ANSI auto-disables when stdout is not a TTY or `--no-color` is set. UTF-8 stdout reconfiguration in `cmd_search` handles em-dashes / smart quotes from transcripts on Windows cp1252 terminals.
+- **`claude_session_backup/fts_paths.py`** -- Phase 2 scaffolding. Per-project FTS5 databases will live at `<claude_dir>/csb-fts/<project>__<slug-hash>_<USER>.db`. The naming pattern mirrors claude-session-logger's `<Name>__<UniqueID>_<USER>` convention to satisfy four constraints: per-project (deliberate deviation from claude-vault's monolithic vault), multi-user safe, recognizable by project name, and collision-free across same-named projects in different on-disk locations (slug-hash differentiates). Phase 1 ships only the contract -- `fts5_db_exists()` always returns False until Phase 2.
+- **60 new tests** -- 36 in `test_search.py` (block parser including AGENT and AGENT:subtype, JSONL parser including content-block flattening, matcher cases, source preference, end-to-end search with context windowing, session filter, source override, deleted-inclusion modes, limit, ordering), 24 in `test_fts_paths.py` (project-name sanitization, slug-hash determinism + collision resistance, current-user fallback, filename format regex, list_fts_dbs surfacing existing DBs). Total: 327/327 pass (was 267 at v0.2.5).
+
+### Notes
+- "Events" are the natural unit of context: one block in `.convo` / `.sesslog`, one user/assistant message in JSONL. `-A 3` shows the next 3 events after the matched event, not 3 lines.
+- The breaking flag-set change is intentional and authorized -- prealpha, few users, redesigned for clarity. Users who scripted the old `csb search -n N <query>` style need to update to `csb search <query> --limit N` (and accept that the meaning shifted from metadata to content).
+- AGENT tag support is forward-compatible: when claude-session-logger emits `{AGENT:explore: ...}` blocks, `csb search` will find their content. Bare `{AGENT: ...}` also works.
+- Phase 2 (FTS5 + Porter stemming over per-project DBs) closes #3 fully and ships in a follow-up; the `fts_paths.py` contract is locked so Phase 2 only adds the indexer + a small `messages_fts_meta` linker table.
+
 ## [0.2.5] -- 2026-05-16 (prealpha)
 
 Phase 1 infrastructure for transcript content search (#3). This release lands the schema and data-collection layer that the upcoming `csb search` rewrite will read from -- the user-facing CLI surface change ships in a later commit. Existing behavior is unchanged; the only observable difference is a one-line `csb: migrated DB schema to v3` notice on the first invocation after upgrade and a small extra cost during `csb backup` to register transcript source paths. 267/267 tests pass.
@@ -89,7 +109,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.5
 [0.2.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...v0.2.2

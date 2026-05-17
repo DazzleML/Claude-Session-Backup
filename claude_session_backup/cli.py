@@ -240,11 +240,66 @@ def build_parser():
         help="Show every tracked folder per session (no cap). Also removes top-N gate from -d/-D matching.",
     )
 
-    # search
-    p_search = sub.add_parser("search", help="Search session metadata")
+    # search -- transcript content search (replaces v0.2.3's metadata LIKE)
+    p_search = sub.add_parser(
+        "search",
+        help="Search transcript content (USER / AI / AGENT messages)",
+        description=(
+            "Search transcript content across every indexed session.\n\n"
+            "By default, queries are case-insensitive literal substrings. "
+            "Use -E for regex (Python re). Per-session source preference: "
+            ".convo* -> .sesslog* -> JSONL (override with --source).\n\n"
+            "For metadata search (session name / project / folder paths), "
+            "use 'csb list <filter>' or 'csb scan <term>'."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _add_common_flags(p_search)
-    p_search.add_argument("query", help="Search query")
-    p_search.add_argument("-n", type=int, default=10, help="Max results")
+    p_search.add_argument("query", help="Search pattern (literal substring by default)")
+    p_search.add_argument(
+        "-E", "--regex", action="store_true",
+        help="Treat query as a Python regex (re.IGNORECASE unless -s)",
+    )
+    p_search.add_argument(
+        "-s", "--case-sensitive", action="store_true",
+        help="Case-sensitive match (default: case-insensitive)",
+    )
+    p_search.add_argument(
+        "-A", "--after", type=int, default=0, metavar="N",
+        help="Show N events after each hit (mirrors grep -A)",
+    )
+    p_search.add_argument(
+        "-B", "--before", type=int, default=0, metavar="N",
+        help="Show N events before each hit (mirrors grep -B)",
+    )
+    p_search.add_argument(
+        "-C", "--context", type=int, default=None, metavar="N",
+        help="Show N events before AND after each hit (mirrors grep -C; overrides -A/-B)",
+    )
+    p_search.add_argument(
+        "--session", default=None, metavar="UUID",
+        help="Constrain to one session by UUID prefix",
+    )
+    p_search.add_argument(
+        "--source", choices=["auto", "convo", "sesslog", "jsonl"], default="auto",
+        help="Force a source channel (default: auto -- prefers .convo > .sesslog > jsonl)",
+    )
+    p_search.add_argument("--all", action="store_true", help="Include deleted sessions")
+    p_search.add_argument("--deleted", action="store_true", help="Only deleted sessions")
+    p_search.add_argument(
+        "--limit", type=int, default=20,
+        help="Stop after N matches (default: 20)",
+    )
+    p_search.add_argument(
+        "--full-match", action="store_true",
+        help="Don't truncate long matched lines (default: 500 chars)",
+    )
+    p_search.add_argument("--no-color", action="store_true", help="Disable ANSI color")
+    p_search.add_argument("--json", action="store_true", help="JSON output (one line per hit)")
+    p_search.add_argument(
+        "--files-only", action="store_true",
+        help="List unique source files containing matches, no excerpts",
+    )
 
     # rebuild-index
     p_rebuild = sub.add_parser("rebuild-index", help="Reconstruct SQLite index from git history")
