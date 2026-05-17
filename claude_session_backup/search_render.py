@@ -159,6 +159,67 @@ def render_files_only(hits: list[Hit]) -> None:
         print(h.source_path)
 
 
+def render_sessions_only(
+    hits: list[Hit],
+    *,
+    use_color: bool = True,
+    shortid: bool = False,
+    query: str | None = None,
+) -> None:
+    """Per-session summary: one line per session containing matches.
+
+    Output line:
+
+        <name>  <UUID>  (<project>)  -- N hit(s)
+          start at: <start_folder>    [csb resume <UUID>]
+
+    With ``--shortid``, the UUID and resume hint use the compact form.
+    A trailing "Next:" line hints at the drill-in command.
+    """
+    if not hits:
+        return
+
+    # Preserve search()'s last-active-DESC iteration order, but coalesce
+    # all hits from the same session into a single summary row.
+    order: list[str] = []
+    counts: dict[str, int] = {}
+    meta: dict[str, Hit] = {}
+    for h in hits:
+        if h.session_id not in counts:
+            order.append(h.session_id)
+            meta[h.session_id] = h
+        counts[h.session_id] = counts.get(h.session_id, 0) + 1
+
+    for sid in order:
+        first = meta[sid]
+        name = first.session_name or "<unnamed>"
+        id_display = format_short_uuid(sid) if shortid else sid
+        n = counts[sid]
+        hit_word = "hit" if n == 1 else "hits"
+        head_line = (
+            f"{_c('bold', name, use_color)}  "
+            f"{_c('dim', id_display, use_color)}  "
+            f"{_c('dim', '(' + first.project + ')', use_color)}  "
+            f"-- {_c('yellow', f'{n} {hit_word}', use_color)}"
+        )
+        print(head_line)
+        start_at = first.start_folder or "(unknown)"
+        resume_hint = f"csb resume {id_display}"
+        print(
+            f"  {_c('dim', 'start at:', use_color)} "
+            f"{_c('green', start_at, use_color)}    "
+            f"{_c('dim', '[' + resume_hint + ']', use_color)}"
+        )
+
+    if query is not None and order:
+        print()
+        hint = (
+            f'Next: csb search "{query}" --session-id '
+            f"{format_short_uuid(order[0]) if shortid else order[0]} -A 3 -B 1"
+        )
+        print(_c("dim", hint, use_color))
+
+
 def render_json(hits: Iterable[Hit]) -> None:
     """Newline-delimited JSON, one hit per line. Stable key set for jq."""
     for h in hits:
@@ -194,8 +255,17 @@ def render(
     use_color: bool | None = None,
     full_match: bool = False,
     shortid: bool = False,
+    query: str | None = None,
 ) -> None:
-    """Top-level dispatcher used by ``cmd_search``."""
+    """Top-level dispatcher used by ``cmd_search``.
+
+    Modes:
+      - "human" (default): grouped excerpts with role/timestamp/context
+      - "json": NDJSON, one hit per line (jq-friendly)
+      - "files": unique source paths only
+      - "sessions": per-session summary with hit counts (uses ``query`` to
+        compose a drill-in hint at the bottom)
+    """
     if use_color is None:
         use_color = _color_supported()
 
@@ -203,6 +273,10 @@ def render(
         render_json(hits)
     elif mode == "files":
         render_files_only(hits)
+    elif mode == "sessions":
+        render_sessions_only(
+            hits, use_color=use_color, shortid=shortid, query=query,
+        )
     else:
         render_human(
             hits, use_color=use_color, full_match=full_match, shortid=shortid,

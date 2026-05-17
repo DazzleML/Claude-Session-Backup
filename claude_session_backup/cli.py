@@ -320,8 +320,9 @@ def build_parser():
         help="Show N events before AND after each hit (mirrors grep -C; overrides -A/-B)",
     )
     p_search.add_argument(
-        "--session", default=None, metavar="UUID",
-        help="Constrain to one session by UUID prefix",
+        "--session-id", default=None, metavar="UUID[,UUID...]",
+        help="Constrain to one or more sessions by UUID prefix (>=4 hex chars). "
+             "Comma-separated for multi-prefix OR-match.",
     )
     p_search.add_argument(
         "--source", choices=["auto", "convo", "sesslog", "jsonl"], default="auto",
@@ -338,10 +339,20 @@ def build_parser():
         help="Don't truncate long matched lines (default: 500 chars)",
     )
     p_search.add_argument("--no-color", action="store_true", help="Disable ANSI color")
-    p_search.add_argument("--json", action="store_true", help="JSON output (one line per hit)")
-    p_search.add_argument(
+    # Output-mode mutex group: at most one of --json / --files-only / --sessions-only.
+    # Default mode (no flag): grouped human-readable hits with excerpts.
+    p_search_mode = p_search.add_mutually_exclusive_group()
+    p_search_mode.add_argument(
+        "--json", action="store_true",
+        help="JSON output (one line per hit)",
+    )
+    p_search_mode.add_argument(
         "--files-only", action="store_true",
         help="List unique source files containing matches, no excerpts",
+    )
+    p_search_mode.add_argument(
+        "--sessions-only", action="store_true",
+        help="Per-session summary: name + UUID + project + start-at + hit count, no excerpts",
     )
     p_search.add_argument(
         "--shortid", "-sid", action="store_true",

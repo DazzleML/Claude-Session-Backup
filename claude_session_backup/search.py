@@ -74,6 +74,7 @@ class Hit:
     role: str
     timestamp: Optional[str]
     matched_text: str
+    start_folder: Optional[str] = None
     context_above: list[Event] = field(default_factory=list)
     context_below: list[Event] = field(default_factory=list)
 
@@ -273,7 +274,7 @@ def search(
     case_sensitive: bool = False,
     above: int = 0,
     below: int = 0,
-    session_filter: Optional[str] = None,
+    session_filter: Optional[str | list[str]] = None,
     source_override: Optional[str] = None,
     include_deleted: bool = False,
     only_deleted: bool = False,
@@ -283,6 +284,10 @@ def search(
 
     Sessions are visited in ``last_active_at DESC`` order so the most-recent
     sessions surface first. The iterator stops after ``limit`` matches.
+
+    ``session_filter`` accepts either a single UUID prefix (str) or a list
+    of UUID prefixes. Multiple prefixes OR-match: ``session_id LIKE 'a%'
+    OR session_id LIKE 'b%'``. Empty list / None means "all sessions".
 
     ``source_override`` constrains the per-session source choice to a single
     channel; without it, ``.convo`` is preferred, then ``.sesslog``, then
@@ -303,13 +308,21 @@ def search(
     elif not include_deleted:
         where.append("s.deleted_at IS NULL")
 
-    if session_filter:
-        where.append("s.session_id LIKE ?")
-        params.append(f"{session_filter}%")
+    # Normalize session_filter to a list of prefixes for uniform OR-match.
+    prefixes: list[str] = []
+    if isinstance(session_filter, str):
+        prefixes = [session_filter] if session_filter else []
+    elif session_filter:
+        prefixes = [p for p in session_filter if p]
+    if prefixes:
+        ors = " OR ".join(["s.session_id LIKE ?"] * len(prefixes))
+        where.append(f"({ors})")
+        params.extend(f"{p}%" for p in prefixes)
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
-        "SELECT s.session_id, s.session_name, s.project, s.last_active_at "
+        "SELECT s.session_id, s.session_name, s.project, s.last_active_at, "
+        "s.start_folder "
         "FROM sessions s"
         f"{where_sql} "
         "ORDER BY s.last_active_at DESC"
@@ -356,6 +369,7 @@ def search(
                 role=ev.role,
                 timestamp=ev.timestamp,
                 matched_text=ev.text,
+                start_folder=session_row["start_folder"],
                 context_above=ctx_above,
                 context_below=ctx_below,
             )

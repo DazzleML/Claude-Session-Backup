@@ -493,3 +493,83 @@ def test_search_empty_pattern_no_hits(mock_db, tmp_path):
     # Empty string is in every text -- caller's job to reject; we just don't crash
     hits = list(search(mock_db, "", limit=5))
     assert len(hits) == 1  # only 1 event in the file
+
+
+# ── session_filter: list-of-prefixes (v0.2.8) ────────────────────────
+
+
+def test_search_session_filter_accepts_list_of_prefixes(mock_db, tmp_path):
+    """Multi-prefix OR-match: hits from any matching session."""
+    convo_a = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH a")])
+    convo_b = tmp_path / "b.convo.log"
+    convo_b.write_text("[[2026-05-16 10:00:00]] {USER: MATCH b}\n", encoding="utf-8")
+    convo_c = tmp_path / "c.convo.log"
+    convo_c.write_text("[[2026-05-16 10:00:00]] {USER: MATCH c}\n", encoding="utf-8")
+
+    _insert_session(mock_db, "abc1-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "a", "p")
+    _insert_session(mock_db, "def2-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "b", "p")
+    _insert_session(mock_db, "xyz9-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "c", "p")
+    _insert_source(mock_db, "abc1-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p", "convo", str(convo_a))
+    _insert_source(mock_db, "def2-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p", "convo", str(convo_b))
+    _insert_source(mock_db, "xyz9-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p", "convo", str(convo_c))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH", session_filter=["abc1", "def2"]))
+    matched_prefixes = {h.session_id[:4] for h in hits}
+    assert matched_prefixes == {"abc1", "def2"}
+
+
+def test_search_session_filter_empty_list_returns_all(mock_db, tmp_path):
+    """Empty list behaves like no filter -- all sessions visited."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    _insert_session(mock_db, "sess-1", "n", "p")
+    _insert_source(mock_db, "sess-1", "p", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH", session_filter=[]))
+    assert len(hits) == 1
+
+
+def test_search_session_filter_single_string_still_works(mock_db, tmp_path):
+    """Backward-compat: a bare str prefix still works (not just lists)."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    _insert_session(mock_db, "abc1-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "n", "p")
+    _insert_source(mock_db, "abc1-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH", session_filter="abc1"))
+    assert len(hits) == 1
+    assert hits[0].session_id.startswith("abc1")
+
+
+def test_search_session_filter_list_skips_empty_entries(mock_db, tmp_path):
+    """Trailing/leading commas (passed as empty strings) are tolerated."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    _insert_session(mock_db, "abc1-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "n", "p")
+    _insert_source(mock_db, "abc1-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "p", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH", session_filter=["abc1", "", "  "]))
+    # Whitespace-only and empty entries are NOT filtered by search() -- the
+    # CLI strip()s them before passing in. Here we just verify they don't
+    # crash; a "  " prefix won't match anything in SQL LIKE.
+    assert any(h.session_id.startswith("abc1") for h in hits)
+
+
+# ── start_folder threaded into Hit (v0.2.8) ──────────────────────────
+
+
+def test_search_hit_carries_start_folder(mock_db, tmp_path):
+    """Hit.start_folder is populated from the sessions table for renderers."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    mock_db.execute(
+        "INSERT INTO sessions (session_id, session_name, project, "
+        "start_folder, last_active_at) VALUES (?, ?, ?, ?, ?)",
+        ("sess-1", "name", "proj", "C:/code/x", "2026-05-16T10:00:00Z"),
+    )
+    _insert_source(mock_db, "sess-1", "proj", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH"))
+    assert len(hits) == 1
+    assert hits[0].start_folder == "C:/code/x"

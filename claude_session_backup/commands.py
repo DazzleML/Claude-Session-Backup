@@ -729,6 +729,21 @@ def cmd_search(args) -> int:
 
     source_override = None if args.source == "auto" else args.source
 
+    # Parse --session-id: comma-separated list of UUID prefixes. Empty
+    # entries (e.g. trailing comma) and whitespace are tolerated.
+    session_filter: list[str] = []
+    raw = getattr(args, "session_id", None)
+    if raw:
+        session_filter = [p.strip() for p in raw.split(",") if p.strip()]
+
+    # --sessions-only wants ALL sessions that match, not just N hits' worth.
+    # If the user didn't explicitly raise --limit, bump it so a single
+    # noisy session can't crowd out other sessions in the summary.
+    sessions_only = getattr(args, "sessions_only", False)
+    effective_limit = args.limit
+    if sessions_only and args.limit == 20:
+        effective_limit = 10_000
+
     try:
         hits = list(run_search(
             conn,
@@ -737,11 +752,11 @@ def cmd_search(args) -> int:
             case_sensitive=args.case_sensitive,
             above=above,
             below=below,
-            session_filter=args.session,
+            session_filter=session_filter or None,
             source_override=source_override,
             include_deleted=args.all,
             only_deleted=args.deleted,
-            limit=args.limit,
+            limit=effective_limit,
         ))
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -761,6 +776,8 @@ def cmd_search(args) -> int:
         mode = "json"
     elif args.files_only:
         mode = "files"
+    elif sessions_only:
+        mode = "sessions"
     else:
         mode = "human"
 
@@ -768,6 +785,7 @@ def cmd_search(args) -> int:
     render(
         hits, mode=mode, use_color=use_color, full_match=args.full_match,
         shortid=getattr(args, "shortid", False),
+        query=args.query if mode == "sessions" else None,
     )
 
     return 0
