@@ -8,11 +8,21 @@ Commit separation follows the claude-cleanup model:
   - NOISE: auto-generated transient state (sessions, caches, telemetry)
   - USER: hand-edited configs and customizations (agents, skills, settings)
 These are always committed separately with --no-gpg-sign for unattended use.
+
+The restore path is byte-pure end to end:
+  - git is invoked with -c core.autocrlf=false / core.eol=lf / core.safecrlf=false
+    when reading bytes for restore (defeats per-file autocrlf smudge on checkout)
+  - subprocess captures raw bytes (text=False) for restore reads
+  - destination is written with write_bytes (no text-mode translation)
+  - path arguments to `git show <commit>:<path>` are normalized to forward
+    slashes -- git does not accept backslash separators in <path> on Windows
+  - on backup, an idempotent .gitattributes block is maintained so future
+    commits never receive autocrlf normalization regardless of host config
 """
 
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 
 # ── File classification ─────────────────────────────────────────────
@@ -194,11 +204,32 @@ def git_log_for_file(claude_dir: str, file_path: str, limit: int = 5) -> list[di
     return entries
 
 
-def git_show_file(claude_dir: str, commit: str, file_path: str) -> Optional[str]:
-    """Retrieve file content from a specific git commit."""
+def _normalize_git_path(file_path: Union[str, Path]) -> str:
+    """
+    Normalize a path argument for use in ``git show <commit>:<path>``.
+
+    Git does NOT accept backslash separators in the ``<path>`` half of the
+    ``<commit>:<path>`` revision syntax -- on Windows, ``git show HEAD:foo\\bar``
+    silently returns nothing. Always convert to forward slashes before passing
+    to git. Strips leading separators too -- repo-relative paths are anchored
+    at the worktree root and never start with ``/``.
+    """
+    s = str(file_path).replace("\\", "/")
+    return s.lstrip("/")
+
+
+def git_show_file(claude_dir: str, commit: str, file_path: Union[str, Path]) -> Optional[str]:
+    """
+    Retrieve file content from a specific git commit as a decoded string.
+
+    Note: returns universal-newline-translated text. For byte-pure restore use
+    ``git_show_file_bytes`` instead. This function is kept for non-restore
+    callers that want the convenience of a string.
+    """
+    norm = _normalize_git_path(file_path)
     result = run_git(
         claude_dir,
-        "show", f"{commit}:{file_path}",
+        "show", f"{commit}:{norm}",
         check=False,
     )
     if result.returncode == 0:
@@ -206,18 +237,53 @@ def git_show_file(claude_dir: str, commit: str, file_path: str) -> Optional[str]
     return None
 
 
-def git_find_deleted_file(claude_dir: str, file_path: str) -> Optional[str]:
+def git_show_file_bytes(
+    claude_dir: str, commit: str, file_path: Union[str, Path]
+) -> Optional[bytes]:
+    """
+    Retrieve file content from a specific git commit as raw bytes.
+
+    Runs git with ``-c core.autocrlf=false -c core.eol=lf -c core.safecrlf=false``
+    so that per-file autocrlf smudging on checkout cannot mutate the bytes,
+    and captures stdout in binary mode (``text=False``) to bypass Python's
+    universal-newline decoding. The result is the exact bytes of the blob
+    stored in git.
+
+    Returns None if the file is not present in the given commit (or git
+    returns non-zero).
+    """
+    norm = _normalize_git_path(file_path)
+    result = subprocess.run(
+        [
+            "git", "-C", claude_dir,
+            "-c", "core.autocrlf=false",
+            "-c", "core.eol=lf",
+            "-c", "core.safecrlf=false",
+            "show", f"{commit}:{norm}",
+        ],
+        capture_output=True,
+        text=False,
+        check=False,
+    )
+    if result.returncode == 0:
+        return result.stdout
+    return None
+
+
+def git_find_deleted_file(claude_dir: str, file_path: Union[str, Path]) -> Optional[str]:
     """
     Find the last commit that contained a now-deleted file.
 
     Returns the commit hash, or None if file was never tracked.
+    Path is normalized to forward slashes for git's pathspec.
     """
+    norm = _normalize_git_path(file_path)
     result = run_git(
         claude_dir,
         "log", "-1",
         "--pretty=format:%H",
         "--diff-filter=D",
-        "--", file_path,
+        "--", norm,
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -236,7 +302,7 @@ def git_find_deleted_file(claude_dir: str, file_path: str) -> Optional[str]:
         "log", "-1",
         "--pretty=format:%H",
         "--all",
-        "--", file_path,
+        "--", norm,
         check=False,
     )
     if result.returncode == 0 and result.stdout.strip():
@@ -245,18 +311,81 @@ def git_find_deleted_file(claude_dir: str, file_path: str) -> Optional[str]:
     return None
 
 
-def git_restore_file(claude_dir: str, commit: str, file_path: str, dest_path: str) -> bool:
+def git_restore_file(
+    claude_dir: str,
+    commit: str,
+    file_path: Union[str, Path],
+    dest_path: Union[str, Path],
+) -> bool:
     """
-    Restore a file from git history to a destination path.
+    Restore a file from git history to a destination path, byte-for-byte.
 
-    Does NOT use git checkout (which would modify the working tree state).
-    Instead, reads content via git show and writes to dest_path.
+    Does NOT use git checkout (which would modify working tree state and may
+    apply autocrlf normalization). Instead reads raw bytes via
+    ``git_show_file_bytes`` and writes them with ``write_bytes`` -- no decode,
+    no re-encode, no text-mode translation. The resulting file is identical
+    to the original at the time it was committed.
+
+    Returns True on successful write, False if git_show_file_bytes returned
+    None (file not in the given commit, or git error).
     """
-    content = git_show_file(claude_dir, commit, file_path)
+    content = git_show_file_bytes(claude_dir, commit, file_path)
     if content is None:
         return False
 
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
+    dest.write_bytes(content)
+    return True
+
+
+# ── .gitattributes self-maintenance ─────────────────────────────────
+
+GITATTRIBUTES_MARKER_BEGIN = "# >>> csb-managed block (do not edit between markers)"
+GITATTRIBUTES_MARKER_END = "# <<< end csb-managed block"
+
+# These rules prevent git's autocrlf/eol filters from mutating session data
+# bytes at commit OR checkout time. JSONL transcripts and JSON sidecars are
+# treated as opaque byte streams -- exactly what the restore path expects.
+GITATTRIBUTES_RULES = [
+    "# Tell git that csb-managed files are binary -- no autocrlf, no eol normalization.",
+    "# This guarantees byte-for-byte fidelity through backup -> commit -> restore.",
+    "*.jsonl -text",
+    "*.json -text",
+    "*.name-cache -text",
+]
+
+
+def ensure_gitattributes(claude_dir: str) -> bool:
+    """
+    Idempotently maintain a csb-managed block in ``<claude_dir>/.gitattributes``.
+
+    If the file is missing, creates it with just the csb block.
+    If the file exists but lacks the csb block, appends the block.
+    If the csb block already exists, no-op.
+    Other contents (rules the user added by hand) are preserved verbatim.
+
+    Returns True if the file was created or modified, False if nothing changed.
+    Safe to call on every backup -- it's a cheap text read.
+    """
+    path = Path(claude_dir) / ".gitattributes"
+
+    block_lines = [GITATTRIBUTES_MARKER_BEGIN, *GITATTRIBUTES_RULES, GITATTRIBUTES_MARKER_END]
+    block = "\n".join(block_lines) + "\n"
+
+    if not path.exists():
+        path.write_text(block, encoding="utf-8", newline="\n")
+        return True
+
+    existing = path.read_text(encoding="utf-8")
+    if GITATTRIBUTES_MARKER_BEGIN in existing and GITATTRIBUTES_MARKER_END in existing:
+        # Block already present -- no-op. (We intentionally do NOT overwrite an
+        # existing block in case a future csb release tweaks the rules: the
+        # user may have edited them and we don't want to clobber. Document
+        # block-update procedure separately if rules need to change.)
+        return False
+
+    # Append (with a separating blank line if the file didn't end in one)
+    sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+    path.write_text(existing + sep + block, encoding="utf-8", newline="\n")
     return True

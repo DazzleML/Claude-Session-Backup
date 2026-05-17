@@ -12,6 +12,7 @@ from pathlib import Path
 
 from .config import load_config, resolve_paths, save_config, read_cleanup_period
 from .git_ops import (
+    ensure_gitattributes,
     git_commit_noise,
     git_commit_user,
     git_find_deleted_file,
@@ -116,6 +117,13 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
         print("Initialize with: git -C ~/.claude init", file=sys.stderr)
         return 1
 
+    # Defense in depth: ensure .gitattributes has the csb-managed block that
+    # marks session JSONLs / sidecars as binary (no autocrlf, no eol filter).
+    # Without this, a future commit on a host with `core.autocrlf=true` could
+    # store CRLF-corrupted blobs that no amount of restore-side care can fix.
+    # Idempotent -- only writes when the block is missing.
+    ensure_gitattributes(claude_dir)
+
     # Open index
     conn = open_db(config["index_path"])
     init_schema(conn)
@@ -145,8 +153,11 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
                 name_cache = read_name_cache(sf.name_cache) if sf.name_cache else None
                 enrich_metadata(meta, state, name_cache)
 
-            # Upsert into index
-            rel_path = str(sf.jsonl_path.relative_to(claude_dir))
+            # Upsert into index. Store rel_path with forward slashes so it
+            # works directly with `git show <commit>:<path>` (which rejects
+            # backslash separators on Windows). Path operations downstream
+            # accept either separator.
+            rel_path = sf.jsonl_path.relative_to(claude_dir).as_posix()
             upsert_session(conn, meta, rel_path, sf.jsonl_size, sf.jsonl_mtime, now)
 
             if is_new:
