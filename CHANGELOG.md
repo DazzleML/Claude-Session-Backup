@@ -9,6 +9,25 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.5] -- 2026-05-16 (prealpha)
+
+Phase 1 infrastructure for transcript content search (#3). This release lands the schema and data-collection layer that the upcoming `csb search` rewrite will read from -- the user-facing CLI surface change ships in a later commit. Existing behavior is unchanged; the only observable difference is a one-line `csb: migrated DB schema to v3` notice on the first invocation after upgrade and a small extra cost during `csb backup` to register transcript source paths. 267/267 tests pass.
+
+Coordinates with the parallel `claude-session-backup__restore-shoring-up` branch (planned 0.2.4) by jumping to 0.2.5; either ordering of merges is valid.
+
+### Added
+- **Schema migration framework** (`claude_session_backup/migrations.py`) -- versioned migrations keyed off the existing `schema_info.schema_version`. Runs automatically on first `init_schema()` after upgrade with a one-line `csb: migrated DB schema to vN` notice; silent on subsequent invocations and on fresh databases. Designed to absorb future schema changes (Phase 2 FTS5, etc.) without per-PR plumbing.
+- **`session_sources` table** (schema v3) -- one row per searchable transcript file per session. Columns: `session_id` (FK with ON DELETE CASCADE), `project`, `source_type` (`convo` / `sesslog` / `jsonl`), `source_path`, `size_bytes`, `mtime`, `last_seen`. Plus FTS5-ready columns `fts5_indexed_at` and `content_hash` that Phase 2 will populate; left NULL in Phase 1 so the schema doesn't change between phases. UNIQUE on `(session_id, source_path)`. Indexes on `session_id`, `project`, and `fts5_indexed_at`.
+- **`claude_session_backup/sesslog_scanner.py`** -- new module that discovers transcript sources for a session. `list_sesslog_folders(claude_dir)` walks `~/.claude/sesslogs/` once and returns `{session_uuid: folder_path}` by parsing claude-session-logger's `<SessionName>__<UUID>_<USER>` folder convention. `list_session_sources(jsonl_path, sesslog_folder)` enumerates `.convo_*.log`, `.sesslog_*.log`, and the JSONL itself for a session, filtering out tool-call subchannels (`.sesslog-bash_`, `-grep_`, `-glob_`, `-powershell_`) and ancillary channels (`.shell_*`, `.tasks_*`, `.agents_*`, `.overflow_*`). Returns `SourceRow` dataclasses with size/mtime captured at scan time. Missing-file rows (JSONL deleted, etc.) still emit a row with NULL size/mtime so search can report "this session's content is no longer on disk."
+- **`register_session_sources()`** in `claude_session_backup/index.py` -- mirrors the delete-then-insert pattern `upsert_session()` uses for `folder_usage`. Replaces all `session_sources` rows for a session in a single transaction; idempotent across repeated `csb backup` runs. Accepts both `SourceRow` instances and plain dicts. Returns `(added, removed)` counts for caller-side logging.
+- **`cmd_backup` populates `session_sources` automatically** -- after each `upsert_session()` call, `cmd_backup` now calls `list_session_sources()` + `register_session_sources()` to keep the table current. The sesslog folder lookup happens once before the loop (one filesystem walk per backup, not per session). Wrapped in a per-session try/except so a source-registration failure for one session never aborts the whole backup. The existing `csb backup` output is unchanged; verbose-mode summary of source rows registered is deferred to a follow-up.
+- **41 new tests** -- 12 in `test_migrations.py` (fast path for fresh DBs, v2->v3 upgrade, idempotency, quiet mode, column schema, FK cascade, UNIQUE constraint), 18 in `test_sesslog_scanner.py` (UUID extraction with case-folding, folder enumeration, file-pattern filtering, ancillary-channel rejection, missing-file fallback, size/mtime capture), and 11 in `test_session_sources.py` (basic upsert, dict-vs-dataclass input, empty-source clearing, replace semantics, per-session isolation, FK cascade, FTS5 columns left NULL, project denormalization for FTS5 routing). Total: 267/267 pass (was 226 at v0.2.3).
+
+### Notes
+- This is **infrastructure only** -- no CLI surface changes. The `csb search` command still does its v0.2.3 metadata-LIKE behavior. The user-visible content-search experience ships in a separate commit (and the breaking change to `csb search` semantics ships in 0.3.0).
+- The FTS5-ready columns (`fts5_indexed_at`, `content_hash`) are intentional dead weight in Phase 1 so Phase 2's per-project FTS5 indexer can populate them without a schema migration.
+- Per-project FTS5 databases (Phase 2) will live at `~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db`. The path convention is locked in the plan doc; `fts_paths.py` and the FTS5 indexer ship in a later commit.
+
 ## [0.2.3] -- 2026-05-06 (prealpha)
 
 Closes the v0.2.3 epic bundle: pathkit `start at` semantics (#19), folder-usage long tail with `--top N` / `--all-folders` (#21), `display_top_folders` config (#21 follow-up), `csb scan` term-vs-folder disambiguation with `-d` / `-D` / `-s` flags (#20), pathkit multi-candidate slug disambiguation (#23), and `csb resume` cd + Windows TTY-handoff fix (#24). The release is grounded in a senior-eng upstream-source audit (#25, closed) that ruled out the file-relocation hypothesis and confirmed the slug encoder behavior. 226/226 tests pass.
@@ -70,7 +89,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.5
 [0.2.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.0...v0.2.1

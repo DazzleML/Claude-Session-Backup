@@ -2,7 +2,7 @@
 """
 Synchronize version numbers across all project files.
 
-Single source of truth: comfydbg/_version.py (MAJOR, MINOR, PATCH, PHASE).
+Single source of truth: claude_session_backup/_version.py (MAJOR, MINOR, PATCH, PHASE).
 This script reads those components and propagates to:
 - _version.py __version__ string (git metadata: branch, build, date, hash)
 - CHANGELOG.md compare links at the bottom
@@ -55,9 +55,9 @@ from pathlib import Path
 
 
 # --- Project-specific config (adapt for other DazzleLib projects) ---
-VERSION_SOURCE = "comfydbg/_version.py"
+VERSION_SOURCE = "claude_session_backup/_version.py"
 CHANGELOG_FILE = "CHANGELOG.md"
-REPO_URL = "https://github.com/djdarcy/comfydbg"
+REPO_URL = "https://github.com/DazzleML/Claude-Session-Backup"
 TAG_PREFIX = "v"
 # --------------------------------------------------------------------
 
@@ -487,7 +487,7 @@ def git_stage(root: Path, *files: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sync versions across comfydbg project files"
+        description="Sync versions across claude-session-backup project files"
     )
     parser.add_argument(
         "--check", action="store_true", help="Only check, don't modify"

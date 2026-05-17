@@ -30,9 +30,11 @@ from .index import (
     mark_deleted,
     open_db,
     record_scan,
+    register_session_sources,
     search_sessions,
     upsert_session,
 )
+from .sesslog_scanner import list_sesslog_folders, list_session_sources
 from .metadata import (
     enrich_metadata,
     extract_metadata,
@@ -124,10 +126,16 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
     sessions = scan_projects(claude_dir)
     now = _now_iso()
 
+    # One-time discovery of sesslog folders -- maps session UUID to the
+    # claude-session-logger folder that holds .convo*/.sesslog* transcripts.
+    # Each per-session call below does an O(1) lookup against this map.
+    sesslog_index = list_sesslog_folders(claude_dir)
+
     previously_known = get_active_session_ids(conn)
     found_ids = set()
     new_count = 0
     updated_count = 0
+    sources_added_total = 0
 
     error_count = 0
     for i, sf in enumerate(sessions):
@@ -148,6 +156,24 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
             # Upsert into index
             rel_path = str(sf.jsonl_path.relative_to(claude_dir))
             upsert_session(conn, meta, rel_path, sf.jsonl_size, sf.jsonl_mtime, now)
+
+            # Register searchable transcript sources for this session
+            # (Phase 1 of #3 content search). Fails-soft -- a per-session
+            # scan error must not abort the whole backup.
+            try:
+                sesslog_folder = sesslog_index.get(sf.session_id)
+                sources = list_session_sources(sf.jsonl_path, sesslog_folder)
+                added, _removed = register_session_sources(
+                    conn, sf.session_id, meta.project, sources, now,
+                )
+                sources_added_total += added
+            except Exception as e:
+                if not quiet:
+                    print(
+                        f"Warning: source registration failed for "
+                        f"{sf.session_id}: {e}",
+                        file=sys.stderr,
+                    )
 
             if is_new:
                 new_count += 1

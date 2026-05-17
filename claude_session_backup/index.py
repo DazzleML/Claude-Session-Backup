@@ -11,7 +11,7 @@ from typing import Optional
 
 from .metadata import SessionMetadata
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -57,9 +57,27 @@ CREATE TABLE IF NOT EXISTS scan_history (
     git_commit TEXT
 );
 
+CREATE TABLE IF NOT EXISTS session_sources (
+    source_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    project TEXT NOT NULL,
+    source_type TEXT NOT NULL,
+    source_path TEXT NOT NULL,
+    size_bytes INTEGER,
+    mtime TEXT,
+    last_seen TEXT,
+    fts5_indexed_at TEXT,
+    content_hash TEXT,
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
+    UNIQUE (session_id, source_path)
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
 CREATE INDEX IF NOT EXISTS idx_sessions_deleted ON sessions(deleted_at);
+CREATE INDEX IF NOT EXISTS idx_session_sources_session ON session_sources(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_sources_project ON session_sources(project);
+CREATE INDEX IF NOT EXISTS idx_session_sources_fts5 ON session_sources(fts5_indexed_at);
 """
 
 
@@ -76,16 +94,37 @@ def open_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def init_schema(conn: sqlite3.Connection):
-    """Initialize database schema if not already present."""
+def init_schema(conn: sqlite3.Connection, quiet: bool = False):
+    """Initialize database schema if not already present.
+
+    Runs the baseline DDL (idempotent via ``CREATE TABLE IF NOT EXISTS``),
+    then applies any pending migrations registered in
+    :mod:`claude_session_backup.migrations`. Fresh databases get fast-tracked
+    to ``SCHEMA_VERSION`` without running migrations (the baseline DDL
+    already covers their tables); existing databases at an older version
+    get migrated incrementally.
+    """
+    from . import migrations
+
     conn.executescript(SCHEMA_SQL)
 
-    # Track schema version
-    conn.execute(
-        "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
-        ("schema_version", str(SCHEMA_VERSION)),
-    )
-    conn.commit()
+    # Fast path for fresh DBs: if schema_version isn't set yet, the baseline
+    # DDL above already created every current table -- skip migrations and
+    # stamp the current version directly. This avoids running migrations
+    # whose DDL would race against the baseline CREATE TABLE IF NOT EXISTS.
+    existing = conn.execute(
+        "SELECT value FROM schema_info WHERE key = 'schema_version'"
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
+            ("schema_version", str(SCHEMA_VERSION)),
+        )
+        conn.commit()
+        return
+
+    # Existing DB -- run migrations from current version up to SCHEMA_VERSION.
+    migrations.apply_pending(conn, quiet=quiet)
 
 
 def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
@@ -129,6 +168,72 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
         )
 
     conn.commit()
+
+
+def register_session_sources(
+    conn: sqlite3.Connection,
+    session_id: str,
+    project: str,
+    sources,
+    scanned_at: str,
+) -> tuple[int, int]:
+    """Replace all ``session_sources`` rows for one session.
+
+    Mirrors :func:`upsert_session`'s handling of ``folder_usage``: delete
+    every existing row for the session, then insert the fresh set. This is
+    transactional within the caller's connection and idempotent across
+    repeated ``csb backup`` invocations.
+
+    ``sources`` is an iterable of :class:`sesslog_scanner.SourceRow`
+    instances (or any object/dict exposing ``source_type``, ``source_path``,
+    ``size_bytes``, and ``mtime`` attributes/keys).
+
+    The FTS5-readiness columns (``fts5_indexed_at``, ``content_hash``) are
+    deliberately left NULL on insert -- Phase 2's FTS5 indexer is what
+    eventually populates them.
+
+    Returns ``(added_rows, removed_rows)`` for caller-side logging.
+    """
+    # How many rows did we have before?
+    removed = conn.execute(
+        "SELECT COUNT(*) FROM session_sources WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()[0]
+
+    conn.execute(
+        "DELETE FROM session_sources WHERE session_id = ?",
+        (session_id,),
+    )
+
+    added = 0
+    for src in sources:
+        # Support both dataclass-like attribute access and dict-style access.
+        if hasattr(src, "source_type"):
+            source_type = src.source_type
+            source_path = src.source_path
+            size_bytes = src.size_bytes
+            mtime = src.mtime
+        else:
+            source_type = src["source_type"]
+            source_path = src["source_path"]
+            size_bytes = src.get("size_bytes")
+            mtime = src.get("mtime")
+
+        conn.execute(
+            """
+            INSERT INTO session_sources
+                (session_id, project, source_type, source_path,
+                 size_bytes, mtime, last_seen,
+                 fts5_indexed_at, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+            """,
+            (session_id, project, source_type, source_path,
+             size_bytes, mtime, scanned_at),
+        )
+        added += 1
+
+    conn.commit()
+    return added, removed
 
 
 def mark_deleted(conn: sqlite3.Connection, session_id: str, deleted_at: str):

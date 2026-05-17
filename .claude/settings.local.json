@@ -23,7 +23,12 @@
       "Read(//c/code/DazzleNodes/local/.github/workflows//**)",
       "Bash(wtf --help)",
       "Bash(wtf locked:*)",
-      "Skill(commit)"
+      "Skill(commit)",
+      "Skill(familiarize)",
+      "Bash(python scripts/gh_issue_full.py 3 --full)",
+      "Bash(python *)",
+      "Bash(git check-ignore *)",
+      "Skill(prepcommit)"
     ]
   }
 }
