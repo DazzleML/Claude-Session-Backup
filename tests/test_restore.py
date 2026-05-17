@@ -28,6 +28,7 @@ from claude_session_backup.git_ops import (
     _normalize_git_path,
     ensure_gitattributes,
     git_find_deleted_file,
+    git_find_jsonl_by_uuid,
     git_restore_file,
     git_show_file,
     git_show_file_bytes,
@@ -346,6 +347,297 @@ def test_git_status_after_restore_has_no_spurious_diff(mock_claude_dir):
     assert status.stdout.strip() == "", (
         f"unexpected spurious diff after restore -- git sees: {status.stdout!r}"
     )
+
+
+# ── Phase 2: git_find_jsonl_by_uuid (lookup fallback for missing DB row) ──
+
+def _make_session_jsonl(claude_dir: Path, project_slug: str, uuid: str,
+                        content: bytes = b'{"x":1}\n', message: str = "add") -> str:
+    """Commit a session JSONL under projects/<slug>/<uuid>.jsonl. Returns rel path."""
+    rel = f"projects/{project_slug}/{uuid}.jsonl"
+    _commit_file(claude_dir, rel, content, message)
+    return rel
+
+
+def test_git_find_jsonl_by_uuid_returns_single_path(mock_claude_dir):
+    uuid = "11111111-2222-3333-4444-555555555555"
+    rel = _make_session_jsonl(mock_claude_dir, "C--code-proj", uuid)
+    paths = git_find_jsonl_by_uuid(str(mock_claude_dir), uuid)
+    assert paths == [rel], f"expected [{rel!r}], got {paths!r}"
+
+
+def test_git_find_jsonl_by_uuid_finds_deleted_file_in_history(mock_claude_dir):
+    """Even after the JSONL is deleted from working tree, git history has it."""
+    uuid = "22222222-2222-2222-2222-222222222222"
+    rel = _make_session_jsonl(mock_claude_dir, "C--code-proj", uuid)
+    (mock_claude_dir / rel).unlink()  # delete from disk but not git
+    paths = git_find_jsonl_by_uuid(str(mock_claude_dir), uuid)
+    assert paths == [rel]
+
+
+def test_git_find_jsonl_by_uuid_unknown_uuid_returns_empty(mock_claude_dir):
+    paths = git_find_jsonl_by_uuid(str(mock_claude_dir), "00000000-dead-beef-cafe-000000000000")
+    assert paths == []
+
+
+def test_git_find_jsonl_by_uuid_excludes_subagent_jsonls(mock_claude_dir):
+    """Subagent JSONLs (`projects/<slug>/<session-uuid>/subagents/agent-*.jsonl`)
+    have a different path shape and must NOT be returned. We only want top-level
+    session transcripts."""
+    session_uuid = "33333333-4444-5555-6666-777777777777"
+    # Commit a session JSONL
+    session_rel = _make_session_jsonl(mock_claude_dir, "C--proj", session_uuid)
+    # Also commit a subagent JSONL whose name contains the session uuid string
+    subagent_rel = f"projects/C--proj/{session_uuid}/subagents/agent-12345.jsonl"
+    _commit_file(mock_claude_dir, subagent_rel, b'{"agent":"a"}\n', "add subagent")
+
+    paths = git_find_jsonl_by_uuid(str(mock_claude_dir), session_uuid)
+    assert paths == [session_rel], f"subagent should not appear, got {paths}"
+
+
+def test_git_find_jsonl_by_uuid_multi_path_slug_collision(mock_claude_dir):
+    """Same UUID committed under TWO different project slugs over its lifetime
+    (rare -- happens if a parent dir got renamed). Both paths must surface so
+    the caller can decide."""
+    uuid = "88888888-9999-aaaa-bbbb-cccccccccccc"
+    rel_a = _make_session_jsonl(mock_claude_dir, "C--proj-old", uuid, message="under old slug")
+    rel_b = _make_session_jsonl(mock_claude_dir, "C--proj-new", uuid,
+                                content=b'{"newer":true}\n', message="under new slug")
+    paths = git_find_jsonl_by_uuid(str(mock_claude_dir), uuid)
+    assert set(paths) == {rel_a, rel_b}, f"expected both paths, got {paths}"
+    assert paths == sorted(paths), "results must be sorted for deterministic output"
+
+
+def test_git_find_jsonl_by_uuid_empty_uuid_returns_empty(mock_claude_dir):
+    assert git_find_jsonl_by_uuid(str(mock_claude_dir), "") == []
+
+
+def test_git_find_jsonl_by_uuid_uses_glob_pathspec_correctly(mock_claude_dir):
+    """The `:(glob)` magic prefix matches ONE path component. We test that a
+    UUID in a deeper path doesn't false-match."""
+    uuid = "44444444-5555-6666-7777-888888888888"
+    # This is a deeper-nested path (3 levels under projects/) that includes the UUID
+    deep_rel = f"projects/C--proj/sub/{uuid}.jsonl"
+    _commit_file(mock_claude_dir, deep_rel, b'{"deep":true}\n', "add deep")
+    # And one at the correct depth
+    legit_rel = _make_session_jsonl(mock_claude_dir, "C--legit", uuid,
+                                     content=b'{"legit":true}\n', message="add legit")
+
+    paths = git_find_jsonl_by_uuid(str(mock_claude_dir), uuid)
+    # The deeper path SHOULD match too since git's :(glob) `*` only matches one
+    # component but the pattern is `projects/*/UUID.jsonl` -- so the 3-level
+    # path won't match. Only the 2-level (correct) one should match.
+    assert legit_rel in paths
+    assert deep_rel not in paths, (
+        f"deep-nested path should not match the projects/*/UUID.jsonl pattern: {paths}"
+    )
+
+
+# ── Phase 2: cmd_restore end-to-end with fallback ───────────────────────
+
+def _make_args_namespace(**kwargs):
+    """Build a Namespace mimicking argparse output for cmd_restore."""
+    import argparse
+    defaults = {
+        "session_id": None,
+        "dry_run": False,
+        "quiet": False,
+        "claude_dir": None,
+        "db": None,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_restore_falls_back_to_git_when_db_row_missing(mock_claude_dir, tmp_path, capsys):
+    """The headline Phase 2 case: rebuild-index wiped the DB row, but git still
+    has the JSONL. cmd_restore must find it via git_find_jsonl_by_uuid."""
+    from claude_session_backup.commands import cmd_restore
+    from claude_session_backup.index import open_db, init_schema
+
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    # Match conftest's session UUID -- already committed in the initial commit
+    src = mock_claude_dir / "projects/C--code-test" / f"{uuid}.jsonl"
+    assert src.exists(), "fixture should have this session"
+    # The blob in git is the source of truth (autocrlf may have normalized
+    # the on-disk CRLF to LF at commit time). Phase 1's byte-pure restore
+    # reproduces the BLOB, not whatever was on disk. So that's what we
+    # compare against.
+    rel = f"projects/C--code-test/{uuid}.jsonl"
+    expected = git_show_file_bytes(str(mock_claude_dir), "HEAD", rel)
+    assert expected is not None
+    src.unlink()
+
+    # Build a brand-new (empty) DB -- simulates post-rebuild-index state
+    fresh_db = tmp_path / "fresh.db"
+    conn = open_db(str(fresh_db))
+    init_schema(conn)
+    conn.close()
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 0, f"expected success, got rc={rc}; stderr={captured.err}"
+    assert "fallback" in captured.out.lower(), (
+        f"expected fallback notice in output, got: {captured.out!r}"
+    )
+    assert src.exists(), "JSONL should be restored to disk"
+    assert src.read_bytes() == expected, "restored bytes must match the git blob"
+
+
+def test_cmd_restore_errors_when_neither_db_nor_git_has_session(mock_claude_dir, tmp_path, capsys):
+    from claude_session_backup.commands import cmd_restore
+    from claude_session_backup.index import open_db, init_schema
+
+    fresh_db = tmp_path / "fresh.db"
+    conn = open_db(str(fresh_db))
+    init_schema(conn)
+    conn.close()
+
+    args = _make_args_namespace(
+        session_id="99999999-9999-9999-9999-999999999999",
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "no session found" in captured.err.lower()
+    assert "git history" in captured.err.lower()
+
+
+def test_cmd_restore_fallback_requires_full_uuid(mock_claude_dir, tmp_path, capsys):
+    """The git-history fallback can't match prefixes (filename comparison).
+    A prefix should get a clear error message."""
+    from claude_session_backup.commands import cmd_restore
+    from claude_session_backup.index import open_db, init_schema
+
+    fresh_db = tmp_path / "fresh.db"
+    conn = open_db(str(fresh_db))
+    init_schema(conn)
+    conn.close()
+
+    args = _make_args_namespace(
+        session_id="aaaaaaaa",  # prefix only -- not a full UUID
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "full uuid" in captured.err.lower()
+
+
+def test_cmd_restore_dry_run_against_fallback_path(mock_claude_dir, tmp_path, capsys):
+    """`--dry-run` must work even when we reach the JSONL via git-history
+    fallback. Should preview without writing anything."""
+    from claude_session_backup.commands import cmd_restore
+    from claude_session_backup.index import open_db, init_schema
+
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    src = mock_claude_dir / "projects/C--code-test" / f"{uuid}.jsonl"
+    assert src.exists()
+    src.unlink()
+    assert not src.exists()
+
+    fresh_db = tmp_path / "fresh.db"
+    conn = open_db(str(fresh_db))
+    init_schema(conn)
+    conn.close()
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+        dry_run=True,
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 0, f"dry-run should succeed, got rc={rc}; stderr={captured.err}"
+    assert "would restore" in captured.out.lower()
+    assert "fallback" in captured.out.lower(), (
+        "dry-run output should indicate this is the fallback path"
+    )
+    assert not src.exists(), "dry-run must NOT write the file"
+
+
+def test_cmd_restore_fallback_refuses_to_overwrite_existing_file(mock_claude_dir, tmp_path, capsys):
+    """When the file IS on disk but the DB has no row, the fallback must NOT
+    overwrite -- the user might have edited it / it may not be deleted at all."""
+    from claude_session_backup.commands import cmd_restore
+    from claude_session_backup.index import open_db, init_schema
+
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    src = mock_claude_dir / "projects/C--code-test" / f"{uuid}.jsonl"
+    assert src.exists()
+    original_content = src.read_bytes()
+
+    fresh_db = tmp_path / "fresh.db"
+    conn = open_db(str(fresh_db))
+    init_schema(conn)
+    conn.close()
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "already exists" in captured.err.lower()
+    assert "refusing to overwrite" in captured.err.lower()
+    assert src.read_bytes() == original_content, "file must not have been touched"
+
+
+def test_cmd_restore_with_db_row_unchanged_regression(mock_claude_dir, tmp_path, capsys):
+    """When the DB has a row (normal path), behavior must be unchanged from v0.2.4."""
+    from claude_session_backup.commands import cmd_restore
+    from claude_session_backup.index import open_db, init_schema, upsert_session, mark_deleted
+    from claude_session_backup.metadata import SessionMetadata
+
+    uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    src = mock_claude_dir / "projects/C--code-test" / f"{uuid}.jsonl"
+    rel = f"projects/C--code-test/{uuid}.jsonl"
+    # Source of truth is the blob, not the on-disk file (which conftest wrote
+    # via write_text -- subject to autocrlf at commit time).
+    expected = git_show_file_bytes(str(mock_claude_dir), "HEAD", rel)
+    assert expected is not None
+    src.unlink()
+
+    # Build a DB with a deleted-marked session row
+    db_path = tmp_path / "with-row.db"
+    conn = open_db(str(db_path))
+    init_schema(conn)
+    meta = SessionMetadata(session_id=uuid, project="C--code-test")
+    upsert_session(conn, meta, rel, 0, 0.0, "2026-05-16T20:00:00Z")
+    mark_deleted(conn, uuid, "2026-05-16T20:00:01Z")
+    conn.commit()
+    conn.close()
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(db_path),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 0, f"stderr: {captured.err}"
+    assert "fallback" not in captured.out.lower(), (
+        "DB-row path should NOT mention fallback in user-visible output"
+    )
+    assert src.exists()
+    assert src.read_bytes() == expected, "restored bytes must match the git blob"
 
 
 # ── Linux regression -- the byte-pure path must also work on POSIX ──────

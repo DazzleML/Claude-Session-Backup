@@ -16,6 +16,7 @@ from .git_ops import (
     git_commit_noise,
     git_commit_user,
     git_find_deleted_file,
+    git_find_jsonl_by_uuid,
     git_restore_file,
     git_status,
     is_git_repo,
@@ -344,7 +345,20 @@ def cmd_show(args) -> int:
 
 
 def cmd_restore(args) -> int:
-    """Restore deleted session from git history."""
+    """Restore deleted session from git history.
+
+    Lookup order:
+      1. SQLite index -- if a session row exists, use its `jsonl_path`.
+      2. Git history fallback (#28) -- if no DB row, walk
+         `git log --all -- 'projects/*/<uuid>.jsonl'` to find a path.
+         Multiple matches surface as a slug-collision error with the
+         candidate list -- caller picks the right one and re-runs.
+
+    The fallback path requires the FULL UUID (no prefix match against the
+    DB is possible when the DB has no row). If a prefix is supplied and no
+    DB row matches, the fallback can't help -- caller must supply the full
+    UUID explicitly.
+    """
     config = _get_config(args)
     claude_dir = config["claude_dir"]
 
@@ -353,23 +367,70 @@ def cmd_restore(args) -> int:
     session = get_session(conn, args.session_id)
     conn.close()
 
-    if not session:
-        print(f"No session found matching '{args.session_id}'", file=sys.stderr)
-        return 1
+    # Resolve jsonl_path via DB row if present, otherwise via git history.
+    jsonl_path: str | None = None
+    if session:
+        jsonl_path = session.get("jsonl_path")
+        if not jsonl_path:
+            print("No JSONL path recorded for this session.", file=sys.stderr)
+            return 1
+    else:
+        # DB has no row. Fall back to git history (#28). Requires a full UUID
+        # because git_find_jsonl_by_uuid does an exact filename match.
+        if not _looks_like_full_uuid(args.session_id):
+            print(
+                f"No session found matching '{args.session_id}' in DB. "
+                f"To search git history as a fallback, supply the full UUID "
+                f"(36 chars, hyphenated).",
+                file=sys.stderr,
+            )
+            return 1
 
-    jsonl_path = session.get("jsonl_path")
-    if not jsonl_path:
-        print("No JSONL path recorded for this session.", file=sys.stderr)
-        return 1
+        candidates = git_find_jsonl_by_uuid(claude_dir, args.session_id)
+        if not candidates:
+            print(
+                f"No session found matching '{args.session_id}' in DB or git history.",
+                file=sys.stderr,
+            )
+            return 1
+        if len(candidates) > 1:
+            print(
+                f"Slug collision: session '{args.session_id}' was committed at "
+                f"multiple paths over its lifetime.",
+                file=sys.stderr,
+            )
+            print("Candidate paths:", file=sys.stderr)
+            for c in candidates:
+                print(f"  {c}", file=sys.stderr)
+            print(
+                "Manual restore required -- run `git -C <claude_dir> log --all -- '<path>'` "
+                "for each candidate to identify the right one, then "
+                "`git show <commit>:<path>` to recover.",
+                file=sys.stderr,
+            )
+            return 1
+        jsonl_path = candidates[0]
 
-    # Check if file already exists
+    # Check if file already exists -- only meaningful when we know the
+    # session is "deleted" (DB row says so) or when bytes on disk differ
+    # from git. For the fallback path (no DB row), if the file exists on
+    # disk, the user almost certainly doesn't want us to overwrite it.
     full_path = Path(claude_dir) / jsonl_path
-    if full_path.exists() and not session.get("deleted_at"):
-        print(f"Session file already exists: {full_path}")
-        print("This session doesn't appear to be deleted.")
-        return 1
+    if full_path.exists():
+        if session is None:
+            print(f"Session file already exists on disk: {full_path}", file=sys.stderr)
+            print(
+                "No DB row exists for this session, but the JSONL is present. "
+                "Refusing to overwrite without explicit need.",
+                file=sys.stderr,
+            )
+            return 1
+        if not session.get("deleted_at"):
+            print(f"Session file already exists: {full_path}")
+            print("This session doesn't appear to be deleted.")
+            return 1
 
-    # Find the file in git history
+    # Find the commit to restore from.
     commit = git_find_deleted_file(claude_dir, jsonl_path)
     if not commit:
         print(f"Could not find '{jsonl_path}' in git history.", file=sys.stderr)
@@ -380,6 +441,8 @@ def cmd_restore(args) -> int:
         print(f"Would restore: {jsonl_path}")
         print(f"From commit:   {commit[:8]}")
         print(f"To:            {full_path}")
+        if session is None:
+            print(f"Source:        git history (no DB row -- fallback mode)")
         return 0
 
     # Restore the file
@@ -387,12 +450,24 @@ def cmd_restore(args) -> int:
     if success:
         print(f"Restored: {jsonl_path}")
         print(f"From commit: {commit[:8]}")
+        if session is None:
+            print(f"(restored via git-history fallback -- DB had no row for this UUID)")
         print(f"Session should now be visible in Claude Code.")
     else:
         print(f"Failed to restore '{jsonl_path}' from commit {commit[:8]}", file=sys.stderr)
         return 1
 
     return 0
+
+
+def _looks_like_full_uuid(s: str) -> bool:
+    """True if `s` is a 36-char hyphenated UUID string (case-insensitive)."""
+    import re
+    _UUID_RE = re.compile(
+        r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+        re.IGNORECASE,
+    )
+    return bool(_UUID_RE.match(s))
 
 
 def cmd_search(args) -> int:

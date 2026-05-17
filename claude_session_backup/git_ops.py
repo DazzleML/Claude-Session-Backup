@@ -270,6 +270,52 @@ def git_show_file_bytes(
     return None
 
 
+def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
+    """
+    Find every distinct path under ``projects/*/<uuid>.jsonl`` that git has
+    ever tracked, across all branches.
+
+    Used as a fallback when csb's DB has no row for the session -- after
+    ``csb rebuild-index`` (which only sees current on-disk state), on a fresh
+    machine, or for sessions committed by something other than csb. The git
+    history is authoritative for "did this UUID ever exist as a session".
+
+    The pathspec uses git's ``:(glob)`` magic so the ``*`` matches a single
+    path component (the sanitized project-slug folder). Subagent JSONLs live
+    at ``projects/<slug>/<session-uuid>/subagents/agent-*.jsonl`` and are
+    intentionally excluded by the pattern shape -- we only return top-level
+    session transcripts.
+
+    Returns:
+        Sorted list of distinct repo-relative paths (forward-slash). Empty
+        list means the UUID was never tracked. More than one entry means a
+        slug collision -- the same session JSONL was committed at different
+        sanitized-folder names over its lifetime (rare; would happen if the
+        original cwd was renamed between csb backups).
+    """
+    if not uuid:
+        return []
+
+    # `:(glob)` magic: ``*`` matches one path component. Without it, ``*``
+    # is a literal character.
+    pathspec = f":(glob)projects/*/{uuid}.jsonl"
+    result = run_git(
+        claude_dir,
+        "log", "--all", "--pretty=format:", "--name-only",
+        "--", pathspec,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    paths = set()
+    for line in result.stdout.splitlines():
+        s = line.strip()
+        if s:
+            paths.add(_normalize_git_path(s))
+    return sorted(paths)
+
+
 def git_find_deleted_file(claude_dir: str, file_path: Union[str, Path]) -> Optional[str]:
     """
     Find the last commit that contained a now-deleted file.

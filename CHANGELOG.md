@@ -9,6 +9,22 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.6] -- 2026-05-16 (prealpha)
+
+Phase 2 of the restore shoring-up plan. Closes #28 by letting `csb restore` fall back to git history when the DB has no row for the requested session. Affects users post-`rebuild-index`, on a fresh machine (DB lost / never built), or restoring sessions committed by something other than csb. Test count: 250 → 304 (+12 Phase 2 tests on top of v0.2.5's +41).
+
+### Added
+- **`git_find_jsonl_by_uuid(claude_dir, uuid)`** in `git_ops.py` -- walks `git log --all` for any `projects/*/<uuid>.jsonl` path. Uses git's `:(glob)` pathspec magic so the `*` matches exactly one path component (excludes subagent JSONLs under `projects/<slug>/<uuid>/subagents/...`). Returns a sorted list of distinct repo-relative paths. Empty list = never tracked. Multi-path list = slug-collision (rare; happens if the original cwd was renamed between csb backups).
+- **`csb restore <full-uuid>` git-history fallback** -- when `get_session()` returns None (DB row missing), `cmd_restore` calls `git_find_jsonl_by_uuid` to recover the path from git history, then proceeds through the existing `git_find_deleted_file` + `git_restore_file` pipeline. Output includes a `(restored via git-history fallback -- DB had no row for this UUID)` notice so users can see which path was taken. The fallback requires the **full UUID** (36 chars, hyphenated) because the git-side lookup is an exact filename match; prefix-only IDs get a clear error directing the user to supply the full UUID.
+- **Slug-collision handling** -- when `git_find_jsonl_by_uuid` returns multiple paths, `cmd_restore` exits 1 with the candidate list and instructions for manual recovery via `git log` / `git show`. No auto-pick (the right choice depends on which slug the user actually wants the session under).
+- **12 new tests in `tests/test_restore.py`** -- `git_find_jsonl_by_uuid` (6 tests: single-path, deleted-file recovery, unknown UUID, subagent exclusion, slug collision, empty input, glob-pathspec depth check); `cmd_restore` fallback path (6 tests: DB-missing-but-git-has-it, neither, full-UUID requirement, refuse-to-overwrite-existing, DB-row regression, fallback `--dry-run`).
+
+### Changed
+- **`cmd_restore` now refuses to overwrite an existing on-disk file when the DB has no row** -- previously the only overwrite guard checked `session.deleted_at`; if the DB had no row at all, the file could be silently replaced. New logic: when reaching the fallback path AND the target file already exists on disk, exit 1 with "Refusing to overwrite without explicit need." Users who genuinely want a re-restore can delete the file first, which is what the deleted-at flow assumes anyway.
+
+### Plan reference
+Phase 2 of the four-phase restore shoring-up plan (`2026-05-16__16-30-43__claude-plan__shore-up-csb-restore-subsystem.md`). Phase 3 (`csb scan --deleted` + bulk restore + filter-aware "N deleted hidden" footer, #27) ships next. Phase 4 (end-to-end hand-runnable checklist closing #13) ships after Phase 3.
+
 ## [0.2.5] -- 2026-05-16 (prealpha)
 
 Phase 1 infrastructure for transcript content search (#3). This release lands the schema and data-collection layer that the upcoming `csb search` rewrite will read from -- the user-facing CLI surface change ships in a later commit. Existing behavior is unchanged; the only observable difference is a one-line `csb: migrated DB schema to v3` notice on the first invocation after upgrade and a small extra cost during `csb backup` to register transcript source paths. 267/267 tests pass.
