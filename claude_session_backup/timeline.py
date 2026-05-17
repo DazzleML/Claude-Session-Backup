@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from .ids import format_short_uuid
 from .pathkit import derive_start_at
 
 try:
@@ -187,14 +188,34 @@ def _purge_style(days_remaining: Optional[int]) -> str:
 DEFAULT_TOP_FOLDERS = 3
 
 
+def _id_for_display(full_id: str, shortid: bool) -> str:
+    """Return the UUID display form. Default: full UUID (so users can paste
+    directly into ``claude --resume <full-uuid>``). When ``shortid=True``
+    (opt-in via ``csb list --shortid`` etc.), return the compact head-tail
+    form (``<head>-...-<tail>``) for visual scanning.
+    """
+    if not full_id:
+        return ""
+    if shortid:
+        return format_short_uuid(full_id)
+    return full_id
+
+
 def format_session_line(session: dict, index: int, cleanup_days: int = 0,
-                        top_folders: Optional[int] = DEFAULT_TOP_FOLDERS) -> str:
+                        top_folders: Optional[int] = DEFAULT_TOP_FOLDERS,
+                        shortid: bool = False) -> str:
     """
     Format a single session for the timeline view (plain text fallback).
 
     ``top_folders`` controls how many "other" folder rows display beneath
     the start_folder. Default 3. Pass ``None`` to display every tracked
     folder (corresponds to ``--all-folders``).
+
+    ``shortid`` controls UUID display format. Default False -- full UUID
+    is shown so users can paste directly into ``claude --resume <uuid>``
+    (claude has no short-form resolver). Pass True (via ``--shortid``)
+    for the compact ``<head>-...-<tail>`` form when visual scanning is
+    more important than copy-paste fidelity.
     """
     name = session.get("session_name") or "(unnamed)"
     last_user = session.get("last_user_at") or session.get("last_active_at")
@@ -242,7 +263,7 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0,
     if remaining > 0:
         meta_parts.append(f"{remaining} other folder{'s' if remaining != 1 else ''} seen")
 
-    meta_parts.append(f"id: {full_id}")
+    meta_parts.append(f"id: {_id_for_display(full_id, shortid)}")
     if msg_count:
         meta_parts.append(f"{msg_count} messages")
     version = session.get("claude_version")
@@ -259,13 +280,18 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0,
 
 def render_session_rich(console: Console, session: dict, index: int,
                         cleanup_days: int = 0,
-                        top_folders: Optional[int] = DEFAULT_TOP_FOLDERS):
+                        top_folders: Optional[int] = DEFAULT_TOP_FOLDERS,
+                        shortid: bool = False):
     """
     Render a single session entry using rich formatting.
 
     ``top_folders`` controls how many "other" folder rows display beneath
     the start_folder. Default 3. Pass ``None`` to display every tracked
     folder (corresponds to ``--all-folders``).
+
+    ``shortid`` controls UUID display format. See ``format_session_line``
+    docstring for the rationale (default False = full UUID for paste
+    compatibility with ``claude --resume``).
 
     Colors:
     - Session name: bold cyan
@@ -356,7 +382,7 @@ def render_session_rich(console: Console, session: dict, index: int,
         meta.append(f"{remaining} other folder{'s' if remaining != 1 else ''} seen", style="dim")
         meta.append(" | ", style="dim")
 
-    meta.append(f"id: {full_id}", style="dim")
+    meta.append(f"id: {_id_for_display(full_id, shortid)}", style="dim")
     if msg_count:
         meta.append(f" | {msg_count} messages", style="")
     version = session.get("claude_version")
@@ -371,7 +397,8 @@ def render_session_rich(console: Console, session: dict, index: int,
 # ── Timeline renderers ─────────────────────────────────────────────
 
 def format_timeline(sessions: list[dict], cleanup_days: int = 0,
-                    top_folders: Optional[int] = DEFAULT_TOP_FOLDERS) -> str:
+                    top_folders: Optional[int] = DEFAULT_TOP_FOLDERS,
+                    shortid: bool = False) -> str:
     """Format a list of sessions as a plain text timeline (fallback)."""
     if not sessions:
         return "  No sessions found."
@@ -379,7 +406,8 @@ def format_timeline(sessions: list[dict], cleanup_days: int = 0,
     lines = []
     for i, session in enumerate(sessions, 1):
         lines.append(format_session_line(session, i, cleanup_days=cleanup_days,
-                                         top_folders=top_folders))
+                                         top_folders=top_folders,
+                                         shortid=shortid))
         lines.append("")
 
     return "\n".join(lines)
@@ -387,7 +415,8 @@ def format_timeline(sessions: list[dict], cleanup_days: int = 0,
 
 def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None,
                          cleanup_days: int = 0,
-                         top_folders: Optional[int] = DEFAULT_TOP_FOLDERS):
+                         top_folders: Optional[int] = DEFAULT_TOP_FOLDERS,
+                         shortid: bool = False):
     """Render a list of sessions using rich formatting."""
     if console is None:
         console = Console()
@@ -398,5 +427,5 @@ def render_timeline_rich(sessions: list[dict], console: Optional[Console] = None
 
     for i, session in enumerate(sessions, 1):
         render_session_rich(console, session, i, cleanup_days=cleanup_days,
-                            top_folders=top_folders)
+                            top_folders=top_folders, shortid=shortid)
         console.print()  # blank line between entries

@@ -11,7 +11,7 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [0.2.8] -- 2026-05-17 (prealpha)
 
-Phase 3 of the restore shoring-up plan. Closes #27 by surfacing deleted sessions in `csb scan` and `csb list`, adding a filter-aware "N deleted hidden" footer to `csb list`, and adding bulk-restore via `csb scan --deleted --restore`. Test count 304 → 322 (+18 Phase 3 tests). README now has a Recovery section (closes the deferred README AC from #29). Version renumbered from 0.2.7 to 0.2.8 to clear the slot for main's parallel `v0.2.7` (FTS5 follow-on) work; the `0.2.6` slot on this branch is held by my Phase 2 commit and the `0.2.7` slot will be filled by main's content-search rewrite (`d9c2330`) when merged in.
+Phase 3 of the restore shoring-up plan. Closes #27 by surfacing deleted sessions in `csb scan` and `csb list`, adding a filter-aware "N deleted hidden" footer to `csb list`, and adding bulk-restore via `csb scan --deleted --restore`. Test count 304 → 322 (+18 Phase 3 tests). README now has a Recovery section (closes the deferred README AC from #29). Version renumbered from 0.2.7 to 0.2.8 to clear the slot for main's `v0.2.7` (short-UUID sugar) work, which merged in concurrently.
 
 ### Added
 - **`csb scan --deleted`** / **`csb scan --all`** -- mutually exclusive flags that change which sessions a scan returns. Default behavior unchanged (active-only). `--deleted` returns only DB-flagged deleted sessions in the scoped folder; `--all` returns both active and deleted. Works in every scan mode: bare-cwd, `-d` / `-D` / `-s` path-strict, broad-term, and combined (`-d <pattern> <term>`). When `--deleted` is set, csb skips the filesystem-existence check on the scope path so users can still query for sessions whose original folder was deleted.
@@ -28,9 +28,52 @@ Phase 3 of the restore shoring-up plan. Closes #27 by surfacing deleted sessions
 ### Plan reference
 Phase 3 of the four-phase restore shoring-up plan (`2026-05-16__16-30-43__claude-plan__shore-up-csb-restore-subsystem.md`). Phase 4 (end-to-end hand-runnable checklist, closes #13) ships next and converts the Phase 0 `restore_reality_check.py` evidence into a permanent procedure including `claude --resume` validation.
 
+## [0.2.7] -- 2026-05-17 (prealpha)
+
+Short-UUID sugar: type `csb show 7250ddce` (prefix), `csb resume c6793d73adaf` (suffix), or even `csb show 916441e6-...-1d090ef5` (the compact display form copied from `csb list --shortid` / `csb search`) instead of typing the full 36-char UUID. One shared resolver and one shared display helper, used by every csb command that takes or shows a session ID. `csb show` output is now Rich-colorized to match the `csb list` / `csb scan` visual style, and `Started:` / `Last active:` / `DELETED at:` timestamps now show local time alongside the original ISO 8601 UTC string for easier reading without losing exact searchability. 361/361 tests pass.
+
+### Added
+- **`claude_session_backup/ids.py`** -- shared session-ID resolver and display helper. `resolve_session_id(conn, query)` accepts: full UUIDs, prefixes (>=4 hex chars), suffixes (>=4 hex chars), or the compact display form `<head>-...-<tail>`. Four-tier matching: compact-form > exact full-UUID > prefix > suffix. On ambiguous match: raises `AmbiguousSessionID` with the candidate list (name, project, start-at path); the CLI prints them and exits 2, the user re-runs with a longer prefix. No interactive prompts -- stays scriptable. `format_short_uuid(uuid, head=8, tail=8)` returns the compact display form (e.g. `7250ddce-...-3d73adaf`).
+- **`_resolve_session_or_exit()` helper** in `commands.py` -- standard error-to-exit-code mapping (1 for no-match, 2 for ambiguous / invalid input). Used by `cmd_show`, `cmd_resume`, `cmd_restore`. Any csb command that takes a session-ID input goes through this single path.
+- **`--shortid` / `-sid` flag on `csb list`, `csb scan`, and `csb search`** -- opt-in to the compact UUID display form (`<head>-...-<tail>`). Default everywhere is the full UUID so users can paste directly into `claude --resume <uuid>` (the native claude binary has no short-form resolver). The compact form, when chosen, round-trips back through csb's resolver if pasted as input -- so copy-from-output is always safe within csb-land.
+- **`csb show` output is now Rich-colorized**: session name in bold cyan, start folder in bold green, deleted markers in red, the `Resume:` and `Restore with:` hints in bold yellow, dim styling for labels and metadata. Plain-text fallback kept for environments without Rich.
+- **Human-readable timestamps in `csb show`** -- `Started:`, `Last active:`, and `DELETED at:` now render as `<local YYYY-MM-DD HH:MM:SS> (<tz>) [ <original ISO> ]`. The local-time prefix makes scanning easy; the bracketed ISO string is kept so users can grep the JSONL by exact timestamp. Falls back to numeric UTC offset (e.g. `-04:00`) on Windows where `strftime("%Z")` returns long names like "Eastern Daylight Time".
+- **34 new tests** -- 30 in `test_ids.py` covering all 4 resolver tiers (input validation, full-UUID exact match, prefix-unique / prefix-ambiguous / longer-prefix-disambiguates, suffix-unique / suffix-ambiguous / suffix-fallback-after-prefix-miss, no-match, compact-form resolve / ambiguous / no-match / rejects too-short or non-hex halves, format_short_uuid round-trip, format_ambiguous_error truncation and null-metadata tolerance), plus 4 in `test_commands.py` for `_format_timestamp` (none, ISO retains original, TZ label present, unparseable falls back). Total: 361/361 pass (was 327 at v0.2.6; +34 net).
+
+### Changed
+- **`csb show <prefix>`, `csb resume <prefix>`, `csb restore <prefix>`** now accept any unambiguous prefix or suffix (>=4 chars) instead of requiring the full UUID. Backward-compatible -- full UUIDs continue to work. On collision, the CLI lists the candidates and the user re-runs with a longer prefix.
+- **All csb commands display the FULL UUID by default** -- `csb list`, `csb scan`, `csb search`, and `csb show` are uniform: full UUID is the visible default everywhere. This keeps the copy-paste-into-`claude --resume` workflow friction-free across the entire CLI. Use `--shortid` / `-sid` to opt into the compact display when readability matters more than paste-into-native-tools.
+
+### Notes
+- The compact display form ``<head>-...-<tail>`` is round-trip-safe: csb commands that take a session ID input accept the same string that csb displayed. Pasting from `csb search` or `csb list --shortid` works directly. Native `claude --resume` still needs the FULL UUID since claude has no resolver -- which is why csb's list/scan defaults to showing the full form.
+- 4 chars is the minimum length per half (head or tail). Below that, matching is meaningless across 100+ sessions; we reject early with a clear error rather than degrade to "guess from many candidates".
+- Collision UX is non-interactive: print candidates, exit 2. Scripts can detect ambiguity by exit code and resolve programmatically.
+
 ## [0.2.6] -- 2026-05-16 (prealpha)
 
+`csb search` now searches transcript content. Phase 1 of #3 (FTS5 epic) is complete -- the breaking change to `csb search`'s semantics is live, and `cmd_search` walks the `session_sources` paths populated by 0.2.5's backup integration. Metadata search (which `csb search` used to do) lives in `csb list <filter>` and `csb scan <term>`. 327/327 tests pass.
+
+### Changed (BREAKING)
+- **`csb search <query>` now searches transcript content** -- previously it ran a SQL `LIKE` against session name / project / start folder. It now walks every indexed session's `.convo_*.log` (preferred) or `.sesslog_*.log` (USER/AI/AGENT filter) or `<uuid>.jsonl` (authoritative fallback) for matches in conversation text. Hit output groups results by session, shows role tag + timestamp + line number + optional context window, and truncates long matches at 500 chars. Empty-result output emits a stderr hint pointing at `csb list <filter>` / `csb scan <term>` for metadata search. (Phase 1 of #3.)
+- **`csb search` flag set rewritten** -- new flags: `-E/--regex` (Python re), `-s/--case-sensitive`, `-A N` / `-B N` / `-C N` (grep-style context, in events not lines), `--session UUID` (constrain to one session by UUID prefix), `--source {auto,convo,sesslog,jsonl}` (force a source channel), `--all` (include deleted), `--deleted` (only deleted), `--limit N` (default 20), `--full-match`, `--no-color`, `--json` (NDJSON), `--files-only`. The old `-n N` (max results) is replaced by `--limit N`.
+
+### Added
+- **`claude_session_backup/search.py`** -- the content search engine. `search()` is a generator yielding `Hit` dataclasses; `parse_log_blocks()` handles `.convo` and `.sesslog` multi-line block format (`[[ts]] {ROLE: ... }` with closing `}` on its own line) and accepts USER, AI, AGENT, and AGENT:`<subtype>` role tags (the subtype is preserved for filtering / display); `parse_jsonl_events()` walks `type:user` / `type:assistant` events and flattens assistant content blocks to text. Per-session source preference is `.convo > .sesslog > jsonl` with override; `_build_matcher()` switches between literal substring and Python regex.
+- **`claude_session_backup/search_render.py`** -- three output modes: `human` (default, ANSI-colored, session-grouped), `files-only` (one source path per line), and `json` (NDJSON, one hit per line). Long matched text truncates at 500 chars; context lines at 200. ANSI auto-disables when stdout is not a TTY or `--no-color` is set. UTF-8 stdout reconfiguration in `cmd_search` handles em-dashes / smart quotes from transcripts on Windows cp1252 terminals.
+- **`claude_session_backup/fts_paths.py`** -- Phase 2 scaffolding. Per-project FTS5 databases will live at `<claude_dir>/csb-fts/<project>__<slug-hash>_<USER>.db`. The naming pattern mirrors claude-session-logger's `<Name>__<UniqueID>_<USER>` convention to satisfy four constraints: per-project (deliberate deviation from claude-vault's monolithic vault), multi-user safe, recognizable by project name, and collision-free across same-named projects in different on-disk locations (slug-hash differentiates). Phase 1 ships only the contract -- `fts5_db_exists()` always returns False until Phase 2.
+- **60 new tests** -- 36 in `test_search.py` (block parser including AGENT and AGENT:subtype, JSONL parser including content-block flattening, matcher cases, source preference, end-to-end search with context windowing, session filter, source override, deleted-inclusion modes, limit, ordering), 24 in `test_fts_paths.py` (project-name sanitization, slug-hash determinism + collision resistance, current-user fallback, filename format regex, list_fts_dbs surfacing existing DBs). Total: 327/327 pass (was 267 at v0.2.5).
+
+### Notes
+- "Events" are the natural unit of context: one block in `.convo` / `.sesslog`, one user/assistant message in JSONL. `-A 3` shows the next 3 events after the matched event, not 3 lines.
+- The breaking flag-set change is intentional and authorized -- prealpha, few users, redesigned for clarity. Users who scripted the old `csb search -n N <query>` style need to update to `csb search <query> --limit N` (and accept that the meaning shifted from metadata to content).
+- AGENT tag support is forward-compatible: when claude-session-logger emits `{AGENT:explore: ...}` blocks, `csb search` will find their content. Bare `{AGENT: ...}` also works.
+- Phase 2 (FTS5 + Porter stemming over per-project DBs) closes #3 fully and ships in a follow-up; the `fts_paths.py` contract is locked so Phase 2 only adds the indexer + a small `messages_fts_meta` linker table.
+
+## [0.2.6] -- 2026-05-16 (prealpha, restore Phase 2 / #28 -- parallel work, same version slot as the search rewrite above)
+
 Phase 2 of the restore shoring-up plan. Closes #28 by letting `csb restore` fall back to git history when the DB has no row for the requested session. Affects users post-`rebuild-index`, on a fresh machine (DB lost / never built), or restoring sessions committed by something other than csb. Test count: 250 → 304 (+12 Phase 2 tests on top of v0.2.5's +41).
+
+> **Note**: This entry and the `[0.2.6]` entry above (`csb search` content rewrite) were two parallel commits both targeted at `v0.2.6` on different feature branches, both merged into `main`. Both are real, both shipped. Future releases will not double-claim a version.
 
 ### Added
 - **`git_find_jsonl_by_uuid(claude_dir, uuid)`** in `git_ops.py` -- walks `git log --all` for any `projects/*/<uuid>.jsonl` path. Uses git's `:(glob)` pathspec magic so the `*` matches exactly one path component (excludes subagent JSONLs under `projects/<slug>/<uuid>/subagents/...`). Returns a sorted list of distinct repo-relative paths. Empty list = never tracked. Multi-path list = slug-collision (rare; happens if the original cwd was renamed between csb backups).
@@ -148,8 +191,12 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...HEAD
-[0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.5
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.8
+[0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7
+[0.2.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6
+[0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.4...v0.2.5
+[0.2.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.0...v0.2.1
