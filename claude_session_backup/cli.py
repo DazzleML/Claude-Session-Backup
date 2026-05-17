@@ -150,6 +150,12 @@ def build_parser():
     p_list.add_argument("--deleted", action="store_true", help="Show only deleted sessions")
     p_list.add_argument("--all", action="store_true", help="Show all sessions including deleted")
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
+    p_list.add_argument(
+        "--shortid", "-sid", action="store_true",
+        help="Display compact UUID form (<head>-...-<tail>) instead of the full UUID. "
+             "Full UUID is the default so users can paste into 'claude --resume <uuid>' "
+             "(claude has no short-form resolver). csb commands accept either form.",
+    )
     p_list_folders = p_list.add_mutually_exclusive_group()
     p_list_folders.add_argument(
         "--top", type=int, metavar="N", default=None,
@@ -239,6 +245,11 @@ def build_parser():
         "--all-folders", action="store_true",
         help="Show every tracked folder per session (no cap). Also removes top-N gate from -d/-D matching.",
     )
+    p_scan.add_argument(
+        "--shortid", "-sid", action="store_true",
+        help="Display compact UUID form (<head>-...-<tail>) instead of the full UUID. "
+             "Full UUID is the default so users can paste into 'claude --resume <uuid>'.",
+    )
 
     # search -- transcript content search (replaces v0.2.3's metadata LIKE)
     p_search = sub.add_parser(
@@ -299,6 +310,11 @@ def build_parser():
     p_search.add_argument(
         "--files-only", action="store_true",
         help="List unique source files containing matches, no excerpts",
+    )
+    p_search.add_argument(
+        "--shortid", "-sid", action="store_true",
+        help="Display compact UUID form (<head>-...-<tail>) in session headers. "
+             "Default is the full UUID so users can paste into 'claude --resume <uuid>'.",
     )
 
     # rebuild-index

@@ -24,6 +24,7 @@ import os
 import sys
 from typing import Iterable
 
+from .ids import format_short_uuid
 from .search import Hit
 
 
@@ -95,6 +96,7 @@ def render_human(
     *,
     use_color: bool = True,
     full_match: bool = False,
+    shortid: bool = False,
 ) -> None:
     """Group-by-session human-readable output."""
     if not hits:
@@ -112,9 +114,13 @@ def render_human(
     for group in by_session:
         first = group[0]
         name = first.session_name or "<unnamed>"
+        id_display = (
+            format_short_uuid(first.session_id) if shortid
+            else first.session_id
+        )
         hdr = (
             f"{_c('bold', name, use_color)}  "
-            f"{_c('dim', first.session_id[:8], use_color)}  "
+            f"{_c('dim', id_display, use_color)}  "
             f"{_c('dim', '(' + first.project + ')', use_color)}  "
             f"last: {first.last_active_at or '?'}"
         )
@@ -187,6 +193,7 @@ def render(
     mode: str = "human",
     use_color: bool | None = None,
     full_match: bool = False,
+    shortid: bool = False,
 ) -> None:
     """Top-level dispatcher used by ``cmd_search``."""
     if use_color is None:
@@ -197,4 +204,6 @@ def render(
     elif mode == "files":
         render_files_only(hits)
     else:
-        render_human(hits, use_color=use_color, full_match=full_match)
+        render_human(
+            hits, use_color=use_color, full_match=full_match, shortid=shortid,
+        )

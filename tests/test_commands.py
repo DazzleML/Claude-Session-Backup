@@ -16,6 +16,7 @@ import claude_session_backup.commands as commands_module
 from claude_session_backup.commands import (
     _resolve_directory_pattern,
     _maybe_promote_dot_prefix,
+    _format_timestamp,
     cmd_resume,
 )
 
@@ -273,7 +274,14 @@ def mock_resume_env(monkeypatch):
     monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(commands_module, "init_schema", MagicMock())
 
-    return SimpleNamespace(run=run_mock)
+    # Mock the shared session-ID resolver to succeed by default. Tests that
+    # need a "not found" or "ambiguous" outcome override this mock directly.
+    resolver_mock = MagicMock(return_value=("full-uuid-123", 0))
+    monkeypatch.setattr(
+        commands_module, "_resolve_session_or_exit", resolver_mock,
+    )
+
+    return SimpleNamespace(run=run_mock, resolver=resolver_mock)
 
 
 def _make_args(session_id="abcd1234", **kwargs):
@@ -364,8 +372,9 @@ def test_resume_filenotfound_for_missing_claude_returns_1(monkeypatch, mock_resu
 
 
 def test_resume_session_not_found_returns_1_no_subprocess(monkeypatch, mock_resume_env):
-    """If get_session returns None, return 1 without spawning anything."""
-    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=None))
+    """If the resolver reports no match, return 1 without spawning anything."""
+    # Override the default-success resolver mock to simulate no-match.
+    mock_resume_env.resolver.return_value = (None, 1)
 
     rc = cmd_resume(_make_args(session_id="nonexistent"))
 
@@ -497,3 +506,33 @@ def test_scan_rejects_two_positionals_when_first_not_dot_prefix(monkeypatch, cap
     assert rc == 2
     captured = capsys.readouterr()
     assert "too many positional arguments" in captured.err.lower()
+
+
+# ── _format_timestamp: ISO → local + ISO display ─────────────────────
+
+def test_format_timestamp_none_returns_unknown():
+    assert _format_timestamp(None) == "(unknown)"
+    assert _format_timestamp("") == "(unknown)"
+
+
+def test_format_timestamp_iso_z_format_retains_original():
+    """The original ISO string MUST appear in brackets so users can
+    grep the JSONL by exact timestamp."""
+    result = _format_timestamp("2026-03-23T18:14:14.520Z")
+    assert "[ 2026-03-23T18:14:14.520Z ]" in result
+    # Local portion has space, not T, and no Z suffix
+    assert "2026-03-23T" not in result.split("[")[0]
+
+
+def test_format_timestamp_includes_tz_label():
+    """Output must include a parenthesized timezone label -- either a
+    short name (e.g. EDT) or a numeric offset (e.g. -04:00)."""
+    result = _format_timestamp("2026-03-23T18:14:14.520Z")
+    # Local-time portion is in form "YYYY-MM-DD HH:MM:SS (tz)"
+    local_part = result.split("[")[0].strip()
+    assert "(" in local_part and ")" in local_part
+
+
+def test_format_timestamp_unparseable_falls_back_to_input():
+    """Defensive: never throw on bad input -- return as-is."""
+    assert _format_timestamp("not-a-timestamp") == "not-a-timestamp"

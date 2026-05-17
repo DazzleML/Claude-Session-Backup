@@ -246,9 +246,15 @@ def cmd_list(args) -> int:
     if args.json:
         print(json.dumps(sessions, indent=2, default=str))
     elif HAS_RICH:
-        render_timeline_rich(sessions, cleanup_days=cleanup_days, top_folders=top_folders)
+        render_timeline_rich(
+            sessions, cleanup_days=cleanup_days, top_folders=top_folders,
+            shortid=getattr(args, "shortid", False),
+        )
     else:
-        print(format_timeline(sessions, cleanup_days=cleanup_days, top_folders=top_folders))
+        print(format_timeline(
+            sessions, cleanup_days=cleanup_days, top_folders=top_folders,
+            shortid=getattr(args, "shortid", False),
+        ))
 
     return 0
 
@@ -291,45 +297,203 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _resolve_session_or_exit(conn, query: str) -> tuple[str | None, int]:
+    """Resolve a session-ID input via ``ids.resolve_session_id``.
+
+    Returns ``(full_uuid, 0)`` on success. On any resolver failure, prints
+    the appropriate error to stderr and returns ``(None, exit_code)`` --
+    the caller closes the connection and propagates the exit code.
+
+    Exit codes match standard conventions:
+      - 1: no session found
+      - 2: ambiguous match or invalid input
+    """
+    from .ids import (
+        AmbiguousSessionID,
+        InvalidSessionIDInput,
+        NoSuchSessionID,
+        format_ambiguous_error,
+        resolve_session_id,
+    )
+    try:
+        return resolve_session_id(conn, query), 0
+    except AmbiguousSessionID as e:
+        print(format_ambiguous_error(e), file=sys.stderr)
+        return None, 2
+    except NoSuchSessionID as e:
+        print(f"No session found matching '{e.query}'", file=sys.stderr)
+        return None, 1
+    except InvalidSessionIDInput as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return None, 2
+
+
 def cmd_show(args) -> int:
     """Detailed session info with folder analysis."""
     config = _get_config(args)
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    session = get_session(conn, args.session_id)
+    full_id, exit_code = _resolve_session_or_exit(conn, args.session_id)
+    if full_id is None:
+        conn.close()
+        return exit_code
+
+    session = get_session(conn, full_id)
     conn.close()
 
     if not session:
+        # Resolver succeeded but get_session lost the row -- shouldn't happen
+        # in normal use; keep the guard for paranoid safety.
         print(f"No session found matching '{args.session_id}'", file=sys.stderr)
         return 1
 
-    print(f"Session: {session['session_name'] or '(unnamed)'}")
-    print(f"  ID:            {session['session_id']}")
-    print(f"  Project:       {session['project']}")
-    print(f"  Start folder:  {session['start_folder'] or '(unknown)'}")
-    print(f"  Started:       {session['started_at'] or '(unknown)'}")
-    print(f"  Last active:   {session['last_active_at'] or '(unknown)'}")
-    print(f"  Messages:      {session['message_count']}")
-    print(f"  Tool calls:    {session['tool_call_count']}")
-    print(f"  Claude ver:    {session['claude_version'] or '(unknown)'}")
-    print(f"  JSONL path:    {session['jsonl_path']}")
-    print(f"  JSONL size:    {session['jsonl_size']:,} bytes")
+    _render_show(session)
+    return 0
+
+
+def _format_timestamp(iso_str: str | None) -> str:
+    """Format an ISO 8601 UTC timestamp for human display.
+
+    Returns "<local YYYY-MM-DD HH:MM:SS> (<tz>) [ <original ISO> ]". Keeps
+    the original ISO string visible so users can grep the JSONL by exact
+    timestamp without losing the local-time readability above it.
+
+    Falls back to the raw input on parse failure (defensive: never throws).
+    On Windows, strftime("%Z") often returns long names like "Eastern
+    Daylight Time" -- we use the numeric UTC offset (e.g. "-04:00") in
+    that case so the line stays compact.
+    """
+    if not iso_str:
+        return "(unknown)"
+    try:
+        s = iso_str.replace("Z", "+00:00") if iso_str.endswith("Z") else iso_str
+        dt_utc = datetime.fromisoformat(s)
+        dt_local = dt_utc.astimezone()
+        tz_label = dt_local.strftime("%Z")
+        # Windows: replace long names with numeric offset
+        if not tz_label or len(tz_label) > 5 or " " in tz_label:
+            off = dt_local.strftime("%z")  # e.g. "-0400"
+            tz_label = f"{off[:3]}:{off[3:]}" if len(off) == 5 else off
+        local_part = dt_local.strftime("%Y-%m-%d %H:%M:%S")
+        return f"{local_part} ({tz_label}) [ {iso_str} ]"
+    except (ValueError, TypeError):
+        return iso_str
+
+
+def _render_show(session: dict) -> None:
+    """Render the cmd_show output.
+
+    Uses Rich colorization when available so the detail view matches the
+    visual conventions of ``csb list`` and ``csb scan``. Falls back to
+    plain text when Rich isn't installed.
+
+    Color map (mirrors timeline.py):
+      - Session name: bold cyan
+      - Field labels: dim
+      - Session ID: full UUID (deliberate -- detail view, copy-paste ready)
+      - Start folder (most used): bold green
+      - Other folders: grey70
+      - Deleted marker: red
+      - Resume hint: bold yellow
+    """
+    name = session["session_name"] or "(unnamed)"
+    full_id = session["session_id"]
+    folders = session.get("folders", []) or []
+
+    if not HAS_RICH:
+        # Plain-text fallback -- unchanged formatting
+        print(f"Session: {name}")
+        print(f"  ID:            {full_id}")
+        print(f"  Project:       {session['project']}")
+        print(f"  Start folder:  {session['start_folder'] or '(unknown)'}")
+        print(f"  Started:       {_format_timestamp(session['started_at'])}")
+        print(f"  Last active:   {_format_timestamp(session['last_active_at'])}")
+        print(f"  Messages:      {session['message_count']}")
+        print(f"  Tool calls:    {session['tool_call_count']}")
+        print(f"  Claude ver:    {session['claude_version'] or '(unknown)'}")
+        print(f"  JSONL path:    {session['jsonl_path']}")
+        print(f"  JSONL size:    {session['jsonl_size']:,} bytes")
+        if session.get("deleted_at"):
+            print(f"  DELETED at:    {_format_timestamp(session['deleted_at'])}")
+            print(f"  Restore with:  csb restore {full_id}")
+        print(f"\n  Resume:        claude --resume {full_id}")
+        if folders:
+            print(f"\n  Working directories:")
+            for f in folders:
+                marker = " [start]" if f["is_start_folder"] else ""
+                print(f"    {f['folder_path']}  ({f['usage_count']}x){marker}")
+        return
+
+    # Rich path
+    from rich.console import Console
+    from rich.text import Text
+    console = Console()
+
+    def field(label: str, value: str, value_style: str = "") -> None:
+        line = Text()
+        line.append(f"  {label:<14}", style="dim")
+        line.append(value, style=value_style)
+        console.print(line)
+
+    title = Text()
+    title.append("Session: ", style="dim")
+    title.append(name, style="bold cyan")
+    console.print(title)
+
+    field("ID:", full_id, value_style="bold")
+    field("Project:", session["project"], value_style="")
+    field("Start folder:", session["start_folder"] or "(unknown)",
+          value_style="bold green")
+    field("Started:", _format_timestamp(session["started_at"]),
+          value_style="dim")
+    field("Last active:", _format_timestamp(session["last_active_at"]),
+          value_style="dim")
+    field("Messages:", str(session["message_count"]), value_style="")
+    field("Tool calls:", str(session["tool_call_count"]), value_style="")
+    field("Claude ver:", session["claude_version"] or "(unknown)",
+          value_style="dim")
+    field("JSONL path:", session["jsonl_path"], value_style="dim")
+    field("JSONL size:", f"{session['jsonl_size']:,} bytes", value_style="dim")
 
     if session.get("deleted_at"):
-        print(f"  DELETED at:    {session['deleted_at']}")
-        print(f"  Restore with:  csb restore {session['session_id']}")
+        del_line = Text()
+        del_line.append("  DELETED at:    ", style="red")
+        del_line.append(_format_timestamp(session["deleted_at"]), style="red")
+        console.print(del_line)
+        restore_line = Text()
+        restore_line.append("  Restore with:  ", style="dim")
+        restore_line.append(f"csb restore {full_id}", style="bold yellow")
+        console.print(restore_line)
 
-    print(f"\n  Resume:        claude --resume {session['session_id']}")
+    console.print()
+    resume_line = Text()
+    resume_line.append("  Resume:        ", style="dim")
+    resume_line.append(f"claude --resume {full_id}", style="bold yellow")
+    console.print(resume_line)
 
-    folders = session.get("folders", [])
     if folders:
-        print(f"\n  Working directories:")
+        console.print()
+        console.print(Text("  Working directories:", style="dim"))
+        # Identify the most-used folder for special styling
+        max_count = max((f["usage_count"] for f in folders), default=0)
         for f in folders:
-            marker = " [start]" if f["is_start_folder"] else ""
-            print(f"    {f['folder_path']}  ({f['usage_count']}x){marker}")
-
-    return 0
+            is_start = bool(f["is_start_folder"])
+            is_max = f["usage_count"] == max_count
+            row = Text()
+            row.append("    ")
+            if is_start and is_max:
+                row.append(f["folder_path"], style="bold green")
+            elif is_max:
+                row.append(f["folder_path"], style="bold green")
+            elif is_start:
+                row.append(f["folder_path"], style="white")
+            else:
+                row.append(f["folder_path"], style="grey70")
+            row.append(f"  ({f['usage_count']}x)", style="dim")
+            if is_start:
+                row.append(" [start]", style="yellow")
+            console.print(row)
 
 
 def cmd_restore(args) -> int:
@@ -339,7 +503,12 @@ def cmd_restore(args) -> int:
 
     conn = open_db(config["index_path"])
     init_schema(conn)
-    session = get_session(conn, args.session_id)
+    full_id, exit_code = _resolve_session_or_exit(conn, args.session_id)
+    if full_id is None:
+        conn.close()
+        return exit_code
+
+    session = get_session(conn, full_id)
     conn.close()
 
     if not session:
@@ -455,7 +624,10 @@ def cmd_search(args) -> int:
         mode = "human"
 
     use_color = None if not args.no_color else False
-    render(hits, mode=mode, use_color=use_color, full_match=args.full_match)
+    render(
+        hits, mode=mode, use_color=use_color, full_match=args.full_match,
+        shortid=getattr(args, "shortid", False),
+    )
 
     return 0
 
@@ -520,7 +692,12 @@ def cmd_resume(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    session = get_session(conn, args.session_id)
+    full_id, exit_code = _resolve_session_or_exit(conn, args.session_id)
+    if full_id is None:
+        conn.close()
+        return exit_code
+
+    session = get_session(conn, full_id)
     conn.close()
 
     if not session:
@@ -932,8 +1109,14 @@ def _render_scan_results(results, args, config, scope_label: str, quiet: bool) -
     print()
 
     if HAS_RICH:
-        render_timeline_rich(results, cleanup_days=cleanup_days, top_folders=top_folders)
+        render_timeline_rich(
+            results, cleanup_days=cleanup_days, top_folders=top_folders,
+            shortid=getattr(args, "shortid", False),
+        )
     else:
-        print(format_timeline(results, cleanup_days=cleanup_days, top_folders=top_folders))
+        print(format_timeline(
+            results, cleanup_days=cleanup_days, top_folders=top_folders,
+            shortid=getattr(args, "shortid", False),
+        ))
 
     return 0

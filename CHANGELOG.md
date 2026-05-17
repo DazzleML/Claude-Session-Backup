@@ -9,6 +9,27 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.7] -- 2026-05-17 (prealpha)
+
+Short-UUID sugar: type `csb show 7250ddce` (prefix), `csb resume c6793d73adaf` (suffix), or even `csb show 916441e6-...-1d090ef5` (the compact display form copied from `csb list --shortid` / `csb search`) instead of typing the full 36-char UUID. One shared resolver and one shared display helper, used by every csb command that takes or shows a session ID. `csb show` output is now Rich-colorized to match the `csb list` / `csb scan` visual style, and `Started:` / `Last active:` / `DELETED at:` timestamps now show local time alongside the original ISO 8601 UTC string for easier reading without losing exact searchability. 361/361 tests pass.
+
+### Added
+- **`claude_session_backup/ids.py`** -- shared session-ID resolver and display helper. `resolve_session_id(conn, query)` accepts: full UUIDs, prefixes (>=4 hex chars), suffixes (>=4 hex chars), or the compact display form `<head>-...-<tail>`. Four-tier matching: compact-form > exact full-UUID > prefix > suffix. On ambiguous match: raises `AmbiguousSessionID` with the candidate list (name, project, start-at path); the CLI prints them and exits 2, the user re-runs with a longer prefix. No interactive prompts -- stays scriptable. `format_short_uuid(uuid, head=8, tail=8)` returns the compact display form (e.g. `7250ddce-...-3d73adaf`).
+- **`_resolve_session_or_exit()` helper** in `commands.py` -- standard error-to-exit-code mapping (1 for no-match, 2 for ambiguous / invalid input). Used by `cmd_show`, `cmd_resume`, `cmd_restore`. Any csb command that takes a session-ID input goes through this single path.
+- **`--shortid` / `-sid` flag on `csb list`, `csb scan`, and `csb search`** -- opt-in to the compact UUID display form (`<head>-...-<tail>`). Default everywhere is the full UUID so users can paste directly into `claude --resume <uuid>` (the native claude binary has no short-form resolver). The compact form, when chosen, round-trips back through csb's resolver if pasted as input -- so copy-from-output is always safe within csb-land.
+- **`csb show` output is now Rich-colorized**: session name in bold cyan, start folder in bold green, deleted markers in red, the `Resume:` and `Restore with:` hints in bold yellow, dim styling for labels and metadata. Plain-text fallback kept for environments without Rich.
+- **Human-readable timestamps in `csb show`** -- `Started:`, `Last active:`, and `DELETED at:` now render as `<local YYYY-MM-DD HH:MM:SS> (<tz>) [ <original ISO> ]`. The local-time prefix makes scanning easy; the bracketed ISO string is kept so users can grep the JSONL by exact timestamp. Falls back to numeric UTC offset (e.g. `-04:00`) on Windows where `strftime("%Z")` returns long names like "Eastern Daylight Time".
+- **34 new tests** -- 30 in `test_ids.py` covering all 4 resolver tiers (input validation, full-UUID exact match, prefix-unique / prefix-ambiguous / longer-prefix-disambiguates, suffix-unique / suffix-ambiguous / suffix-fallback-after-prefix-miss, no-match, compact-form resolve / ambiguous / no-match / rejects too-short or non-hex halves, format_short_uuid round-trip, format_ambiguous_error truncation and null-metadata tolerance), plus 4 in `test_commands.py` for `_format_timestamp` (none, ISO retains original, TZ label present, unparseable falls back). Total: 361/361 pass (was 327 at v0.2.6; +34 net).
+
+### Changed
+- **`csb show <prefix>`, `csb resume <prefix>`, `csb restore <prefix>`** now accept any unambiguous prefix or suffix (>=4 chars) instead of requiring the full UUID. Backward-compatible -- full UUIDs continue to work. On collision, the CLI lists the candidates and the user re-runs with a longer prefix.
+- **All csb commands display the FULL UUID by default** -- `csb list`, `csb scan`, `csb search`, and `csb show` are uniform: full UUID is the visible default everywhere. This keeps the copy-paste-into-`claude --resume` workflow friction-free across the entire CLI. Use `--shortid` / `-sid` to opt into the compact display when readability matters more than paste-into-native-tools.
+
+### Notes
+- The compact display form ``<head>-...-<tail>`` is round-trip-safe: csb commands that take a session ID input accept the same string that csb displayed. Pasting from `csb search` or `csb list --shortid` works directly. Native `claude --resume` still needs the FULL UUID since claude has no resolver -- which is why csb's list/scan defaults to showing the full form.
+- 4 chars is the minimum length per half (head or tail). Below that, matching is meaningless across 100+ sessions; we reject early with a clear error rather than degrade to "guess from many candidates".
+- Collision UX is non-interactive: print candidates, exit 2. Scripts can detect ambiguity by exit code and resolve programmatically.
+
 ## [0.2.6] -- 2026-05-16 (prealpha)
 
 `csb search` now searches transcript content. Phase 1 of #3 (FTS5 epic) is complete -- the breaking change to `csb search`'s semantics is live, and `cmd_search` walks the `session_sources` paths populated by 0.2.5's backup integration. Metadata search (which `csb search` used to do) lives in `csb list <filter>` and `csb scan <term>`. 327/327 tests pass.
@@ -109,7 +130,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...HEAD
+[0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.5
 [0.2.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...v0.2.3
