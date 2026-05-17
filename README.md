@@ -164,6 +164,49 @@ Belt-and-suspenders periodic backup as a safety net:
 schtasks /create /tn "Claude Session Backup" /tr "csb backup --quiet" /sc minute /mo 15
 ```
 
+## Recovery
+
+When Claude Code purges a session you wanted to keep, csb can recover it from your `~/.claude` git history. The restore path is **byte-exact** regardless of host git's `core.autocrlf` settings, on every platform csb supports.
+
+### Finding what was deleted
+
+```bash
+csb list --deleted                  # Every session csb has flagged deleted, all projects
+csb list amd --deleted              # Filtered: only deleted sessions matching "amd"
+csb scan --deleted                  # Deleted sessions touching cwd (or any folder)
+csb scan -d /path/to/proj --deleted # Scoped to a specific folder (folder + descendants)
+csb scan --deleted --all-folders    # Don't truncate the per-session folder list
+```
+
+The default `csb list` and `csb scan` hide deleted sessions (active-only view); the bottom of `csb list` shows a one-line footer when there are deleted sessions matching your filter so you don't have to remember to check.
+
+### Recovering one session
+
+```bash
+csb restore <session-uuid>          # Full UUID required when DB has no row for it
+csb restore <prefix>                # Prefix works when the session IS in csb's DB
+csb restore <uuid> --dry-run        # Preview commit + target path without writing
+```
+
+If csb's DB doesn't have a row for the session (e.g., after `csb rebuild-index`, or on a fresh machine), `csb restore` falls back to walking `git log --all` for `projects/*/<uuid>.jsonl`. It needs the full UUID for the fallback path.
+
+### Recovering many sessions at once
+
+```bash
+csb scan -d <pattern> --deleted --restore --dry-run    # Preview the whole set
+csb scan -d <pattern> --deleted --restore              # Confirm prompt for >1 file
+csb scan -d <pattern> --deleted --restore --yes       # Skip the prompt
+csb scan -d <pattern> --deleted --restore --force     # Overwrite existing on-disk files
+```
+
+Bulk restore takes the same `backup_lock` as `csb backup`, so it won't race a concurrent backup. Per-file status (`OK` / `SKIP` / `FAIL`) is printed; the final line summarizes counts.
+
+### What csb restore does NOT do
+
+- It does NOT modify any other Claude Code state files. Only the JSONL is written back to its original `projects/<slug>/<uuid>.jsonl` location.
+- It does NOT preserve the original mtime — restored files have `mtime=now` (a known limitation; affects the `--sort expiration` view until the next backup cycle).
+- It does NOT (yet) restore subagent or tool-result subdirectory contents alongside the JSONL — separate follow-up if testing shows the JSONL alone isn't enough for `claude --resume`.
+
 ## Requirements
 
 - **Python 3.10+**

@@ -23,6 +23,7 @@ from .git_ops import (
 )
 from .lockfile import backup_lock
 from .index import (
+    count_deleted_with_filter,
     get_active_session_ids,
     get_all_known_session_ids,
     get_session,
@@ -242,14 +243,24 @@ def cmd_list(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
 
+    filter_keyword = getattr(args, "filter", None)
     sessions = list_sessions(
         conn,
         limit=args.n,
         show_deleted=args.deleted,
         show_all=args.all,
-        filter_keyword=getattr(args, "filter", None),
+        filter_keyword=filter_keyword,
         sort_key=getattr(args, "sort", "last-used"),
     )
+
+    # Filter-aware "N deleted hidden" footer (Phase 3 / #27).
+    # Only emit when running in default active-only mode (--deleted / --all
+    # explicitly show the otherwise-hidden rows, so the footer would be
+    # noise). Suppressed when count is zero -- don't say "0 deleted hidden".
+    deleted_hidden_count = 0
+    if not args.deleted and not args.all:
+        deleted_hidden_count = count_deleted_with_filter(conn, filter_keyword)
+
     conn.close()
 
     cleanup_days = read_cleanup_period(config["claude_dir"])
@@ -261,6 +272,21 @@ def cmd_list(args) -> int:
         render_timeline_rich(sessions, cleanup_days=cleanup_days, top_folders=top_folders)
     else:
         print(format_timeline(sessions, cleanup_days=cleanup_days, top_folders=top_folders))
+
+    if deleted_hidden_count > 0:
+        # Echo the user's filter back so the count's scope is unambiguous.
+        # Example: `csb list amd` -> "(3 deleted sessions matching 'amd'
+        # hidden -- run `csb list amd --deleted` to see, `csb restore <id>`
+        # to recover)".
+        word = "session" if deleted_hidden_count == 1 else "sessions"
+        matching = f" matching '{filter_keyword}'" if filter_keyword else ""
+        cmd_suffix = f" {filter_keyword}" if filter_keyword else ""
+        print()
+        print(
+            f"({deleted_hidden_count} deleted {word}{matching} hidden -- "
+            f"run `csb list{cmd_suffix} --deleted` to see, "
+            f"`csb restore <id>` to recover)"
+        )
 
     return 0
 
@@ -728,6 +754,20 @@ def cmd_scan(args) -> int:
     no_usage = getattr(args, "no_usage", False)
     top_n = _resolve_top_folders(args, config)
 
+    # Deletion-filter scope (Phase 3 / #27).
+    # Precedence: --restore implies --deleted (restore only applies to deleted
+    # sessions); --deleted and --all are mutually exclusive at the argparse
+    # layer; default is "active" (preserves pre-#27 behavior).
+    want_restore = bool(getattr(args, "restore", False))
+    if want_restore:
+        deleted_filter = "deleted"
+    elif getattr(args, "deleted", False):
+        deleted_filter = "deleted"
+    elif getattr(args, "all", False):
+        deleted_filter = "all"
+    else:
+        deleted_filter = "active"
+
     # Resolve mode from argparse output
     directories_below = getattr(args, "directories_below", None)
     directory_only = getattr(args, "directory_only", None)
@@ -785,15 +825,18 @@ def cmd_scan(args) -> int:
         try:
             conn = open_db(config["index_path"])
             init_schema(conn)
-            results = find_sessions_by_term(conn, term, top_n=top_n)
+            results = find_sessions_by_term(
+                conn, term, top_n=top_n, deleted_filter=deleted_filter,
+            )
             conn.close()
         except Exception:
             results = []
 
         return _render_scan_results(
             results, args, config,
-            scope_label=f"matching '{term}'",
+            scope_label=_decorate_scope_label(f"matching '{term}'", deleted_filter),
             quiet=quiet,
+            deleted_filter=deleted_filter,
         )
 
     # ── Path-strict mode (or bare): -d / -D / no-args ──────────────
@@ -809,9 +852,13 @@ def cmd_scan(args) -> int:
         pattern_input, include_descendants
     )
 
-    # Validate that the resolved path exists (warning, not blocker)
+    # Validate that the resolved path exists (warning, not blocker).
+    # Skip this check when running in --deleted / --all mode: those are
+    # exactly the queries where the scope path may no longer exist on disk
+    # (e.g., user deleted the folder and wants to recover the sessions that
+    # were in it). The SQL pass against the DB handles missing paths fine.
     has_wildcard = pattern_input.endswith("*")
-    if not has_wildcard:
+    if not has_wildcard and deleted_filter == "active":
         if exact_value and not Path(exact_value).exists():
             print(
                 f"[warning] '{pattern_input}' (resolved: {exact_value}) does not exist; "
@@ -823,21 +870,25 @@ def cmd_scan(args) -> int:
                 try:
                     conn = open_db(config["index_path"])
                     init_schema(conn)
-                    results = find_sessions_by_term(conn, term, top_n=top_n)
+                    results = find_sessions_by_term(
+                        conn, term, top_n=top_n, deleted_filter=deleted_filter,
+                    )
                     conn.close()
                 except Exception:
                     results = []
                 return _render_scan_results(
                     results, args, config,
-                    scope_label=f"matching '{term}'",
+                    scope_label=_decorate_scope_label(f"matching '{term}'", deleted_filter),
                     quiet=quiet,
+                    deleted_filter=deleted_filter,
                 )
             else:
                 # No fallback term -> empty result set
                 return _render_scan_results(
                     [], args, config,
-                    scope_label=f"under {exact_value}",
+                    scope_label=_decorate_scope_label(f"under {exact_value}", deleted_filter),
                     quiet=quiet,
+                    deleted_filter=deleted_filter,
                 )
 
     # Step 1: Filesystem scan (only when pattern resolves to a concrete path).
@@ -856,44 +907,49 @@ def cmd_scan(args) -> int:
             sql_results = find_sessions_by_directory(
                 conn, exact_value, like_match, like_exclude, top_n,
                 start_folder_only=sql_start_folder_only,
+                deleted_filter=deleted_filter,
             )
             conn.close()
         except Exception:
             pass  # Index may not exist yet -- graceful fallback
 
-    # Merge: filesystem-scanned (with fresh metadata extraction) + SQLite-only
+    # Merge: filesystem-scanned (with fresh metadata extraction) + SQLite-only.
+    # The filesystem walk inherently only finds present-on-disk sessions, so it
+    # cannot contribute deleted rows. When --deleted is set, skip the FS pass
+    # entirely -- the SQL pass is authoritative for the "deleted" scope.
     seen_ids: set[str] = set()
     results: list = []
 
-    for sf in sessions_fs:
-        try:
-            meta = extract_metadata(sf.jsonl_path)
-            meta.project = sf.project
-            results.append({
-                "session_id": sf.session_id,
-                "session_name": meta.session_name,
-                "project": meta.project,
-                "start_folder": meta.start_folder,
-                "started_at": meta.started_at,
-                "last_active_at": meta.last_active_at,
-                "last_user_at": meta.last_user_at,
-                "message_count": meta.message_count,
-                "tool_call_count": meta.tool_call_count,
-                "claude_version": meta.claude_version,
-                "folders": [
-                    {
-                        "folder_path": path,
-                        "usage_count": count,
-                        "is_start_folder": path == meta.start_folder,
-                    }
-                    for path, count in meta.folder_usage.items()
-                ],
-                "jsonl_location": str(sf.jsonl_path),
-                "jsonl_mtime": sf.jsonl_mtime,
-            })
-            seen_ids.add(sf.session_id)
-        except Exception:
-            continue
+    if deleted_filter != "deleted":
+        for sf in sessions_fs:
+            try:
+                meta = extract_metadata(sf.jsonl_path)
+                meta.project = sf.project
+                results.append({
+                    "session_id": sf.session_id,
+                    "session_name": meta.session_name,
+                    "project": meta.project,
+                    "start_folder": meta.start_folder,
+                    "started_at": meta.started_at,
+                    "last_active_at": meta.last_active_at,
+                    "last_user_at": meta.last_user_at,
+                    "message_count": meta.message_count,
+                    "tool_call_count": meta.tool_call_count,
+                    "claude_version": meta.claude_version,
+                    "folders": [
+                        {
+                            "folder_path": path,
+                            "usage_count": count,
+                            "is_start_folder": path == meta.start_folder,
+                        }
+                        for path, count in meta.folder_usage.items()
+                    ],
+                    "jsonl_location": str(sf.jsonl_path),
+                    "jsonl_mtime": sf.jsonl_mtime,
+                })
+                seen_ids.add(sf.session_id)
+            except Exception:
+                continue
 
     for session in sql_results:
         if session["session_id"] not in seen_ids:
@@ -926,15 +982,51 @@ def cmd_scan(args) -> int:
         if term:
             scope_label += f" filtered by '{term}'"
 
-    return _render_scan_results(results, args, config, scope_label=scope_label, quiet=quiet)
+    scope_label = _decorate_scope_label(scope_label, deleted_filter)
+
+    return _render_scan_results(
+        results, args, config, scope_label=scope_label, quiet=quiet,
+        deleted_filter=deleted_filter,
+    )
 
 
-def _render_scan_results(results, args, config, scope_label: str, quiet: bool) -> int:
-    """Sort, trim, and render scan results. Shared by all scan modes."""
+def _decorate_scope_label(label: str, deleted_filter: str) -> str:
+    """Return ``label`` unchanged. The deleted-filter mode is rendered
+    separately by ``_render_scan_results`` (it becomes the "session(s)"
+    qualifier in the user-facing line). Kept as a hook so future scope
+    decorations have one place to plug in."""
+    return label
+
+
+def _session_noun(deleted_filter: str, plural: bool = True) -> str:
+    """Return the right noun for the filter mode.
+
+    'active' -> 'session(s)'    (default; preserves pre-#27 wording)
+    'deleted' -> 'deleted session(s)'
+    'all' -> 'session(s) (active+deleted)'
+    """
+    if deleted_filter == "deleted":
+        return "deleted sessions" if plural else "deleted session"
+    if deleted_filter == "all":
+        return "sessions (active+deleted)" if plural else "session (active or deleted)"
+    return "sessions" if plural else "session"
+
+
+def _render_scan_results(
+    results, args, config, scope_label: str, quiet: bool,
+    deleted_filter: str = "active",
+) -> int:
+    """Sort, trim, and render scan results. Shared by all scan modes.
+
+    When ``--restore`` is set (Phase 3), delegate to the bulk-restore path
+    instead of rendering. The scope/filter selection happens upstream --
+    this function just dispatches.
+    """
     no_usage = getattr(args, "no_usage", False)
+    noun = _session_noun(deleted_filter)
 
     if not quiet:
-        print(f"Scanning for sessions {scope_label}...\n")
+        print(f"Scanning for {noun} {scope_label}...\n")
 
     # Sort by last activity (most recent first)
     results.sort(
@@ -943,10 +1035,19 @@ def _render_scan_results(results, args, config, scope_label: str, quiet: bool) -
     )
 
     total_found = len(results)
+
+    # Bulk restore path (Phase 3 / #27). Acts on the unrestricted result set
+    # (not the -n trim) -- the user's intent is "restore everything matching
+    # my scope", not "restore only what would fit on screen".
+    if getattr(args, "restore", False):
+        return _bulk_restore_jsonls(
+            results, args, config, scope_label=scope_label, quiet=quiet,
+        )
+
     results = results[:args.n]
 
     if not results:
-        print("  No sessions found.")
+        print(f"  No {noun} found.")
         if no_usage:
             print("  Tip: try without -NU to also search by folder usage.")
         return 0
@@ -958,7 +1059,8 @@ def _render_scan_results(results, args, config, scope_label: str, quiet: bool) -
         print(json.dumps(results, indent=2, default=str))
         return 0
 
-    print(f"Found {total_found} session(s) {scope_label}" +
+    count_noun = _session_noun(deleted_filter)
+    print(f"Found {total_found} {count_noun} {scope_label}" +
           (f" (showing top {args.n}):" if total_found > args.n else ":"))
     print()
 
@@ -968,3 +1070,128 @@ def _render_scan_results(results, args, config, scope_label: str, quiet: bool) -
         print(format_timeline(results, cleanup_days=cleanup_days, top_folders=top_folders))
 
     return 0
+
+
+def _bulk_restore_jsonls(results, args, config, scope_label: str, quiet: bool) -> int:
+    """
+    Restore the JSONL for each session in ``results`` from git history.
+
+    Driven by ``csb scan ... --restore``. Per the plan:
+
+      - Requires at least one match. Empty results => print "Nothing to
+        restore" and exit 0 (not an error -- the user's scope was just
+        empty).
+      - For one match: skip the confirmation prompt and proceed (the user
+        already typed --restore; one file is unambiguous).
+      - For >1 matches: confirm interactively unless ``--yes``. ``--dry-run``
+        shows the preview without prompting.
+      - For each result, skip if the on-disk file already exists unless
+        ``--force``. Per-file status is printed.
+      - Takes ``backup_lock`` for the file-write phase to avoid races with
+        a concurrent ``csb backup`` (which would see the just-restored
+        file as "new" with current mtime).
+
+    Returns 0 on success (every file either restored, skipped-as-present,
+    or dry-run-previewed). Returns 1 if any file failed to restore.
+    """
+    claude_dir = config["claude_dir"]
+    dry_run = bool(getattr(args, "dry_run", False))
+    yes = bool(getattr(args, "yes", False))
+    force = bool(getattr(args, "force", False))
+
+    if not results:
+        if not quiet:
+            print(f"  Nothing to restore -- no deleted sessions {scope_label}.")
+        return 0
+
+    # For sessions in `results` that lack jsonl_path, we can't restore. Drop
+    # them with a notice -- this shouldn't happen post-v0.2.4 but legacy
+    # rows might exist.
+    candidates: list[tuple[dict, str]] = []  # (session, jsonl_path)
+    skipped_no_path = 0
+    for s in results:
+        p = s.get("jsonl_path")
+        if not p:
+            skipped_no_path += 1
+            continue
+        candidates.append((s, p))
+
+    if not candidates:
+        print(f"  No restorable rows (all {len(results)} matches lack jsonl_path).",
+              file=sys.stderr)
+        return 1
+
+    n = len(candidates)
+    if not quiet:
+        verb = "Would restore" if dry_run else "Restore"
+        print(f"{verb} {n} session JSONL(s) from git history:\n")
+        for s, p in candidates:
+            uuid = s["session_id"]
+            name = s.get("session_name") or "(unnamed)"
+            print(f"  {uuid[:8]}  {name}")
+            print(f"            {p}")
+        print()
+
+    # Confirm-prompt guardrail: > 1 file and not --yes / not --dry-run.
+    if n > 1 and not (yes or dry_run):
+        try:
+            reply = input(f"Proceed to restore {n} files? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.", file=sys.stderr)
+            return 1
+        if reply not in ("y", "yes"):
+            print("Aborted.")
+            return 0
+
+    if dry_run:
+        if not quiet:
+            print("(dry-run -- no files written)")
+        return 0
+
+    # Take backup_lock for the duration of the writes. Without this, a
+    # concurrent `csb backup` would race: it might see the just-restored
+    # file before its mtime stabilizes, mark it as a new session, then
+    # commit stale metadata. The lock is short -- released as soon as
+    # the loop completes.
+    with backup_lock(claude_dir) as acquired:
+        if not acquired:
+            print(
+                "Another csb backup is running. Wait for it to finish "
+                "before restoring (avoids a race that could mark the "
+                "restored file as 'new' with wrong metadata).",
+                file=sys.stderr,
+            )
+            return 1
+
+        restored = 0
+        skipped = 0
+        failed = 0
+        for s, jsonl_rel in candidates:
+            full_path = Path(claude_dir) / jsonl_rel
+            if full_path.exists() and not force:
+                print(f"  SKIP  {s['session_id'][:8]}  {jsonl_rel} "
+                      f"(already exists; use --force to overwrite)")
+                skipped += 1
+                continue
+            commit = git_find_deleted_file(claude_dir, jsonl_rel)
+            if not commit:
+                print(f"  FAIL  {s['session_id'][:8]}  {jsonl_rel} "
+                      f"(not in git history)", file=sys.stderr)
+                failed += 1
+                continue
+            ok = git_restore_file(claude_dir, commit, jsonl_rel, full_path)
+            if ok:
+                print(f"  OK    {s['session_id'][:8]}  {jsonl_rel} "
+                      f"(from {commit[:8]})")
+                restored += 1
+            else:
+                print(f"  FAIL  {s['session_id'][:8]}  {jsonl_rel} "
+                      f"(restore failed)", file=sys.stderr)
+                failed += 1
+
+    if not quiet:
+        print()
+        print(f"  Restored: {restored}    Skipped: {skipped}    Failed: {failed}")
+        if skipped_no_path:
+            print(f"  ({skipped_no_path} matches dropped -- no jsonl_path in DB row)")
+    return 1 if failed else 0

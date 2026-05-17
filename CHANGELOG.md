@@ -9,6 +9,25 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.8] -- 2026-05-17 (prealpha)
+
+Phase 3 of the restore shoring-up plan. Closes #27 by surfacing deleted sessions in `csb scan` and `csb list`, adding a filter-aware "N deleted hidden" footer to `csb list`, and adding bulk-restore via `csb scan --deleted --restore`. Test count 304 → 322 (+18 Phase 3 tests). README now has a Recovery section (closes the deferred README AC from #29). Version renumbered from 0.2.7 to 0.2.8 to clear the slot for main's parallel `v0.2.7` (FTS5 follow-on) work; the `0.2.6` slot on this branch is held by my Phase 2 commit and the `0.2.7` slot will be filled by main's content-search rewrite (`d9c2330`) when merged in.
+
+### Added
+- **`csb scan --deleted`** / **`csb scan --all`** -- mutually exclusive flags that change which sessions a scan returns. Default behavior unchanged (active-only). `--deleted` returns only DB-flagged deleted sessions in the scoped folder; `--all` returns both active and deleted. Works in every scan mode: bare-cwd, `-d` / `-D` / `-s` path-strict, broad-term, and combined (`-d <pattern> <term>`). When `--deleted` is set, csb skips the filesystem-existence check on the scope path so users can still query for sessions whose original folder was deleted.
+- **`csb scan --restore`** + **`--dry-run`** / **`--yes`** / **`--force`** -- bulk restore of every deleted session matching the scope. Implies `--deleted`. Confirms before restoring >1 file unless `--yes` is given. `--dry-run` previews per-file. Default refuses to overwrite an existing on-disk file (use `--force` to override). Takes `backup_lock` for the file-write phase so a concurrent `csb backup` can't race the restore and mark the just-restored file as "new" with current mtime.
+- **Filter-aware footer for `csb list`** -- when running in default active-only mode and the DB has matching deleted sessions, csb prints a one-line footer with the count and the correct suggested command. The count and the suggested command both respect the user's filter keyword: `csb list` prints `"3 deleted sessions hidden -- run \`csb list --deleted\` to see"`; `csb list amd` prints `"2 deleted sessions matching 'amd' hidden -- run \`csb list amd --deleted\` to see"`. Suppressed when count is zero, when `--deleted` is set (user is already looking at them), or when `--all` is set. New `count_deleted_with_filter()` helper in `index.py` reuses `list_sessions`'s exact WHERE-predicate construction so the count's scope matches the filter exactly.
+- **`README.md` "Recovery" section** -- documents the full deleted-session discovery + recovery story end-to-end: find, restore single, restore many, what restore does NOT do (mtime, subdirs, other state files). Closes the `Document in README "Recovery" section: csb restore is byte-exact regardless of host git's autocrlf settings` AC from #29 that was deferred to this phase per the plan.
+- **18 new tests in `tests/test_restore.py`**: SQL deleted-filter for `find_sessions_by_directory` / `find_sessions_by_term` (5 including unknown-filter ValueError), `count_deleted_with_filter` (2 unfiltered + keyword), filter-aware footer in `cmd_list` (4 including the no-footer-when-zero / no-footer-when-deleted-shown cases), `csb scan --deleted` / `--all` (2), bulk restore (5: dry-run, yes-skips-prompt, refuse-existing-without-force, force-overwrites, empty-scope-says-nothing-to-restore).
+
+### Changed
+- **`find_sessions_by_directory` and `find_sessions_by_term`** in `index.py` -- new keyword-only `deleted_filter` parameter (default `"active"` preserves pre-#27 behavior). Accepts `"active"` / `"deleted"` / `"all"`. Centralized via a new `_deleted_filter_clause` helper so the three scan paths stay in sync. Unknown values raise `ValueError`.
+- **`cmd_scan` skips the scope-path filesystem-existence warning** when running in `--deleted` or `--all` mode. The warning was correct for the active-only use case but misleading for "find sessions in this folder that I deleted" -- the folder may also be gone. The SQL pass against the DB handles missing scope paths fine.
+- **`csb scan` user-facing wording** -- the noun in the "Scanning for ..." / "Found N ..." line now reflects the deleted-filter mode: `"sessions"` / `"deleted sessions"` / `"sessions (active+deleted)"`. Helper `_session_noun()` keeps this in one place.
+
+### Plan reference
+Phase 3 of the four-phase restore shoring-up plan (`2026-05-16__16-30-43__claude-plan__shore-up-csb-restore-subsystem.md`). Phase 4 (end-to-end hand-runnable checklist, closes #13) ships next and converts the Phase 0 `restore_reality_check.py` evidence into a permanent procedure including `claude --resume` validation.
+
 ## [0.2.6] -- 2026-05-16 (prealpha)
 
 Phase 2 of the restore shoring-up plan. Closes #28 by letting `csb restore` fall back to git history when the DB has no row for the requested session. Affects users post-`rebuild-index`, on a fresh machine (DB lost / never built), or restoring sessions committed by something other than csb. Test count: 250 → 304 (+12 Phase 2 tests on top of v0.2.5's +41).

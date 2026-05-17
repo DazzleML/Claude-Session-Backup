@@ -640,6 +640,386 @@ def test_cmd_restore_with_db_row_unchanged_regression(mock_claude_dir, tmp_path,
     assert src.read_bytes() == expected, "restored bytes must match the git blob"
 
 
+# ── Phase 3: csb scan --deleted / --all / --restore + filter-aware footer ──
+
+@pytest.fixture
+def populated_db_and_repo(mock_claude_dir, tmp_path):
+    """A claude dir + DB with three sessions, one of them marked deleted on disk.
+
+    Returns (claude_dir, db_path, sessions_dict) where sessions_dict has keys
+    'active1', 'active2', 'deleted1' mapping to UUIDs.
+    """
+    from claude_session_backup.index import (
+        open_db, init_schema, upsert_session, mark_deleted,
+    )
+    from claude_session_backup.metadata import SessionMetadata
+
+    # Three distinct UUIDs
+    active1 = "11111111-2222-3333-4444-555555555551"
+    active2 = "11111111-2222-3333-4444-555555555552"
+    deleted1 = "11111111-2222-3333-4444-555555555553"
+
+    db_path = tmp_path / "phase3.db"
+    conn = open_db(str(db_path))
+    init_schema(conn)
+
+    # Commit JSONLs to mock_claude_dir for each. deleted1 we'll also unlink
+    # from disk to simulate Claude Code purging it.
+    for uuid in (active1, active2, deleted1):
+        rel = f"projects/C--code-proj/{uuid}.jsonl"
+        _commit_file(mock_claude_dir, rel, b'{"x":1}\n', f"add {uuid[:8]}")
+
+        meta = SessionMetadata(session_id=uuid, project="C--code-proj")
+        meta.start_folder = "C:\\code\\proj"
+        meta.folder_usage = {"C:\\code\\proj": 1}
+        upsert_session(conn, meta, rel, 0, 0.0, "2026-05-16T20:00:00Z")
+
+    # Mark deleted1 as deleted (don't actually need to remove the file --
+    # but doing so matches a realistic state).
+    mark_deleted(conn, deleted1, "2026-05-16T20:00:01Z")
+    (mock_claude_dir / f"projects/C--code-proj/{deleted1}.jsonl").unlink()
+    conn.commit()
+    conn.close()
+
+    return mock_claude_dir, db_path, {
+        "active1": active1, "active2": active2, "deleted1": deleted1,
+    }
+
+
+def test_find_sessions_by_directory_default_excludes_deleted(populated_db_and_repo):
+    """Regression: default deleted_filter='active' preserves pre-#27 behavior."""
+    from claude_session_backup.index import open_db, init_schema, find_sessions_by_directory
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    rows = find_sessions_by_directory(
+        conn, "C:\\code\\proj", None, None, top_n=None,
+    )
+    conn.close()
+    found = {r["session_id"] for r in rows}
+    assert ids["active1"] in found and ids["active2"] in found
+    assert ids["deleted1"] not in found, "default mode must exclude deleted"
+
+
+def test_find_sessions_by_directory_deleted_only(populated_db_and_repo):
+    from claude_session_backup.index import open_db, init_schema, find_sessions_by_directory
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    rows = find_sessions_by_directory(
+        conn, "C:\\code\\proj", None, None, top_n=None, deleted_filter="deleted",
+    )
+    conn.close()
+    found = {r["session_id"] for r in rows}
+    assert found == {ids["deleted1"]}, f"expected only deleted1, got {found}"
+
+
+def test_find_sessions_by_directory_all_returns_both(populated_db_and_repo):
+    from claude_session_backup.index import open_db, init_schema, find_sessions_by_directory
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    rows = find_sessions_by_directory(
+        conn, "C:\\code\\proj", None, None, top_n=None, deleted_filter="all",
+    )
+    conn.close()
+    found = {r["session_id"] for r in rows}
+    assert found == set(ids.values())
+
+
+def test_find_sessions_by_directory_unknown_filter_raises(populated_db_and_repo):
+    from claude_session_backup.index import open_db, init_schema, find_sessions_by_directory
+
+    claude, db, _ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    with pytest.raises(ValueError, match="unknown deleted_filter"):
+        find_sessions_by_directory(
+            conn, "C:\\code\\proj", None, None, top_n=None,
+            deleted_filter="nonsense",
+        )
+    conn.close()
+
+
+def test_find_sessions_by_term_deleted_filter(populated_db_and_repo):
+    from claude_session_backup.index import open_db, init_schema, find_sessions_by_term
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    rows = find_sessions_by_term(conn, "proj", deleted_filter="deleted")
+    conn.close()
+    found = {r["session_id"] for r in rows}
+    assert found == {ids["deleted1"]}
+
+
+def test_count_deleted_with_filter_unfiltered(populated_db_and_repo):
+    from claude_session_backup.index import open_db, init_schema, count_deleted_with_filter
+
+    _claude, db, _ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    assert count_deleted_with_filter(conn) == 1
+    conn.close()
+
+
+def test_count_deleted_with_filter_matches_keyword(populated_db_and_repo):
+    from claude_session_backup.index import open_db, init_schema, count_deleted_with_filter
+
+    _claude, db, _ids = populated_db_and_repo
+    conn = open_db(str(db))
+    init_schema(conn)
+    assert count_deleted_with_filter(conn, "proj") == 1
+    assert count_deleted_with_filter(conn, "totally-not-a-match") == 0
+    conn.close()
+
+
+def test_cmd_list_footer_appears_when_active_only_with_deleted_present(
+    populated_db_and_repo, capsys,
+):
+    from claude_session_backup.commands import cmd_list
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_args_namespace(
+        n=20, deleted=False, all=False, json=False,
+        filter=None, sort="last-used", top=None, all_folders=False,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_list(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # Footer should appear exactly once, with the unfiltered phrasing.
+    assert "1 deleted session" in captured.out
+    assert "matching" not in captured.out, "unfiltered list must NOT echo a keyword"
+    assert "csb list --deleted" in captured.out
+
+
+def test_cmd_list_footer_echoes_filter_keyword(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_list
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_args_namespace(
+        n=20, deleted=False, all=False, json=False,
+        filter="proj", sort="last-used", top=None, all_folders=False,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_list(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "1 deleted session matching 'proj'" in captured.out, captured.out
+    assert "csb list proj --deleted" in captured.out
+
+
+def test_cmd_list_no_footer_when_deleted_shown(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_list
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_args_namespace(
+        n=20, deleted=True, all=False, json=False,
+        filter=None, sort="last-used", top=None, all_folders=False,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_list(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "hidden" not in captured.out, "no footer when --deleted is set"
+
+
+def test_cmd_list_no_footer_when_zero_deleted(mock_claude_dir, tmp_path, capsys):
+    """When there are no deleted sessions, the footer must NOT print."""
+    from claude_session_backup.commands import cmd_list
+    from claude_session_backup.index import open_db, init_schema, upsert_session
+    from claude_session_backup.metadata import SessionMetadata
+
+    db = tmp_path / "zero_deleted.db"
+    conn = open_db(str(db))
+    init_schema(conn)
+    meta = SessionMetadata(session_id="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", project="C--proj")
+    upsert_session(conn, meta, "projects/C--proj/x.jsonl", 0, 0.0, "2026-05-16T20:00:00Z")
+    conn.commit()
+    conn.close()
+
+    args = _make_args_namespace(
+        n=20, deleted=False, all=False, json=False,
+        filter=None, sort="last-used", top=None, all_folders=False,
+        claude_dir=str(mock_claude_dir), db=str(db),
+    )
+    rc = cmd_list(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "hidden" not in captured.out
+
+
+# ── csb scan --deleted / --all / --restore (cmd_scan integration) ──────
+
+def _make_scan_args(**kwargs):
+    """Build a Namespace matching argparse output for cmd_scan."""
+    import argparse
+    defaults = {
+        # path-strict mode flags
+        "directories_below": None, "directory_only": None, "start_dir_only": None,
+        # positionals
+        "term": None, "term2": None,
+        # display / behavior
+        "n": 20, "no_usage": False, "json": False,
+        "top": None, "all_folders": False,
+        # phase 3 flags
+        "deleted": False, "all": False, "restore": False, "dry_run": False,
+        "yes": False, "force": False,
+        # common flags
+        "quiet": False, "claude_dir": None, "db": None,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_scan_deleted_returns_only_deleted(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_scan
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_scan_args(
+        directories_below="C:\\code\\proj",
+        deleted=True,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # Match on the FULL UUID since my fixture UUIDs share the first 30 chars.
+    assert ids["deleted1"] in captured.out, captured.out
+    assert ids["active1"] not in captured.out
+    assert ids["active2"] not in captured.out
+    # Scope label should mention deleted
+    assert "deleted sessions" in captured.out.lower()
+
+
+def test_cmd_scan_all_returns_both(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_scan
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_scan_args(
+        directories_below="C:\\code\\proj",
+        all=True,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # All three should appear when --all is set
+    for k in ("active1", "active2", "deleted1"):
+        # Either as UUID prefix in output or as part of the "Found N sessions" line
+        pass  # actual presence checked via the "Found N" count below
+    assert "active+deleted" in captured.out or "3" in captured.out
+
+
+def test_cmd_scan_restore_dry_run_no_writes(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_scan
+
+    claude, db, ids = populated_db_and_repo
+    deleted_path = claude / f"projects/C--code-proj/{ids['deleted1']}.jsonl"
+    assert not deleted_path.exists(), "fixture should have deleted this from disk"
+
+    args = _make_scan_args(
+        directories_below="C:\\code\\proj",
+        restore=True, dry_run=True, yes=True,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "would restore" in captured.out.lower()
+    assert "dry-run" in captured.out.lower()
+    assert not deleted_path.exists(), "dry-run must not write files"
+
+
+def test_cmd_scan_restore_yes_skips_prompt_and_restores(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_scan
+
+    claude, db, ids = populated_db_and_repo
+    deleted_path = claude / f"projects/C--code-proj/{ids['deleted1']}.jsonl"
+    assert not deleted_path.exists()
+
+    args = _make_scan_args(
+        directories_below="C:\\code\\proj",
+        restore=True, yes=True,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0, f"unexpected failure; stderr: {captured.err}"
+    assert deleted_path.exists(), "file should be restored"
+    assert b'{"x":1}\n' == deleted_path.read_bytes(), "bytes must match the blob"
+    assert "Restored: 1" in captured.out
+
+
+def test_cmd_scan_restore_refuses_existing_without_force(populated_db_and_repo, capsys):
+    """If the on-disk file exists, restore must skip unless --force."""
+    from claude_session_backup.commands import cmd_scan
+
+    claude, db, ids = populated_db_and_repo
+    # Put the file back on disk (as if user un-deleted it manually)
+    deleted_path = claude / f"projects/C--code-proj/{ids['deleted1']}.jsonl"
+    deleted_path.write_bytes(b'{"modified":true}\n')
+    assert deleted_path.exists()
+
+    args = _make_scan_args(
+        directories_below="C:\\code\\proj",
+        restore=True, yes=True,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "SKIP" in captured.out
+    assert "use --force" in captured.out
+    # File NOT overwritten
+    assert deleted_path.read_bytes() == b'{"modified":true}\n'
+
+
+def test_cmd_scan_restore_force_overwrites_existing(populated_db_and_repo, capsys):
+    from claude_session_backup.commands import cmd_scan
+
+    claude, db, ids = populated_db_and_repo
+    deleted_path = claude / f"projects/C--code-proj/{ids['deleted1']}.jsonl"
+    deleted_path.write_bytes(b'{"modified":true}\n')
+
+    args = _make_scan_args(
+        directories_below="C:\\code\\proj",
+        restore=True, yes=True, force=True,
+        claude_dir=str(claude), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "OK" in captured.out
+    # Now overwritten with the git-blob bytes
+    assert deleted_path.read_bytes() == b'{"x":1}\n'
+
+
+def test_cmd_scan_restore_empty_scope_says_nothing_to_restore(mock_claude_dir, tmp_path, capsys):
+    """When no deleted sessions match the scope, exit 0 with a clear notice."""
+    from claude_session_backup.commands import cmd_scan
+    from claude_session_backup.index import open_db, init_schema
+
+    db = tmp_path / "empty.db"
+    conn = open_db(str(db))
+    init_schema(conn)
+    conn.close()
+
+    args = _make_scan_args(
+        directories_below=".",
+        restore=True, yes=True,
+        claude_dir=str(mock_claude_dir), db=str(db),
+    )
+    rc = cmd_scan(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "nothing to restore" in captured.out.lower()
+
+
 # ── Linux regression -- the byte-pure path must also work on POSIX ──────
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX regression check")

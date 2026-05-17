@@ -331,6 +331,51 @@ def list_sessions(conn: sqlite3.Connection, limit: int = 20,
     return results
 
 
+def count_deleted_with_filter(
+    conn: sqlite3.Connection, filter_keyword: str | None = None
+) -> int:
+    """
+    Count sessions matching ``filter_keyword`` (or all sessions) that are
+    flagged ``deleted_at IS NOT NULL``.
+
+    Reuses ``list_sessions``'s exact WHERE-predicate construction so the
+    "N deleted hidden" footer in ``csb list`` reflects the same scope as
+    the filter the user just typed.
+
+    Args:
+        conn: open SQLite connection.
+        filter_keyword: if provided, count only deleted sessions whose
+            session_name / project / start_folder / any folder_usage path
+            contains the keyword (case-insensitive). If None, count all
+            deleted sessions.
+
+    Returns:
+        Integer count. Zero when there are no matching deleted sessions
+        (or the filter is too narrow to match any).
+    """
+    conditions = ["s.deleted_at IS NOT NULL"]
+    params: list = []
+    if filter_keyword:
+        pattern = f"%{filter_keyword}%"
+        conditions.append("""(
+            s.session_name LIKE ? COLLATE NOCASE
+            OR s.project LIKE ? COLLATE NOCASE
+            OR s.start_folder LIKE ? COLLATE NOCASE
+            OR s.session_id IN (
+                SELECT fu.session_id FROM folder_usage fu
+                WHERE fu.folder_path LIKE ? COLLATE NOCASE
+            )
+        )""")
+        params.extend([pattern, pattern, pattern, pattern])
+
+    where = " AND ".join(conditions)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS c FROM sessions s WHERE {where}",
+        params,
+    ).fetchone()
+    return int(row["c"] if row else 0)
+
+
 def get_session(conn: sqlite3.Connection, session_id_prefix: str) -> Optional[dict]:
     """Get a session by ID prefix match."""
     row = conn.execute(
@@ -371,11 +416,38 @@ def escape_like_value(s: str, escape_char: str = "|") -> str:
     )
 
 
+def _deleted_filter_clause(deleted_filter: str) -> str:
+    """
+    Build the WHERE fragment that restricts (or doesn't) on ``s.deleted_at``.
+
+    Returns a SQL fragment that begins with ``s.deleted_at IS [NOT] NULL`` (no
+    leading ``AND``) or the literal ``"1=1"`` for "no filter". Callers wrap it
+    in their WHERE compositions as appropriate. Centralized so the three scan
+    paths stay in sync.
+
+    Allowed values:
+      - ``"active"``  -> ``s.deleted_at IS NULL``  (default, preserves pre-#27 behavior)
+      - ``"deleted"`` -> ``s.deleted_at IS NOT NULL``
+      - ``"all"``     -> ``1=1`` (no restriction)
+    """
+    if deleted_filter == "active":
+        return "s.deleted_at IS NULL"
+    if deleted_filter == "deleted":
+        return "s.deleted_at IS NOT NULL"
+    if deleted_filter == "all":
+        return "1=1"
+    raise ValueError(
+        f"unknown deleted_filter {deleted_filter!r}; expected 'active', 'deleted', or 'all'"
+    )
+
+
 def find_sessions_by_term(
     conn: sqlite3.Connection,
     term: str,
     top_n: int | None = None,
     limit: int = 50,
+    *,
+    deleted_filter: str = "active",
 ) -> list[dict]:
     """
     Broad metadata substring search across name, project, start_folder, folder_usage.
@@ -393,6 +465,9 @@ def find_sessions_by_term(
         term: substring to search for.
         top_n: top-N gate for folder_usage matching, or None for no gate.
         limit: max sessions to return.
+        deleted_filter: ``"active"`` (default; hide deleted), ``"deleted"`` (only
+            deleted), or ``"all"`` (both). Mirrors the ``--deleted`` / ``--all``
+            flags on ``csb scan``.
     """
     pattern = f"%{escape_like_value(term)}%"
 
@@ -401,6 +476,8 @@ def find_sessions_by_term(
     if top_n is not None:
         rnk_filter = "AND r.rnk <= ?"
         rnk_params = [top_n]
+
+    del_clause = _deleted_filter_clause(deleted_filter)
 
     query = f"""
         WITH ranked AS (
@@ -412,7 +489,7 @@ def find_sessions_by_term(
             FROM folder_usage
         )
         SELECT DISTINCT s.* FROM sessions s
-        WHERE s.deleted_at IS NULL
+        WHERE {del_clause}
           AND (
             s.session_name LIKE ? ESCAPE '|' COLLATE NOCASE
             OR s.project LIKE ? ESCAPE '|' COLLATE NOCASE
@@ -453,6 +530,7 @@ def find_sessions_by_directory(
     *,
     start_folder_only: bool = False,
     limit: int = 50,
+    deleted_filter: str = "active",
 ) -> list[dict]:
     """
     Find sessions whose start_folder OR top-N folder_usage paths match.
@@ -520,12 +598,13 @@ def find_sessions_by_directory(
         return "(" + " OR ".join(parts) + ")", params
 
     start_clause, start_params = _build_match("s.start_folder")
+    del_clause = _deleted_filter_clause(deleted_filter)
 
     if start_folder_only:
         # Skip folder_usage entirely -- match against start_folder only.
         query = f"""
             SELECT DISTINCT s.* FROM sessions s
-            WHERE s.deleted_at IS NULL
+            WHERE {del_clause}
               AND {start_clause}
             ORDER BY s.last_active_at DESC
             LIMIT ?
@@ -550,7 +629,7 @@ def find_sessions_by_directory(
                 FROM folder_usage
             )
             SELECT DISTINCT s.* FROM sessions s
-            WHERE s.deleted_at IS NULL
+            WHERE {del_clause}
               AND (
                 {start_clause}
                 OR EXISTS (

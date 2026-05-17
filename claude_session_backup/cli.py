@@ -229,6 +229,38 @@ def build_parser():
         help="Path-strict: only match sessions whose start_folder is this folder + descendants. "
              "Skips folder_usage entirely. Useful for 'what sessions originated from here?'",
     )
+    # --deleted / --all mutually exclusive: deletion-filter scope
+    p_scan_del = p_scan.add_mutually_exclusive_group()
+    p_scan_del.add_argument(
+        "--deleted", action="store_true",
+        help="Show only deleted sessions (DB-flagged via deleted_at). "
+             "Combine with -d / --restore to discover and recover sessions "
+             "purged from a specific folder.",
+    )
+    p_scan_del.add_argument(
+        "--all", action="store_true",
+        help="Show both active AND deleted sessions in the scoped folder.",
+    )
+    # --restore: bulk restoration of matching deleted sessions
+    p_scan.add_argument(
+        "--restore", action="store_true",
+        help="After scanning, restore each matching deleted session from "
+             "git history. Implies --deleted scope (active sessions are "
+             "skipped). Confirms before restoring >1 file unless --yes "
+             "is given. --dry-run previews only.",
+    )
+    p_scan.add_argument(
+        "--dry-run", action="store_true",
+        help="With --restore: preview what would be restored without writing.",
+    )
+    p_scan.add_argument(
+        "--yes", "-y", action="store_true",
+        help="With --restore: skip the >1-file confirmation prompt.",
+    )
+    p_scan.add_argument(
+        "--force", action="store_true",
+        help="With --restore: overwrite an existing on-disk file (default refuses).",
+    )
     # --top / --all-folders mutually exclusive: display + folder_usage matching gate
     p_scan_folders = p_scan.add_mutually_exclusive_group()
     p_scan_folders.add_argument(
