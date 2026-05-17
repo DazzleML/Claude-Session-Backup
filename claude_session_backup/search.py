@@ -75,6 +75,13 @@ class Hit:
     timestamp: Optional[str]
     matched_text: str
     start_folder: Optional[str] = None
+    started_at: Optional[str] = None  # ISO 8601; used by --full-info renderer
+    jsonl_mtime: float = 0.0  # epoch seconds; used for purge-countdown
+    # --full-info 2 (level 2) additions: full folder list + meta fields.
+    # Same row repeated across every Hit from this session (cheap ref).
+    folders: list = field(default_factory=list)
+    message_count: int = 0
+    claude_version: Optional[str] = None
     context_above: list[Event] = field(default_factory=list)
     context_below: list[Event] = field(default_factory=list)
 
@@ -279,11 +286,16 @@ def search(
     include_deleted: bool = False,
     only_deleted: bool = False,
     limit: int = 20,
+    sort_key: str = "last-used",
+    fetch_folders: bool = False,
 ) -> Iterator[Hit]:
     """Yield ``Hit`` for every match across all relevant sessions.
 
-    Sessions are visited in ``last_active_at DESC`` order so the most-recent
-    sessions surface first. The iterator stops after ``limit`` matches.
+    Sessions are visited in the order chosen by ``sort_key`` (default
+    ``last-used`` -- most-recently-active first). Valid keys match
+    ``index.SORT_SQL``: ``last-used``, ``expiration``, ``started``,
+    ``oldest``, ``messages``, ``size``. The iterator stops after ``limit``
+    matches.
 
     ``session_filter`` accepts either a single UUID prefix (str) or a list
     of UUID prefixes. Multiple prefixes OR-match: ``session_id LIKE 'a%'
@@ -293,8 +305,17 @@ def search(
     channel; without it, ``.convo`` is preferred, then ``.sesslog``, then
     JSONL. A session with no matching source row is silently skipped.
 
-    Raises ``ValueError`` if ``regex=True`` and the pattern doesn't compile.
+    Raises ``ValueError`` if ``regex=True`` and the pattern doesn't compile,
+    or if ``sort_key`` is not in ``SORT_SQL``.
     """
+    # Defer import to avoid a circular dep (index.py imports nothing from
+    # search.py, but pulling it in at module load time would couple the
+    # two more tightly than they need to be).
+    from .index import SORT_SQL
+    if sort_key not in SORT_SQL:
+        raise ValueError(
+            f"Unknown sort_key {sort_key!r}; expected one of {sorted(SORT_SQL)}"
+        )
     matcher = _build_matcher(pattern, regex, case_sensitive)
 
     # Build the session enumeration SQL. We could join sessions to
@@ -322,10 +343,11 @@ def search(
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
         "SELECT s.session_id, s.session_name, s.project, s.last_active_at, "
-        "s.start_folder "
+        "s.start_folder, s.started_at, s.jsonl_mtime, "
+        "s.message_count, s.claude_version "
         "FROM sessions s"
         f"{where_sql} "
-        "ORDER BY s.last_active_at DESC"
+        f"ORDER BY {SORT_SQL[sort_key]}"
     )
 
     hits_yielded = 0
@@ -351,6 +373,19 @@ def search(
         if not events:
             continue
 
+        # Level-2 --full-info wants the full folder list. One query per
+        # matching session; shared across this session's hits via the
+        # `folders_for_session` list reference below.
+        folders_for_session: list[dict] = []
+        if fetch_folders:
+            folder_rows = conn.execute(
+                "SELECT folder_path, usage_count, is_start_folder "
+                "FROM folder_usage WHERE session_id = ? "
+                "ORDER BY usage_count DESC, is_start_folder DESC",
+                (session_row["session_id"],),
+            ).fetchall()
+            folders_for_session = [dict(r) for r in folder_rows]
+
         for idx, ev in enumerate(events):
             if not matcher(ev.text):
                 continue
@@ -370,6 +405,11 @@ def search(
                 timestamp=ev.timestamp,
                 matched_text=ev.text,
                 start_folder=session_row["start_folder"],
+                started_at=session_row["started_at"],
+                jsonl_mtime=session_row["jsonl_mtime"] or 0.0,
+                folders=folders_for_session,
+                message_count=session_row["message_count"] or 0,
+                claude_version=session_row["claude_version"],
                 context_above=ctx_above,
                 context_below=ctx_below,
             )

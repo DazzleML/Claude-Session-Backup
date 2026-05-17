@@ -513,3 +513,72 @@ def test_search_sessions_only_flag_parses():
     parser = build_parser()
     args = parser.parse_args(["search", "foo", "--sessions-only"])
     assert args.sessions_only is True
+
+
+# ── csb search --sort (v0.3.0) ───────────────────────────────────────
+
+
+def test_search_sort_default_is_last_used():
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo"])
+    assert args.sort == "last-used"
+
+
+def test_search_sort_accepts_all_csb_list_choices():
+    """The choices set MUST match csb list's --sort, so users only learn
+    one vocabulary."""
+    parser = build_parser()
+    for choice in ["last-used", "expiration", "started", "oldest", "messages", "size"]:
+        args = parser.parse_args(["search", "foo", "--sort", choice])
+        assert args.sort == choice
+
+
+def test_search_sort_rejects_invalid_choice():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--sort", "bogus"])
+
+
+# ── csb search --full-info / -f / -ff (v0.2.10) ─────────────────────
+
+
+def test_search_full_info_default_is_zero():
+    """No flag = level 0 (compact one-line header)."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo"])
+    assert args.full_info == 0
+
+
+def test_search_full_info_long_flag_is_level_1():
+    """--full-info = level 1 via action='count'."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--full-info"])
+    assert args.full_info == 1
+
+
+def test_search_short_f_is_level_1():
+    """-f = level 1 (single increment)."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-f"])
+    assert args.full_info == 1
+
+
+def test_search_double_ff_is_level_2():
+    """-ff = level 2 (two increments via standard argparse repeated-short)."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-ff"])
+    assert args.full_info == 2
+
+
+def test_search_full_info_combines_with_sessions_only():
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-ff", "--sessions-only"])
+    assert args.full_info == 2
+    assert args.sessions_only is True
+
+
+def test_search_triple_fff_does_not_crash():
+    """-fff parses (=3); cmd_search caps at 2. argparse counts unbounded."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-fff"])
+    assert args.full_info == 3

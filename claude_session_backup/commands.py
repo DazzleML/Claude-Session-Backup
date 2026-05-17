@@ -580,6 +580,10 @@ def cmd_search(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn, quiet=getattr(args, "quiet", False))
 
+    # Read cleanup_days once -- the --full-info renderer uses it for the
+    # purge-countdown ("purge in 87d") field. Same source csb list uses.
+    cleanup_days = read_cleanup_period(config["claude_dir"])
+
     # Resolve -C N into above/below
     above = args.before
     below = args.after
@@ -603,6 +607,9 @@ def cmd_search(args) -> int:
     if sessions_only and args.limit == 20:
         effective_limit = 10_000
 
+    # --full-info is action="count": -f=1, -ff=2. Cap at 2 (current max level).
+    full_info_level = min(getattr(args, "full_info", 0) or 0, 2)
+
     try:
         hits = list(run_search(
             conn,
@@ -616,6 +623,8 @@ def cmd_search(args) -> int:
             include_deleted=args.all,
             only_deleted=args.deleted,
             limit=effective_limit,
+            sort_key=getattr(args, "sort", "last-used"),
+            fetch_folders=full_info_level >= 2,
         ))
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -645,6 +654,8 @@ def cmd_search(args) -> int:
         hits, mode=mode, use_color=use_color, full_match=args.full_match,
         shortid=getattr(args, "shortid", False),
         query=args.query if mode == "sessions" else None,
+        full_info=full_info_level,
+        cleanup_days=cleanup_days,
     )
 
     return 0

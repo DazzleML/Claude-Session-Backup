@@ -573,3 +573,134 @@ def test_search_hit_carries_start_folder(mock_db, tmp_path):
     hits = list(search(mock_db, "MATCH"))
     assert len(hits) == 1
     assert hits[0].start_folder == "C:/code/x"
+
+
+# ── --sort: parity with csb list --sort (v0.3.0) ─────────────────────
+
+
+def _seed_three_sessions_for_sort(mock_db, tmp_path):
+    """Three sessions with distinct started_at / last_active_at / counts."""
+    matches = []
+    for sid, started, active, msgs, size in [
+        ("aaa1", "2026-05-01T10:00:00Z", "2026-05-10T10:00:00Z", 100, 1000),  # oldest start, mid active, fewest msgs
+        ("bbb2", "2026-05-05T10:00:00Z", "2026-05-15T10:00:00Z", 500, 5000),  # mid start, newest active, most msgs
+        ("ccc3", "2026-05-10T10:00:00Z", "2026-05-05T10:00:00Z",  50,  500),  # newest start, oldest active, fewest size
+    ]:
+        full_id = f"{sid}-aaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        convo = tmp_path / f"{sid}.convo.log"
+        convo.write_text(f"[[2026-05-16 10:00:00]] {{USER: MATCH-{sid}}}\n", encoding="utf-8")
+        mock_db.execute(
+            "INSERT INTO sessions (session_id, session_name, project, "
+            "started_at, last_active_at, message_count, jsonl_size) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (full_id, sid, "p", started, active, msgs, size),
+        )
+        _insert_source(mock_db, full_id, "p", "convo", str(convo))
+        matches.append(full_id)
+    mock_db.commit()
+    return matches
+
+
+def test_search_sort_default_is_last_used(mock_db, tmp_path):
+    """Default sort is last-used DESC (matches v0.2.6 implicit behavior)."""
+    ids = _seed_three_sessions_for_sort(mock_db, tmp_path)
+    hits = list(search(mock_db, "MATCH"))
+    # bbb2 has newest last_active -> appears first
+    assert hits[0].session_id == ids[1]
+
+
+def test_search_sort_started_newest_first(mock_db, tmp_path):
+    ids = _seed_three_sessions_for_sort(mock_db, tmp_path)
+    hits = list(search(mock_db, "MATCH", sort_key="started"))
+    # ccc3 has newest started_at -> first
+    assert hits[0].session_id == ids[2]
+
+
+def test_search_sort_oldest_first(mock_db, tmp_path):
+    ids = _seed_three_sessions_for_sort(mock_db, tmp_path)
+    hits = list(search(mock_db, "MATCH", sort_key="oldest"))
+    # aaa1 has oldest started_at -> first
+    assert hits[0].session_id == ids[0]
+
+
+def test_search_sort_messages_most_first(mock_db, tmp_path):
+    ids = _seed_three_sessions_for_sort(mock_db, tmp_path)
+    hits = list(search(mock_db, "MATCH", sort_key="messages"))
+    # bbb2 has most messages (500) -> first
+    assert hits[0].session_id == ids[1]
+
+
+def test_search_sort_size_largest_first(mock_db, tmp_path):
+    ids = _seed_three_sessions_for_sort(mock_db, tmp_path)
+    hits = list(search(mock_db, "MATCH", sort_key="size"))
+    # bbb2 has largest jsonl_size (5000) -> first
+    assert hits[0].session_id == ids[1]
+
+
+def test_search_sort_unknown_key_raises_value_error(mock_db, tmp_path):
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "x")])
+    _insert_session(mock_db, "s", "n", "p")
+    _insert_source(mock_db, "s", "p", "convo", str(convo))
+    mock_db.commit()
+    with pytest.raises(ValueError, match="Unknown sort_key"):
+        list(search(mock_db, "x", sort_key="bogus"))
+
+
+# ── fetch_folders for --full-info level 2 (v0.2.10) ──────────────────
+
+
+def test_search_fetch_folders_populates_hit_folders(mock_db, tmp_path):
+    """fetch_folders=True -> Hit.folders contains rows from folder_usage."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    _insert_session(mock_db, "sess-1", "n", "p")
+    _insert_source(mock_db, "sess-1", "p", "convo", str(convo))
+    mock_db.execute(
+        "INSERT INTO folder_usage (session_id, folder_path, usage_count, "
+        "is_start_folder) VALUES (?, ?, ?, ?)",
+        ("sess-1", "C:/code/x", 100, 1),
+    )
+    mock_db.execute(
+        "INSERT INTO folder_usage (session_id, folder_path, usage_count, "
+        "is_start_folder) VALUES (?, ?, ?, ?)",
+        ("sess-1", "C:/code/y", 25, 0),
+    )
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH", fetch_folders=True))
+    assert len(hits) == 1
+    folder_paths = {f["folder_path"] for f in hits[0].folders}
+    assert folder_paths == {"C:/code/x", "C:/code/y"}
+
+
+def test_search_fetch_folders_false_means_empty_folders(mock_db, tmp_path):
+    """Default fetch_folders=False -> Hit.folders is empty list (no DB query)."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    _insert_session(mock_db, "sess-1", "n", "p")
+    _insert_source(mock_db, "sess-1", "p", "convo", str(convo))
+    mock_db.execute(
+        "INSERT INTO folder_usage (session_id, folder_path, usage_count, "
+        "is_start_folder) VALUES (?, ?, ?, ?)",
+        ("sess-1", "C:/code/x", 100, 1),
+    )
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH"))  # fetch_folders defaults to False
+    assert len(hits) == 1
+    assert hits[0].folders == []
+
+
+def test_search_hit_carries_message_count_and_version(mock_db, tmp_path):
+    """Hit.message_count and Hit.claude_version populated from sessions row."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "MATCH")])
+    mock_db.execute(
+        "INSERT INTO sessions (session_id, session_name, project, "
+        "last_active_at, message_count, claude_version) VALUES "
+        "(?, ?, ?, ?, ?, ?)",
+        ("sess-1", "n", "p", "2026-05-16T10:00:00Z", 438, "2.1.50"),
+    )
+    _insert_source(mock_db, "sess-1", "p", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "MATCH"))
+    assert hits[0].message_count == 438
+    assert hits[0].claude_version == "2.1.50"

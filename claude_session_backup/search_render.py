@@ -26,6 +26,13 @@ from typing import Iterable
 
 from .ids import format_short_uuid
 from .search import Hit
+from .timeline import (
+    DEFAULT_TOP_FOLDERS,
+    _start_count_and_others,
+    format_timestamp,
+    purge_countdown,
+    relative_date,
+)
 
 
 # ── ANSI color helpers ────────────────────────────────────────────────
@@ -41,6 +48,9 @@ _ANSI = {
     "magenta": "\033[35m",
     "blue": "\033[34m",
     "red": "\033[31m",
+    # Session-name style: bold cyan to match csb list / csb scan's
+    # session-name convention (timeline.py uses "bold cyan" via Rich).
+    "bold_cyan": "\033[1;36m",
 }
 
 
@@ -91,14 +101,108 @@ def _role_color(role: str) -> str:
     return "green"
 
 
+def _full_info_level2_lines(
+    hit: Hit,
+    use_color: bool,
+    top_folders: int = DEFAULT_TOP_FOLDERS,
+    skip_start_folder_line: bool = False,
+) -> list[str]:
+    """Render the level-2 additions: folder list + 'N messages | vX.Y.Z' meta.
+
+    Mirrors ``csb list`` output shape:
+      ``  start at: <start_folder> (Nx)``  (suppressed when caller
+      already prints a 'start at:' line, e.g. in --sessions-only mode)
+      ``  <other_folder> (Nx)``  (up to ``top_folders``)
+      ``  N messages | vX.Y.Z``  (only fields with content -- never
+      ``  | | ``-style empty separators)
+    """
+    out: list[str] = []
+    start_folder = hit.start_folder or "(unknown)"
+    folders = hit.folders or []
+    start_count, others = _start_count_and_others(folders, start_folder)
+
+    if not skip_start_folder_line:
+        if start_count is not None:
+            line = (
+                f"  {_c('dim', 'start at:', use_color)} "
+                f"{_c('green', start_folder, use_color)} "
+                f"{_c('dim', f'({start_count}x)', use_color)}"
+            )
+        else:
+            line = (
+                f"  {_c('dim', 'start at:', use_color)} "
+                f"{_c('green', start_folder, use_color)}"
+            )
+        out.append(line)
+
+    for f in others[:top_folders]:
+        usage = f.get("usage_count", 0)
+        out.append(
+            f"  {f['folder_path']} "
+            f"{_c('dim', f'({usage}x)', use_color)}"
+        )
+
+    # Meta line: 'N messages | vX.Y.Z'. We deliberately OMIT the session
+    # ID from this line because csb search already shows it in the
+    # first header line (csb list does the opposite -- includes id here
+    # because list's first line doesn't have it).
+    meta_parts: list[str] = []
+    if hit.message_count:
+        meta_parts.append(f"{hit.message_count} messages")
+    if hit.claude_version:
+        meta_parts.append(f"v{hit.claude_version}")
+    if meta_parts:
+        out.append("  " + _c("dim", " | ".join(meta_parts), use_color))
+
+    return out
+
+
+def _full_info_line(hit: Hit, cleanup_days: int, use_color: bool) -> str | None:
+    """Format the optional second header line: 'started: <date> (purge in Nd)'.
+
+    Reuses ``timeline.relative_date`` / ``format_timestamp`` / ``purge_countdown``
+    so the wording matches ``csb list`` exactly -- one vocabulary across the CLI.
+    Returns None if neither started_at nor a valid mtime is available.
+    """
+    started_human = format_timestamp(hit.started_at) if hit.started_at else ""
+    purge_text = ""
+    if cleanup_days > 0 and hit.jsonl_mtime > 0:
+        _, purge_text = purge_countdown(hit.jsonl_mtime, cleanup_days)
+        if purge_text:
+            purge_text = " " + purge_text
+    if not started_human and not purge_text:
+        return None
+    label = _c("dim", "  started:", use_color)
+    body_parts: list[str] = []
+    if started_human:
+        body_parts.append(started_human)
+    if purge_text:
+        body_parts.append(_c("yellow", purge_text.strip(), use_color))
+    return f"{label} {' '.join(body_parts)}"
+
+
 def render_human(
     hits: list[Hit],
     *,
     use_color: bool = True,
     full_match: bool = False,
     shortid: bool = False,
+    full_info: int = 0,
+    cleanup_days: int = 0,
 ) -> None:
-    """Group-by-session human-readable output."""
+    """Group-by-session human-readable output.
+
+    ``full_info`` is an escalation int (0 / 1 / 2):
+
+      0 -- one-line header only (default).
+      1 -- adds 'started: <date> (purge in Nd)' (matches csb list shape).
+      2 -- adds folder list (start_folder + top N others) + meta line
+           'N messages | vX.Y.Z'. Hit.folders must be populated by
+           ``search(..., fetch_folders=True)``.
+
+    ``cleanup_days`` (from the user's Claude Code settings) feeds the
+    purge countdown at level 1; pass 0 to suppress it cleanly.
+    """
     if not hits:
         return
 
@@ -111,20 +215,46 @@ def render_human(
         else:
             by_session.append([h])
 
-    for group in by_session:
+    for idx_group, group in enumerate(by_session):
+        # Blank line BEFORE each session block (except the very first) so
+        # adjacent sessions are visually separable. Inside a session,
+        # hits already separate themselves with a trailing blank.
+        if idx_group > 0:
+            print()
         first = group[0]
         name = first.session_name or "<unnamed>"
         id_display = (
             format_short_uuid(first.session_id) if shortid
             else first.session_id
         )
+        # Human-readable last-active date is the default (matches csb list).
+        # The raw ISO is available via --json or `csb show <uuid>` for the
+        # rare case where a user needs it to grep the JSONL.
+        if first.last_active_at:
+            last_label = (
+                f"{relative_date(first.last_active_at)} "
+                f"({format_timestamp(first.last_active_at)})"
+            )
+        else:
+            last_label = "last: ?"
         hdr = (
-            f"{_c('bold', name, use_color)}  "
+            f"{_c('bold_cyan', name, use_color)}  "
             f"{_c('dim', id_display, use_color)}  "
             f"{_c('dim', '(' + first.project + ')', use_color)}  "
-            f"last: {first.last_active_at or '?'}"
+            f"{last_label}"
         )
         print(hdr)
+        if full_info >= 1:
+            extra = _full_info_line(first, cleanup_days, use_color)
+            if extra:
+                print(extra)
+        if full_info >= 2:
+            for ln in _full_info_level2_lines(first, use_color):
+                print(ln)
+            # Separator after the thick (4+ line) level-2 metadata block
+            # so it doesn't run into the first hit. Level 1's single
+            # extra line stays tight (still grep-shaped).
+            print()
 
         for h in group:
             role_label = _c(_role_color(h.role), f"[{h.role}]", use_color)
@@ -165,6 +295,8 @@ def render_sessions_only(
     use_color: bool = True,
     shortid: bool = False,
     query: str | None = None,
+    full_info: int = 0,
+    cleanup_days: int = 0,
 ) -> None:
     """Per-session summary: one line per session containing matches.
 
@@ -190,19 +322,27 @@ def render_sessions_only(
             meta[h.session_id] = h
         counts[h.session_id] = counts.get(h.session_id, 0) + 1
 
-    for sid in order:
+    for idx_sess, sid in enumerate(order):
+        # Blank line BEFORE each session block (except the very first) so
+        # the summary is easier to scan.
+        if idx_sess > 0:
+            print()
         first = meta[sid]
         name = first.session_name or "<unnamed>"
         id_display = format_short_uuid(sid) if shortid else sid
         n = counts[sid]
         hit_word = "hit" if n == 1 else "hits"
         head_line = (
-            f"{_c('bold', name, use_color)}  "
+            f"{_c('bold_cyan', name, use_color)}  "
             f"{_c('dim', id_display, use_color)}  "
             f"{_c('dim', '(' + first.project + ')', use_color)}  "
             f"-- {_c('yellow', f'{n} {hit_word}', use_color)}"
         )
         print(head_line)
+        if full_info >= 1:
+            extra = _full_info_line(first, cleanup_days, use_color)
+            if extra:
+                print(extra)
         start_at = first.start_folder or "(unknown)"
         resume_hint = f"csb resume {id_display}"
         print(
@@ -210,6 +350,14 @@ def render_sessions_only(
             f"{_c('green', start_at, use_color)}    "
             f"{_c('dim', '[' + resume_hint + ']', use_color)}"
         )
+        if full_info >= 2:
+            # skip_start_folder_line=True: sessions-only already prints
+            # the 'start at:' line above (with the resume hint), so the
+            # level-2 helper only emits other-folder lines + meta.
+            for ln in _full_info_level2_lines(
+                first, use_color, skip_start_folder_line=True,
+            ):
+                print(ln)
 
     if query is not None and order:
         print()
@@ -256,6 +404,8 @@ def render(
     full_match: bool = False,
     shortid: bool = False,
     query: str | None = None,
+    full_info: int = 0,
+    cleanup_days: int = 0,
 ) -> None:
     """Top-level dispatcher used by ``cmd_search``.
 
@@ -265,6 +415,9 @@ def render(
       - "files": unique source paths only
       - "sessions": per-session summary with hit counts (uses ``query`` to
         compose a drill-in hint at the bottom)
+
+    ``full_info`` adds 'started: <date> (purge in Nd)' second header line
+    to human and sessions modes. Has no effect on json / files modes.
     """
     if use_color is None:
         use_color = _color_supported()
@@ -276,8 +429,10 @@ def render(
     elif mode == "sessions":
         render_sessions_only(
             hits, use_color=use_color, shortid=shortid, query=query,
+            full_info=full_info, cleanup_days=cleanup_days,
         )
     else:
         render_human(
             hits, use_color=use_color, full_match=full_match, shortid=shortid,
+            full_info=full_info, cleanup_days=cleanup_days,
         )

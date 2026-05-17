@@ -296,6 +296,14 @@ def build_parser():
         "--source", choices=["auto", "convo", "sesslog", "jsonl"], default="auto",
         help="Force a source channel (default: auto -- prefers .convo > .sesslog > jsonl)",
     )
+    p_search.add_argument(
+        "--sort",
+        choices=["last-used", "expiration", "started", "oldest", "messages", "size"],
+        default="last-used",
+        help="Session iteration order: last-used (default), expiration "
+             "(soonest purge first), started (newest first), oldest (oldest "
+             "first), messages, size. Matches 'csb list --sort' choices.",
+    )
     p_search.add_argument("--all", action="store_true", help="Include deleted sessions")
     p_search.add_argument("--deleted", action="store_true", help="Only deleted sessions")
     p_search.add_argument(
@@ -305,6 +313,13 @@ def build_parser():
     p_search.add_argument(
         "--full-match", action="store_true",
         help="Don't truncate long matched lines (default: 500 chars)",
+    )
+    p_search.add_argument(
+        "-f", "--full-info", action="count", default=0,
+        help="Add richer per-session header info. -f / --full-info for "
+             "level 1 ('started: <date> (purge in Nd)'). -ff for level 2 "
+             "(adds folder list + 'N messages | vX.Y.Z' meta line). "
+             "Mirrors 'csb list' shape. Repeat to escalate (capped at 2).",
     )
     p_search.add_argument("--no-color", action="store_true", help="Disable ANSI color")
     # Output-mode mutex group: at most one of --json / --files-only / --sessions-only.

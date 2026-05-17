@@ -9,6 +9,25 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.2.10] -- 2026-05-17 (prealpha)
+
+`csb search` polish pass to bring it to parity with `csb list` and `csb scan`: per-session sort order, escalating richer-info levels (`-f` / `-ff`), readable date format by default, visual block separation. 420/420 tests pass.
+
+### Added
+- **`csb search --sort {last-used,expiration,started,oldest,messages,size}`** -- mirrors `csb list --sort` exactly. Default `last-used` matches the v0.2.6 implicit behavior, so adding the flag is non-breaking. The chosen sort drives the session enumeration order in `search()` and therefore which sessions surface first under `--limit`, what `--sessions-only` lists at the top, and which session the `Next:` hint points at. ORDER BY clauses are reused from `index.SORT_SQL` (the same whitelist `csb list` consumes) -- one source of truth for sort vocabulary.
+- **`csb search -f` / `--full-info`** (level 1) -- adds `started: <date> (purge in Nd)` second header line per session, matching the format `csb list` shows. Reuses `timeline.relative_date` / `format_timestamp` / `purge_countdown` so wording stays consistent across the CLI. `cleanup_days=0` (no purge configured) suppresses the countdown half cleanly.
+- **`csb search -ff`** (level 2) -- escalates further to add the folder list (start_folder + top N other folders with usage counts) and a `N messages | vX.Y.Z` meta line. Brings search output to parity with `csb list` / `csb scan` per-session detail. In `--sessions-only` mode the helper suppresses its own `start at:` line (the renderer already prints one with the inline `[csb resume ...]` hint) to avoid duplication.
+- **argparse `action="count"`** on `--full-info` -- standard verbosity-style escalation (`-f`, `-ff`, `-fff...`). `cmd_search` caps the effective level at 2.
+- **`Hit.started_at`, `Hit.jsonl_mtime`, `Hit.folders`, `Hit.message_count`, `Hit.claude_version`** -- new fields on the search Hit so renderers don't need extra DB round-trips. `folders` only populated when `search(..., fetch_folders=True)` is requested by the caller (level 2 path).
+
+### Changed
+- **Default `csb search` header now shows human-readable last-active**: `<relative> (<human-date>)` (e.g. `today (2026-05-17, at 10:27)`) replaces the raw ISO `last: 2026-05-17T10:27:00.123Z`. The relative+human form is far easier to scan at a glance and takes about the same column width. Raw ISO is preserved in `--json` output and `csb show <uuid>` for the rare case where exact timestamps are needed for grep'ing the JSONL.
+- **Session names render in bold cyan**, matching `csb list` and `csb scan` conventions. Previously plain bold, which competed with hit content above it for visual prominence.
+- **Blank line between session blocks** in both default and `--sessions-only` modes. Adjacent session headers were running together; the separator makes it obvious where one session's hits end and the next session begins.
+
+### Notes
+- 36 new tests across `test_search.py` (6 for --sort + 3 for fetch_folders/Hit fields), `test_cli.py` (6 for --sort + 6 for -f / -ff levels), and `test_search_render.py` (12 for --full-info level 1 / human-readable default / bold-cyan ANSI / blank-line separator + 8 for level-2 folder list / meta line / sessions-only no-duplicate-start-at / level-0-omits-all). Total 420/420 pass (was 384 at v0.2.9).
+
 ## [0.2.9] -- 2026-05-17 (prealpha)
 
 `csb search --sessions-only` for "which sessions mention X" summary queries, plus a small CLI cleanup: `--session` is renamed to `--session-id` and now accepts comma-separated UUID prefixes for multi-session OR-match. The three output modes (`--json`, `--files-only`, `--sessions-only`) are now wrapped in an argparse mutex group so accidental combinations fail loud at parse time. 384/384 tests pass.
@@ -147,7 +166,9 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
+[0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9
 [0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.5
