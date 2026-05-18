@@ -37,6 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
+from . import fts5_db, fts_paths
 from .transcript_walker import (
     ImportRow,
     format_role_label,
@@ -233,26 +234,247 @@ def _build_matcher(pattern: str, regex: bool, case_sensitive: bool):
 # ── Source resolution ─────────────────────────────────────────────────
 
 
-# Per-session source preference: most-readable first.
-_SOURCE_PREFERENCE = ("convo", "sesslog", "jsonl")
+# Sources are first-class peers in the dispatch order. The list defines
+# the default ATTEMPT ORDER -- the search dispatcher walks it for each
+# session and picks the first source that's available for that session.
+#
+# Order rationale:
+#   1. fts5     -- fast indexed search when the per-project DB exists
+#                  AND is fresh enough (last_jsonl_mtime >= session
+#                  mtime). One sqlite query per session instead of a
+#                  file walk; preserves AGENT:<subtype> labels via the
+#                  walker-shared schema.
+#   2. convo    -- claude-session-logger's USER/AI/AGENT-only multi-line
+#                  block format. Live: hooks keep it current between
+#                  builds. No tool-call noise.
+#   3. sesslog  -- same block format, also contains tool-call blocks.
+#                  Slightly bigger; same parser filters tool blocks out.
+#   4. jsonl    -- raw Claude Code transcript. Source of truth. Always
+#                  present (Claude Code writes it). Slowest because the
+#                  walker has to extract AGENT correlation each call.
+#
+# Each source is INDEPENDENTLY OPTIONAL. A user without
+# claude-session-logger sees `convo` / `sesslog` skipped automatically.
+# A user who hasn't run `csb build-fts5` sees `fts5` skipped. A user
+# who wants only one source uses `--source <name>` to pin the preference
+# to a single entry. Future: per-user config can override the default
+# preference list (e.g. logger-only users may want
+# `["convo", "sesslog", "jsonl"]`).
+_SOURCE_PREFERENCE = ("fts5", "convo", "sesslog", "jsonl")
 
 
-def _pick_one_source(
-    sources_for_session: list[sqlite3.Row],
-    source_override: Optional[str],
-) -> Optional[sqlite3.Row]:
-    """Choose the single source row to search for a session.
+def _resolve_preference(source_override: Optional[str]) -> tuple[str, ...]:
+    """Translate the user-facing ``--source`` value into a preference
+    tuple the dispatcher can walk.
 
-    With no override, pick the highest-preference source available.
-    With an override, return only a row of that type (or None).
+    ``"auto"`` / ``None`` -> the project default order (FTS5 first,
+    then file-based sources). ``"fts5"`` / ``"convo"`` / ``"sesslog"``
+    / ``"jsonl"`` -> a single-element tuple, pinning the user's choice
+    so unavailable sources skip the session cleanly with no fallback.
     """
-    by_type = {row["source_type"]: row for row in sources_for_session}
-    if source_override and source_override != "auto":
-        return by_type.get(source_override)
-    for st in _SOURCE_PREFERENCE:
-        if st in by_type:
-            return by_type[st]
-    return None
+    if source_override in (None, "auto"):
+        return _SOURCE_PREFERENCE
+    return (source_override,)
+
+
+def _pick_source_for_session(
+    session_row: sqlite3.Row,
+    source_rows: list[sqlite3.Row],
+    preference: tuple[str, ...],
+    claude_dir: Optional[Path],
+) -> tuple[Optional[str], object]:
+    """Walk the preference list; return the first available source.
+
+    Returns ``(source_type, handle)`` where ``handle`` is:
+      - a :class:`pathlib.Path` to the per-project FTS5 DB (for ``fts5``)
+      - the matching :class:`sqlite3.Row` from ``session_sources`` (for
+        file-based sources)
+      - ``None`` (paired with ``source_type=None``) when no source in
+        the preference list is available for this session
+
+    FTS5 availability requires the session to be in the per-project
+    DB's ``indexed_sessions`` table. When the preference list has more
+    than one entry (i.e. user took the default "auto" path), FTS5 also
+    has to be FRESH (``last_jsonl_mtime >= session_jsonl_mtime``) so
+    we don't return stale results when a perfectly good live source
+    sits next in the preference. When the preference is a single
+    explicit ``["fts5"]``, freshness is NOT required -- the user
+    asked for FTS5 specifically and accepts possibly-stale data.
+
+    File-based sources are available iff the corresponding row exists
+    in ``session_sources``.
+    """
+    file_sources = {row["source_type"]: row for row in source_rows}
+    explicit_choice = len(preference) == 1
+
+    for source_type in preference:
+        if source_type == "fts5":
+            handle = _fts5_handle_for_session(
+                session_row,
+                claude_dir,
+                require_fresh=not explicit_choice,
+            )
+            if handle is not None:
+                return ("fts5", handle)
+        elif source_type in file_sources:
+            return (source_type, file_sources[source_type])
+    return (None, None)
+
+
+def _fts5_handle_for_session(
+    session_row: sqlite3.Row,
+    claude_dir: Optional[Path],
+    *,
+    require_fresh: bool,
+) -> Optional[Path]:
+    """Return the FTS5 DB path for this session if FTS5 is available
+    (and, when ``require_fresh`` is True, fresh).
+
+    Returns None when:
+      - ``claude_dir`` is None (caller has no vault context; FTS5
+        path resolution isn't possible)
+      - the session row's ``jsonl_path`` is empty (we derive the
+        encoded slug from it)
+      - the per-project DB file doesn't exist
+      - the session isn't in ``indexed_sessions``
+      - ``require_fresh`` is True AND
+        ``last_jsonl_mtime < session_jsonl_mtime``
+
+    Wraps :func:`_fts5_path_if_indexed` so the dispatcher can keep
+    its row-aware logic in one place.
+    """
+    if claude_dir is None:
+        return None
+    jsonl_rel = session_row["jsonl_path"]
+    if not jsonl_rel:
+        return None
+    encoded_slug = Path(jsonl_rel).parent.name
+    jsonl_mtime = (
+        session_row["jsonl_mtime"] or 0.0 if require_fresh else None
+    )
+    return _fts5_path_if_indexed(
+        claude_dir,
+        session_row["project"],
+        encoded_slug,
+        session_row["session_id"],
+        jsonl_mtime,
+    )
+
+
+# ── FTS5 dispatch helpers (v0.3.3) ────────────────────────────────────
+
+
+def _fts5_path_if_indexed(
+    claude_dir: Path,
+    project: str,
+    encoded_slug: str,
+    session_id: str,
+    jsonl_mtime: Optional[float] = None,
+) -> Optional[Path]:
+    """Return the FTS5 DB path IF this session has an indexed row.
+
+    When ``jsonl_mtime`` is provided, also requires the index to be
+    fresh: ``indexed_sessions.last_jsonl_mtime >= jsonl_mtime``. This
+    is the "auto" smart-fallback contract -- stale -> grep fallback.
+
+    When ``jsonl_mtime`` is None, returns the path as long as the
+    session is in ``indexed_sessions`` at all -- regardless of staleness.
+    This is the explicit ``--source fts5`` contract: the user asked
+    for FTS5 specifically and accepts the possibility of stale data.
+
+    Opens the per-project DB RAW (bypassing :func:`fts5_db.open_fts5_db`)
+    so this read-only check doesn't trigger schema migrations or print
+    the auto-upgrade notice during a search. A non-indexed DB just means
+    "skip FTS5"; we never change DB state from inside the search path.
+
+    Tolerates DB-open failures (corrupt file, ALTER mid-migration, etc.)
+    by returning None -- search degrades gracefully to grep.
+    """
+    fts_path = fts_paths.fts5_db_path(claude_dir, project, encoded_slug)
+    if not fts_path.exists():
+        return None
+    try:
+        probe = sqlite3.connect(str(fts_path))
+        probe.row_factory = sqlite3.Row
+        row = probe.execute(
+            "SELECT last_jsonl_mtime FROM indexed_sessions "
+            "WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        probe.close()
+    except sqlite3.DatabaseError:
+        return None
+    if row is None:
+        return None
+    if jsonl_mtime is not None and row["last_jsonl_mtime"] < jsonl_mtime:
+        return None
+    return fts_path
+
+
+def query_fts5_for_session(
+    fts5_db_path: Path,
+    session_id: str,
+    pattern: str,
+) -> Iterator[Event]:
+    """Yield :class:`Event` for messages in this session's FTS5 DB.
+
+    FTS5 ``MATCH`` does the candidate narrowing; the Python-side literal /
+    regex matcher in :func:`search` handles the final correctness check.
+    The porter stemmer + unicode61 tokenizer used by csb's FTS5 schema
+    doesn't preserve exact-substring semantics, so we always validate
+    Python-side after the FTS5 filter.
+
+    If :func:`fts5_db.escape_fts_query` produces an empty pattern (all
+    punctuation / whitespace), falls back to a full table scan of this
+    session's messages so the Python matcher still gets to do its job.
+    Matches Phase 1's "empty pattern = match all" semantics.
+    """
+    escaped = fts5_db.escape_fts_query(pattern)
+    try:
+        conn = sqlite3.connect(str(fts5_db_path))
+        conn.row_factory = sqlite3.Row
+    except sqlite3.DatabaseError:
+        return
+    try:
+        if escaped:
+            sql = (
+                "SELECT m.message_index, m.role, m.role_subtype, "
+                "  m.content, m.timestamp "
+                "FROM messages m "
+                "WHERE m.id IN (SELECT rowid FROM messages_fts "
+                "  WHERE messages_fts MATCH ?) "
+                "  AND m.session_id = ? "
+                "ORDER BY m.message_index"
+            )
+            try:
+                rows = conn.execute(sql, (escaped, session_id)).fetchall()
+            except sqlite3.OperationalError:
+                # FTS5 MATCH can raise on bizarre tokenizations; degrade
+                # to full session scan rather than dropping all hits.
+                rows = conn.execute(
+                    "SELECT m.message_index, m.role, m.role_subtype, "
+                    "  m.content, m.timestamp "
+                    "FROM messages m WHERE m.session_id = ? "
+                    "ORDER BY m.message_index",
+                    (session_id,),
+                ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT m.message_index, m.role, m.role_subtype, "
+                "  m.content, m.timestamp "
+                "FROM messages m WHERE m.session_id = ? "
+                "ORDER BY m.message_index",
+                (session_id,),
+            ).fetchall()
+        for row in rows:
+            yield Event(
+                line_num=(row["message_index"] or 0) + 1,
+                role=format_role_label(row["role"], row["role_subtype"]),
+                timestamp=row["timestamp"],
+                text=row["content"],
+            )
+    finally:
+        conn.close()
 
 
 # ── Main search entry point ───────────────────────────────────────────
@@ -273,6 +495,7 @@ def search(
     limit: int = 20,
     sort_key: str = "last-used",
     fetch_folders: bool = False,
+    claude_dir: Optional[Path] = None,
 ) -> Iterator[Hit]:
     """Yield ``Hit`` for every match across all relevant sessions.
 
@@ -286,9 +509,28 @@ def search(
     of UUID prefixes. Multiple prefixes OR-match: ``session_id LIKE 'a%'
     OR session_id LIKE 'b%'``. Empty list / None means "all sessions".
 
-    ``source_override`` constrains the per-session source choice to a single
-    channel; without it, ``.convo`` is preferred, then ``.sesslog``, then
-    JSONL. A session with no matching source row is silently skipped.
+    ``source_override`` translates to a per-session attempt-order:
+
+      - ``None`` / ``"auto"`` -> walk :data:`_SOURCE_PREFERENCE` (fts5 ->
+        convo -> sesslog -> jsonl), picking the first source available
+        for each session. FTS5 must be FRESH to win at this level.
+      - any single source name (``"fts5"``, ``"convo"``, ``"sesslog"``,
+        ``"jsonl"``) -> pin the preference to that one source. Sessions
+        where that source is unavailable are skipped; no fallback. For
+        ``"fts5"`` specifically, freshness is NOT required -- the user
+        asked for FTS5 and accepts possibly-stale results.
+
+    Each source is independently optional. A user without
+    claude-session-logger naturally skips ``convo`` / ``sesslog``. A
+    user who hasn't run ``csb build-fts5`` naturally skips ``fts5``.
+    A user with only the raw transcripts naturally falls all the way
+    through to ``jsonl``. No "fallback" framing -- the dispatcher just
+    walks the preference list in order.
+
+    ``claude_dir`` is needed to resolve per-project FTS5 DB paths. When
+    None, the dispatcher cannot evaluate the ``fts5`` source and treats
+    it as unavailable for every session (the rest of the preference
+    list runs normally).
 
     Raises ``ValueError`` if ``regex=True`` and the pattern doesn't compile,
     or if ``sort_key`` is not in ``SORT_SQL``.
@@ -302,6 +544,7 @@ def search(
             f"Unknown sort_key {sort_key!r}; expected one of {sorted(SORT_SQL)}"
         )
     matcher = _build_matcher(pattern, regex, case_sensitive)
+    preference = _resolve_preference(source_override)
 
     # Build the session enumeration SQL. We could join sessions to
     # session_sources directly but a two-step approach (enumerate sessions,
@@ -328,7 +571,7 @@ def search(
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     sql = (
         "SELECT s.session_id, s.session_name, s.project, s.last_active_at, "
-        "s.start_folder, s.started_at, s.jsonl_mtime, "
+        "s.start_folder, s.started_at, s.jsonl_mtime, s.jsonl_path, "
         "s.message_count, s.claude_version "
         "FROM sessions s"
         f"{where_sql} "
@@ -340,25 +583,40 @@ def search(
         if hits_yielded >= limit:
             break
 
-        # Fetch all source rows for this session in a single query
+        # Fetch all session_sources rows for this session in one query.
+        # The picker walks the preference list (FTS5 -> file sources)
+        # and decides which one is available; file sources need a row
+        # here, FTS5 looks at the per-project DB instead.
         source_rows = conn.execute(
             "SELECT source_type, source_path FROM session_sources "
             "WHERE session_id = ?",
             (session_row["session_id"],),
         ).fetchall()
-        if not source_rows:
+
+        picked_type, picked_handle = _pick_source_for_session(
+            session_row, source_rows, preference, claude_dir,
+        )
+        if picked_type is None:
             continue
 
-        picked = _pick_one_source(source_rows, source_override)
-        if picked is None:
-            continue
+        if picked_type == "fts5":
+            events = list(query_fts5_for_session(
+                picked_handle,  # Path to per-project FTS5 DB
+                session_row["session_id"],
+                pattern,
+            ))
+            picked_source_type = "fts5"
+            picked_source_path = str(picked_handle)
+        else:
+            # File-based source: handle is the session_sources row.
+            events = list(parse_source(
+                picked_handle["source_type"],
+                picked_handle["source_path"],
+                session_row["session_id"],
+            ))
+            picked_source_type = picked_handle["source_type"]
+            picked_source_path = picked_handle["source_path"]
 
-        # Materialize events so we can slice context windows
-        events = list(parse_source(
-            picked["source_type"],
-            picked["source_path"],
-            session_row["session_id"],
-        ))
         if not events:
             continue
 
@@ -387,8 +645,8 @@ def search(
                 session_name=session_row["session_name"],
                 project=session_row["project"],
                 last_active_at=session_row["last_active_at"],
-                source_type=picked["source_type"],
-                source_path=picked["source_path"],
+                source_type=picked_source_type,
+                source_path=picked_source_path,
                 line_num=ev.line_num,
                 role=ev.role,
                 timestamp=ev.timestamp,

@@ -293,8 +293,11 @@ def build_parser():
              "Comma-separated for multi-prefix OR-match.",
     )
     p_search.add_argument(
-        "--source", choices=["auto", "convo", "sesslog", "jsonl"], default="auto",
-        help="Force a source channel (default: auto -- prefers .convo > .sesslog > jsonl)",
+        "--source",
+        choices=["auto", "fts5", "convo", "sesslog", "jsonl"], default="auto",
+        help="Force a source channel (default: auto -- FTS5 when fresh, "
+             "else .convo > .sesslog > jsonl). 'fts5' returns no hits for "
+             "sessions not yet indexed by `csb build-fts5`.",
     )
     p_search.add_argument(
         "--sort",

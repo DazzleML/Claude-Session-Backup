@@ -9,8 +9,10 @@ import pytest
 from claude_session_backup.search import (
     Event,
     Hit,
+    _SOURCE_PREFERENCE,
     _build_matcher,
-    _pick_one_source,
+    _pick_source_for_session,
+    _resolve_preference,
     parse_jsonl_events,
     parse_log_blocks,
     parse_source,
@@ -307,6 +309,247 @@ def test_parse_jsonl_signature_accepts_optional_session_id(tmp_path):
     assert a[0].text == b[0].text == "x"
 
 
+# ── v0.3.3: FTS5 dispatch helpers ─────────────────────────────────────
+
+
+def _build_fake_fts5_db(claude_dir, project, encoded_slug, session_id,
+                        messages, jsonl_mtime):
+    """Build a real-on-disk per-project FTS5 DB pre-populated with messages.
+
+    Returns the DB path. Schema matches what fts5_db.init_fts5_schema
+    produces; messages are inserted via the FTS5 importer's row shape
+    so triggers populate messages_fts.
+    """
+    from claude_session_backup import fts_paths
+    from claude_session_backup.fts5_db import (
+        open_fts5_db, mark_session_indexed,
+    )
+    from claude_session_backup.fts5_importer import now_iso
+
+    db_path = fts_paths.fts5_db_path(claude_dir, project, encoded_slug)
+    conn = open_fts5_db(db_path, quiet=True)
+    cur = conn.cursor()
+    for i, (role, role_subtype, content) in enumerate(messages):
+        cur.execute(
+            "INSERT INTO messages (session_id, uuid, message_index, "
+            "  role, role_subtype, content, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, f"u{i}", i, role, role_subtype, content,
+             f"2026-05-18T10:{i:02d}:00Z"),
+        )
+    mark_session_indexed(conn, session_id, jsonl_mtime, "deadbeef", now_iso())
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def _insert_session_with_jsonl(conn, session_id, project, jsonl_path,
+                                jsonl_mtime):
+    """Insert a sessions row including jsonl_path + jsonl_mtime
+    (required for the FTS5 dispatch to resolve encoded_slug + freshness)."""
+    conn.execute(
+        "INSERT INTO sessions (session_id, session_name, project, "
+        "  last_active_at, jsonl_path, jsonl_mtime) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (session_id, "test", project, "2026-05-18T10:00:00Z",
+         jsonl_path, jsonl_mtime),
+    )
+
+
+def test_search_fts5_explicit_returns_hit_from_indexed_session(
+    mock_db, tmp_path
+):
+    """--source fts5 finds content in an FTS5 DB that has the session
+    indexed (regardless of staleness)."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff11111-1111-1111-1111-111111111111"
+
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[
+            ("USER", None, "find the OAUTH phrase"),
+            ("AI",   None, "no marker"),
+        ],
+        jsonl_mtime=1700000000.0,
+    )
+    # Session row points at a (non-existent) JSONL whose parent dir
+    # name = encoded_slug. We never actually open the JSONL because
+    # FTS5 dispatch short-circuits.
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "OAUTH", source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert len(hits) == 1
+    assert hits[0].source_type == "fts5"
+    assert hits[0].role == "USER"
+    assert "OAUTH" in hits[0].matched_text
+
+
+def test_search_fts5_explicit_skips_unindexed_session(mock_db, tmp_path):
+    """--source fts5 without an FTS5 DB on disk -> zero hits (NOT a
+    fallback to grep). User explicitly asked for FTS5 only."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    sid = "fff22222-2222-2222-2222-222222222222"
+
+    # Write a JSONL that *would* match if we walked it
+    jsonl = _write_jsonl(tmp_path, [
+        {"type": "user", "timestamp": "t",
+         "message": {"role": "user", "content": "find the OAUTH phrase"}},
+    ])
+    _insert_session_with_jsonl(
+        mock_db, sid, "proj", str(jsonl), 1700000000.0,
+    )
+    _insert_source(mock_db, sid, "proj", "jsonl", str(jsonl))
+    mock_db.commit()
+
+    # No FTS5 DB was built -> no hits
+    hits = list(search(
+        mock_db, "OAUTH", source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert hits == []
+
+
+def test_search_auto_uses_fts5_when_fresh(mock_db, tmp_path):
+    """source_override=None + FTS5 fresh -> hit comes from FTS5,
+    not from grep over the JSONL."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff33333-3333-3333-3333-333333333333"
+
+    # FTS5 contains "FROM_FTS5"; JSONL contains "FROM_JSONL" only.
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "search term FROM_FTS5 lives here")],
+        jsonl_mtime=1700000000.0,
+    )
+    # Build a real on-disk JSONL with DIFFERENT content; if grep ran
+    # against it we'd see FROM_JSONL, not FROM_FTS5.
+    proj_dir = claude_dir / "projects" / encoded_slug
+    proj_dir.mkdir(parents=True)
+    jsonl_abs = proj_dir / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"FROM_JSONL"}}\n',
+        encoding="utf-8",
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 1700000000.0,
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    # Auto dispatch: FTS5 indexed with last_jsonl_mtime == session's
+    # jsonl_mtime -> fresh -> use FTS5
+    hits = list(search(mock_db, "FROM_FTS5", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "fts5"
+
+    # And the grep-only term doesn't appear when FTS5 is picked
+    hits = list(search(mock_db, "FROM_JSONL", claude_dir=claude_dir))
+    assert hits == []
+
+
+def test_search_auto_falls_through_to_grep_when_stale(mock_db, tmp_path):
+    """source_override=None + FTS5 indexed at older mtime -> auto picks
+    grep instead. The fresh-but-not-indexed content is found via JSONL
+    walk."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff44444-4444-4444-4444-444444444444"
+
+    # FTS5 indexed at mtime=1000; session reports current mtime=2000.
+    # -> Stale -> auto must fall through to grep.
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "STALE_TERM lives in FTS5")],
+        jsonl_mtime=1000.0,  # what was indexed
+    )
+    proj_dir = claude_dir / "projects" / encoded_slug
+    proj_dir.mkdir(parents=True)
+    jsonl_abs = proj_dir / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"FRESH_TERM lives in JSONL"}}\n',
+        encoding="utf-8",
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 2000.0,  # current mtime
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    # FRESH_TERM is in JSONL only; grep finds it
+    hits = list(search(mock_db, "FRESH_TERM", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "jsonl"
+
+    # STALE_TERM is in FTS5 only; auto-dispatch fell through, so no hit
+    hits = list(search(mock_db, "STALE_TERM", claude_dir=claude_dir))
+    assert hits == []
+
+
+def test_search_fts5_preserves_agent_role_label(mock_db, tmp_path):
+    """FTS5 dispatch path renders AGENT:<subtype> roles correctly
+    (parity with the JSONL walker's format)."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff55555-5555-5555-5555-555555555555"
+
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[
+            ("AGENT", "explore", "OAUTH lives in an agent reply"),
+            ("USER",  None,      "unrelated message"),
+        ],
+        jsonl_mtime=1700000000.0,
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "OAUTH", source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert len(hits) == 1
+    assert hits[0].role == "AGENT:explore"
+
+
+def test_search_no_claude_dir_disables_fts5(mock_db, tmp_path):
+    """If the caller doesn't pass claude_dir, FTS5 is never consulted
+    even when source_override is auto. Backwards-compatible default."""
+    jsonl_path = _write_jsonl(tmp_path, [
+        {"type": "user", "timestamp": "t",
+         "message": {"role": "user", "content": "find ME"}},
+    ])
+    _insert_session_with_jsonl(
+        mock_db, "sess-no-claude-dir", "proj", str(jsonl_path), 1700000000.0,
+    )
+    _insert_source(mock_db, "sess-no-claude-dir", "proj", "jsonl", str(jsonl_path))
+    mock_db.commit()
+
+    # No claude_dir -> FTS5 path entirely skipped; falls through to grep
+    hits = list(search(mock_db, "ME"))  # default claude_dir=None
+    assert len(hits) == 1
+    assert hits[0].source_type == "jsonl"
+
+
 # ── _build_matcher ────────────────────────────────────────────────────
 
 
@@ -341,7 +584,7 @@ def test_matcher_regex_invalid_raises():
         _build_matcher("(unclosed", regex=True, case_sensitive=False)
 
 
-# ── _pick_one_source ──────────────────────────────────────────────────
+# ── Source preference resolution + picker ────────────────────────────
 
 
 def _row(source_type, source_path="/p"):
@@ -356,30 +599,101 @@ def _row(source_type, source_path="/p"):
     return R(source_type, source_path)
 
 
-def test_pick_source_prefers_convo():
+def _session(session_id="sess-1", jsonl_path="", jsonl_mtime=0.0):
+    """Mimic the sessions row shape the dispatcher reads."""
+    class S:
+        def __init__(self):
+            self._d = {
+                "session_id": session_id,
+                "project": "proj",
+                "jsonl_path": jsonl_path,
+                "jsonl_mtime": jsonl_mtime,
+            }
+
+        def __getitem__(self, k):
+            return self._d[k]
+
+    return S()
+
+
+# _resolve_preference: user-facing --source -> attempt order
+
+
+def test_resolve_preference_auto_returns_full_default_order():
+    assert _resolve_preference("auto") == _SOURCE_PREFERENCE
+    assert _resolve_preference(None) == _SOURCE_PREFERENCE
+
+
+def test_resolve_preference_default_lists_fts5_first():
+    """v0.3.3 design: FTS5 is a first-class peer in the dispatch order,
+    not a layer bolted on top. The default attempt order starts with
+    FTS5 so an indexed-and-fresh session is served from the index."""
+    assert _SOURCE_PREFERENCE[0] == "fts5"
+    assert set(_SOURCE_PREFERENCE) == {"fts5", "convo", "sesslog", "jsonl"}
+
+
+def test_resolve_preference_explicit_pins_single_source():
+    assert _resolve_preference("fts5") == ("fts5",)
+    assert _resolve_preference("convo") == ("convo",)
+    assert _resolve_preference("jsonl") == ("jsonl",)
+
+
+# _pick_source_for_session: walks preference, returns first available
+
+
+def test_pick_source_prefers_first_available_in_preference():
     rows = [_row("jsonl"), _row("sesslog"), _row("convo")]
-    picked = _pick_one_source(rows, source_override=None)
-    assert picked["source_type"] == "convo"
+    sess = _session()
+    # No claude_dir means fts5 is unavailable for this session; the
+    # picker walks past it and lands on the first available file
+    # source -- convo, per the default preference.
+    src_type, handle = _pick_source_for_session(
+        sess, rows, _SOURCE_PREFERENCE, claude_dir=None,
+    )
+    assert src_type == "convo"
+    assert handle["source_type"] == "convo"
 
 
-def test_pick_source_falls_back_to_sesslog_then_jsonl():
-    assert _pick_one_source([_row("jsonl"), _row("sesslog")], None)["source_type"] == "sesslog"
-    assert _pick_one_source([_row("jsonl")], None)["source_type"] == "jsonl"
+def test_pick_source_walks_through_unavailable_to_next():
+    # Only jsonl exists; convo / sesslog rows missing. The picker
+    # should still land on jsonl.
+    sess = _session()
+    src_type, handle = _pick_source_for_session(
+        sess, [_row("jsonl")], _SOURCE_PREFERENCE, claude_dir=None,
+    )
+    assert src_type == "jsonl"
 
 
-def test_pick_source_override_returns_only_that_type():
+def test_pick_source_explicit_pin_only_that_source():
     rows = [_row("jsonl"), _row("convo")]
-    assert _pick_one_source(rows, source_override="jsonl")["source_type"] == "jsonl"
+    sess = _session()
+    src_type, handle = _pick_source_for_session(
+        sess, rows, ("jsonl",), claude_dir=None,
+    )
+    assert src_type == "jsonl"
 
 
-def test_pick_source_override_missing_returns_none():
+def test_pick_source_pinned_to_unavailable_returns_none():
+    """A single-element preference pinned to a missing source returns
+    (None, None) -- no fallback. Matches the v0.3.2 --source X
+    behavior."""
     rows = [_row("jsonl")]
-    assert _pick_one_source(rows, source_override="convo") is None
+    sess = _session()
+    src_type, handle = _pick_source_for_session(
+        sess, rows, ("convo",), claude_dir=None,
+    )
+    assert src_type is None
+    assert handle is None
 
 
-def test_pick_source_auto_is_treated_as_no_override():
-    rows = [_row("jsonl"), _row("convo")]
-    assert _pick_one_source(rows, source_override="auto")["source_type"] == "convo"
+def test_pick_source_empty_rows_no_fts5_returns_none():
+    """No file sources AND no claude_dir for FTS5 -> nothing available
+    in the entire preference list."""
+    sess = _session()
+    src_type, handle = _pick_source_for_session(
+        sess, [], _SOURCE_PREFERENCE, claude_dir=None,
+    )
+    assert src_type is None
 
 
 # ── End-to-end search() against mock_db ───────────────────────────────

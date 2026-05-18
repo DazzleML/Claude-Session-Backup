@@ -9,6 +9,31 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.3] -- 2026-05-18 (prealpha)
+
+The keystone v0.3.x deliverable: `csb search` now actually queries FTS5. Designed source-agnostic from the start -- FTS5 is a first-class peer in the preference list alongside `.convo` / `.sesslog` / `.jsonl`, not a layer bolted on top. A single uniform dispatcher walks the preference order per session and returns the first source that's available for that session. Each source is independently optional: a user without claude-session-logger automatically skips `.convo` / `.sesslog`; a user who hasn't run `csb build-fts5` skips `fts5`; a user with only raw transcripts falls through to `jsonl`. New `--source fts5` choice for users who want FTS5-only semantics. 519/519 tests pass (was 510 at v0.3.2; +9 net).
+
+### Added
+- **`--source fts5`** as a `csb search` choice. Returns hits only from sessions present in the per-project `indexed_sessions` table; sessions not yet built (via `csb build-fts5`) are skipped silently with no fallback. The user-explicit "I want FTS5 results, even possibly stale" knob -- pair with `csb build-fts5 --force` if you want the freshest index.
+- **Source-agnostic dispatcher** in `search.py`. `_SOURCE_PREFERENCE = ("fts5", "convo", "sesslog", "jsonl")` defines the project's default attempt order. `_resolve_preference(--source)` translates the user choice to a preference tuple (auto -> the full default; explicit single source -> a one-element tuple). `_pick_source_for_session(...)` walks the tuple in order and returns the first source whose availability check passes -- one loop, no FTS5 special-casing.
+- **`query_fts5_for_session(fts5_db_path, session_id, pattern)`** in `search.py`. Yields `Event` records for matches in a single session's per-project FTS5 DB. Uses FTS5 `MATCH` for fast candidate narrowing (porter unicode61 tokenizer) followed by the same Python-side literal / regex matcher the rest of `csb search` uses -- preserves csb's literal-substring semantics even though the tokenizer would otherwise expand "run" -> "running".
+- **`_fts5_path_if_indexed(claude_dir, project, encoded_slug, session_id, jsonl_mtime=None)`** in `search.py`. Read-only freshness probe; opens the per-project DB RAW (bypasses `open_fts5_db`) so the search path never triggers migrations or prints the migration-notice line. `jsonl_mtime=None` -> any indexed session counts (`--source fts5` contract). `jsonl_mtime=N` -> `last_jsonl_mtime >= N` required (`--source auto` contract).
+- **`claude_dir` parameter on `search.search()`** -- forwarded by `cmd_search` from the active config. Required for resolving per-project FTS5 DB paths; when None, the dispatcher cannot evaluate the `fts5` source and treats it as unavailable for every session (the rest of the preference list runs normally).
+- **9 new / reframed tests** in `tests/test_search.py`: preference resolution (auto -> full default, single name -> singleton tuple), default order has fts5 first plus all four expected names, picker walks preference and returns first available, picker walks past unavailable sources to the next, pinned source returns only itself, pinned to a missing source returns `(None, None)`, plus 5 end-to-end search() tests: `--source fts5` returns indexed hit, `--source fts5` skips unindexed, auto picks FTS5 when fresh, auto walks past FTS5 when stale, FTS5 path preserves `AGENT:<subtype>` role label.
+
+### Changed
+- **`_SOURCE_PREFERENCE`** now lists `"fts5"` first. The old constant `("convo", "sesslog", "jsonl")` is gone; FTS5 takes its rightful place at the top of the attempt order.
+- **`csb search` SQL** in the session-enumeration loop now selects `s.jsonl_path` so the dispatcher can derive each session's encoded slug for FTS5 DB path resolution.
+
+### Removed (internal)
+- **`_pick_one_source(sources, source_override)`** -- replaced by the source-agnostic `_pick_source_for_session` walker. The old function only knew about file-based sources and required the search() loop to special-case FTS5 dispatch before calling it; the new picker handles all four sources uniformly in a single loop.
+
+### Performance
+- For sessions whose FTS5 index is fresh, `csb search` now returns hits in roughly the time of a SQLite `MATCH` query (sub-100ms on test vaults of ~200 sessions) instead of walking the `.convo` / `.sesslog` / JSONL file every time. The cross-project case still iterates per project (no cross-DB join yet) -- one query per per-project DB.
+
+### Carried over from v0.3.2
+- Migration framework + visible auto-upgrade notice unchanged. `csb search` opens FTS5 DBs RAW for its freshness check and the actual MATCH query, so it never trips the migration runner -- migrations only happen via `csb build-fts5` (which is the right place).
+
 ## [0.3.2] -- 2026-05-18 (prealpha)
 
 Maintenance step ahead of the v0.3.3 search dispatcher work: refactor the per-project FTS5 DB migration logic from an inline conditional in `fts5_db.py` into a registry-pattern module matching the main DB's `migrations.py`. Same shape, same convention -- adding future per-project schema versions is now "write a function, register it" instead of editing a branch. Per-project migrations now also print a user-visible notice on auto-upgrade (matching the main DB's existing audit-trail style). 510/510 tests pass (was 496 at v0.3.1; +14 net).
@@ -242,7 +267,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.3...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

@@ -625,6 +625,7 @@ def cmd_search(args) -> int:
             limit=effective_limit,
             sort_key=getattr(args, "sort", "last-used"),
             fetch_folders=full_info_level >= 2,
+            claude_dir=config["claude_dir"],
         ))
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
