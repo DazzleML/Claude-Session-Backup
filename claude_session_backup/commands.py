@@ -661,6 +661,59 @@ def cmd_search(args) -> int:
     return 0
 
 
+def cmd_build_fts5(args) -> int:
+    """Build / refresh per-project FTS5 content indices (Phase 2 of #3).
+
+    Idempotent: by default only re-indexes sessions whose JSONL mtime
+    has advanced past ``indexed_sessions.last_jsonl_mtime``. Use
+    ``--force`` to rebuild unconditionally.
+
+    Returns:
+        0 on success (even if 0 sessions needed indexing)
+        1 if FTS5 isn't available in the local SQLite build
+        2 if --session-id was passed but doesn't resolve
+    """
+    from . import fts5_db, fts5_index
+
+    # Bail early if the local SQLite lacks FTS5 (rare, but defensive).
+    if not fts5_db.fts5_available():
+        print(
+            "Error: this Python's SQLite was built without FTS5 support. "
+            "Try upgrading Python or installing a SQLite with FTS5 enabled.",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn, quiet=getattr(args, "quiet", False))
+
+    # Resolve --session-id (prefix) to a full UUID via the shared resolver.
+    resolved_session: str | None = None
+    raw_sid = getattr(args, "session_id", None)
+    if raw_sid:
+        full_id, exit_code = _resolve_session_or_exit(conn, raw_sid)
+        if full_id is None:
+            conn.close()
+            return exit_code
+        resolved_session = full_id
+
+    claude_dir = Path(config["claude_dir"])
+    quiet = getattr(args, "quiet", False)
+
+    try:
+        fts5_index.build_all(
+            conn, claude_dir,
+            project=getattr(args, "project", None),
+            session_id=resolved_session,
+            force=getattr(args, "force", False),
+            quiet=quiet,
+        )
+    finally:
+        conn.close()
+    return 0
+
+
 def cmd_rebuild_index(args) -> int:
     """Reconstruct SQLite index by re-scanning all sessions."""
     config = _get_config(args)

@@ -347,6 +347,31 @@ def build_parser():
     p_rebuild = sub.add_parser("rebuild-index", help="Reconstruct SQLite index from git history")
     _add_common_flags(p_rebuild)
 
+    # build-fts5
+    p_build = sub.add_parser(
+        "build-fts5",
+        help="Build/refresh FTS5 content index (per-project DBs in ~/.claude/csb-fts/)",
+        description=(
+            "Index session transcripts into per-project SQLite FTS5 "
+            "databases for fast content search. Idempotent -- skips "
+            "sessions whose JSONL mtime hasn't changed since the last "
+            "build. Use --force to re-index unconditionally."
+        ),
+    )
+    _add_common_flags(p_build)
+    p_build.add_argument(
+        "--project", default=None, metavar="SLUG",
+        help="Limit to one project (encoded slug form, e.g. 'C--code-myproj')",
+    )
+    p_build.add_argument(
+        "--session-id", default=None, metavar="UUID",
+        help="Limit to one session (UUID prefix; uses the shared resolver)",
+    )
+    p_build.add_argument(
+        "--force", action="store_true",
+        help="Re-index every candidate even if up-to-date",
+    )
+
     # config
     p_config = sub.add_parser("config", help="View/edit configuration")
     _add_common_flags(p_config)
@@ -399,6 +424,9 @@ def main(argv=None):
     elif args.command == "rebuild-index":
         from .commands import cmd_rebuild_index
         return cmd_rebuild_index(args)
+    elif args.command == "build-fts5":
+        from .commands import cmd_build_fts5
+        return cmd_build_fts5(args)
     elif args.command == "config":
         from .commands import cmd_config
         return cmd_config(args)

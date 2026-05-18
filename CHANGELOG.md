@@ -9,6 +9,32 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.0] -- 2026-05-17 (prealpha)
+
+Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Adds the `csb build-fts5` command that imports each session's JSONL transcript into `~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db` with role-aware classification, sub-agent attribution, and file-operation metadata. `csb search` behavior is **unchanged in v0.3.0** -- this is the data-layer foundation; v0.3.1 will wire it into the search dispatcher. 487/487 tests pass.
+
+### Added
+- **`csb build-fts5`** -- new subcommand that builds / refreshes the FTS5 indices. Flags: `--project <slug>` (limit to one), `--session-id <uuid-prefix>` (limit to one via the shared resolver), `--force` (rebuild unconditionally), `--quiet`. Idempotent: skips sessions whose JSONL mtime hasn't advanced past `indexed_sessions.last_jsonl_mtime`. The per-project DB convention (`<project>__<slug-hash>_<USER>.db`) was locked at v0.2.5 in `fts_paths.py`; v0.3.0 fills in the actual DB schema + ingest.
+- **Per-project FTS5 schema** -- `messages` base table (id, session_id, uuid, message_index, role, role_subtype, content, timestamp) + `messages_fts` virtual table with `content='messages'` external content + `porter unicode61` tokenizer. Sync triggers (INSERT/UPDATE/DELETE → FTS) mirror the claude-vault production pattern. `indexed_sessions` table inside each per-project DB is the authoritative "is this session indexed" tracker.
+- **Two AGENT-attribution paths** in the JSONL importer:
+  - **Skill-attributed** (slash-command skills like `/commit`, `/dev-workflow-process`): `message.attributionSkill` on `type:'assistant'` events → `role='AGENT'`, `role_subtype=<skill>`.
+  - **Task-launched** (Agent-tool sub-agents like `Explore`, `Plan`, `oracle`, `senior-engineer`): tracked via `tool_use.id` → `subagent_type`, then the matching `tool_result` block in the next user event is labeled `AGENT:<subagent_type>`. This is the path that puts sub-agent output into the search corpus -- previously invisible to grep.
+- **File-operation metadata** (`file_operations` table inside each per-project DB) -- discoverability layer for "which conversations touched which files." Populated from path-bearing tool_use blocks during the same JSONL walk: `Read` → `op='read'`, `Edit` → `'edited'`, `Write` → `'wrote'`, `Grep` → `'searched'`, `NotebookEdit` → `'notebook_edit'`. Bash command parsing deliberately deferred. The search-side UX (`csb files <pattern>` / `csb search --files <glob>`) ships in a future patch -- v0.3.0 just captures the data so users build the index once.
+- **`fts5_db.py` / `fts5_importer.py` / `fts5_index.py`** -- three new modules:
+  - `fts5_db.py` (~190 LOC) -- schema, `open_fts5_db`, `init_fts5_schema`, `is_session_indexed`, `mark_session_indexed`, `delete_session`, `escape_fts_query`, `fts5_available` probe
+  - `fts5_importer.py` (~330 LOC) -- `iter_rows_from_jsonl` (streams `ImportRow` + `FileOpRow` with both AGENT paths), `import_jsonl_to_db`, content-hash helper
+  - `fts5_index.py` (~200 LOC) -- `build_all` orchestrator with project / session filters, freshness check, force re-index, per-session error tolerance
+- **64 new tests** -- 21 in `test_fts5_db.py` (schema, triggers, dedup, freshness, escape), 33 in `test_fts5_importer.py` (every role classification path including Agent tool chain, file-op extraction, dedup-on-reimport, malformed JSON tolerance, system-reminder verbatim preservation), 10 in `test_fts5_index.py` (orchestrator: single + multi-project, idempotency, mtime change → re-index, force, project / session filters, deleted-skip, missing-file-skip, session_sources hint update). Total 487/487 (was 423 at v0.2.10).
+
+### Behavior unchanged
+- `csb search` still walks `.convo` / `.sesslog` / JSONL files. The FTS5 backend exists but is not yet consulted -- v0.3.1 will add the smart-fallback dispatcher.
+
+### Notes
+- Content cleaning policy: **no stripping** of `<system-reminder>`, `<command-name>`, etc. (csb preserves verbatim, diverges from claude-vault which cleans).
+- Tokenizer choice: `porter unicode61` (same as claude-vault's production setup).
+- Per-project DBs (not one monolithic vault): smaller files, faster targeted queries, per-project archive/move/delete, multi-user safety via the `_<USER>` filename suffix.
+- Schema migration: **NO** `schema_version=4` bump on the main DB. Per-project DBs are self-contained; main DB stays at v3. The reserved slot remains available for a future cross-DB linker table if one is ever needed.
+
 ## [0.2.10] -- 2026-05-17 (prealpha)
 
 `csb search` polish pass to bring it to parity with `csb list` and `csb scan`: per-session sort order, escalating richer-info levels (`-f` / `-ff`), readable date format by default, visual block separation. 420/420 tests pass.
@@ -166,7 +192,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9
 [0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7
