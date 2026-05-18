@@ -263,18 +263,42 @@ def _build_matcher(pattern: str, regex: bool, case_sensitive: bool):
 _SOURCE_PREFERENCE = ("fts5", "convo", "sesslog", "jsonl")
 
 
-def _resolve_preference(source_override: Optional[str]) -> tuple[str, ...]:
+def _resolve_preference(
+    source_override: Optional[str],
+    default_preference: tuple[str, ...] = _SOURCE_PREFERENCE,
+) -> tuple[str, ...]:
     """Translate the user-facing ``--source`` value into a preference
     tuple the dispatcher can walk.
 
-    ``"auto"`` / ``None`` -> the project default order (FTS5 first,
-    then file-based sources). ``"fts5"`` / ``"convo"`` / ``"sesslog"``
-    / ``"jsonl"`` -> a single-element tuple, pinning the user's choice
-    so unavailable sources skip the session cleanly with no fallback.
+    ``"auto"`` / ``None`` -> ``default_preference`` (which the caller
+    can adapt -- e.g. to drop ``convo`` / ``sesslog`` when no
+    claude-session-logger output exists in the vault). ``"fts5"`` /
+    ``"convo"`` / ``"sesslog"`` / ``"jsonl"`` -> a single-element
+    tuple, pinning the user's choice so unavailable sources skip the
+    session cleanly with no fallback.
     """
     if source_override in (None, "auto"):
-        return _SOURCE_PREFERENCE
+        return default_preference
     return (source_override,)
+
+
+def effective_default_preference(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Return the auto-detected source preference for this vault.
+
+    Probes the main DB for evidence that ``claude-session-logger`` has
+    ever written output (i.e. ``convo`` / ``sesslog`` rows in
+    ``session_sources``). If absent, drops both from the preference
+    so a logger-less user's default search naturally collapses to
+    ``("fts5", "jsonl")`` -- no wasted lookups against sources that
+    can't exist for them.
+
+    User-explicit ``--source X`` always takes precedence over this
+    default. This is purely for the "auto" path.
+    """
+    from .sesslog_parser import has_session_logger
+    if has_session_logger(conn):
+        return _SOURCE_PREFERENCE
+    return tuple(s for s in _SOURCE_PREFERENCE if s not in ("convo", "sesslog"))
 
 
 def _pick_source_for_session(
@@ -544,7 +568,11 @@ def search(
             f"Unknown sort_key {sort_key!r}; expected one of {sorted(SORT_SQL)}"
         )
     matcher = _build_matcher(pattern, regex, case_sensitive)
-    preference = _resolve_preference(source_override)
+    # Auto-mode preference adapts to the user's actual vault: drops
+    # convo / sesslog when no claude-session-logger output exists.
+    # Explicit --source X overrides this entirely.
+    default_pref = effective_default_preference(conn)
+    preference = _resolve_preference(source_override, default_pref)
 
     # Build the session enumeration SQL. We could join sessions to
     # session_sources directly but a two-step approach (enumerate sessions,

@@ -9,6 +9,28 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.4] -- 2026-05-18 (prealpha)
+
+Logger-side parity: csb can now derive file-operation metadata from `claude-session-logger`'s output channels (`.sesslog_*`, `.tools_*`, `.fileio_*`) without walking the raw JSONL or building the FTS5 index. The search dispatcher's default preference adapts to the vault -- users without the logger see `("fts5", "jsonl")` as their auto-mode preference instead of the full list. 547/547 tests pass (was 519 at v0.3.3; +28 net).
+
+### Added
+- **`claude_session_backup/sesslog_parser.py`** (new module) -- parses the structured block format claude-session-logger emits to `.sesslog_*` / `.tools_*` / `.fileio_*` channels and yields `transcript_walker.FileOpRow` records (same shape FTS5 import produces from JSONL). Closes the logger-side half of the v0.3.x parity story: file-operation metadata is now derivable from ANY of the three sources (JSONL, FTS5, logger output).
+- **`iter_file_ops_from_sesslog(path, session_id)`** -- streams `FileOpRow` from one logger file. Handles single-line + multi-line blocks; recognizes `Read` / `Edit` / `Write` / `MultiEdit` / `NotebookEdit` (path-bearing, first-quoted parser) plus `Grep` / `Glob` (path target via `... in "..."` body). Skips `Bash` / `Skill` / `Agent` / `WebSearch` / `Task` blocks (not file-ops). Strips `:LINE` / `:LINE-RANGE` suffixes from Read paths. Strength matches the JSONL walker: 3 = active modify, 2 = passive read, 1 = search probe.
+- **`find_fileop_channels_for_session(session_dir)`** -- lists every logger output file in a session's directory that carries file-op metadata (any name starting with `.sesslog_`, `.tools_`, or `.fileio_`). Useful for future code that wants to merge file-op data from multiple channels of the same session.
+- **`has_session_logger(main_conn)`** -- O(1) probe of `session_sources` for any `convo` / `sesslog` row. Used by the search dispatcher to decide whether the default preference should include those sources.
+- **`effective_default_preference(conn)`** in `search.py` -- returns the auto-detected default preference for the vault. Logger present -> full `("fts5", "convo", "sesslog", "jsonl")` list. Logger absent -> collapsed `("fts5", "jsonl")` -- no wasted lookups against sources that can't exist. User-explicit `--source X` still wins.
+- **28 new tests** -- 24 in `tests/test_sesslog_parser.py` (every tool kind, line-range stripping, agent-attributed tags, multi-line blocks, banner/blank skipping, malformed tolerance, message_index increment per-emitted-row only, sub-channel discovery, logger presence in 4 vault states); 4 in `tests/test_search.py` (`_resolve_preference` accepts custom `default_preference`; `effective_default_preference` returns full list when logger present, collapsed list when absent, collapsed list for empty DB).
+
+### Changed
+- **`_resolve_preference(source_override, default_preference=_SOURCE_PREFERENCE)`** gained an optional `default_preference` parameter so the caller can adapt the auto-mode preference to vault state. Backwards-compatible: existing callers that don't pass the new arg get the module-level constant they had before.
+- **`csb search`** in auto mode now adapts to vault state via `effective_default_preference`. A user who has never run claude-session-logger sees their `csb search` walk `fts5 -> jsonl` only -- previously the dispatcher would have probed `convo` / `sesslog` for every session before falling through to JSONL. Performance win and conceptual cleanliness for the "no logger" configuration.
+
+### Verified live
+- Parsed 74 file-op rows from a real `.tools_*` log (39 read / 11 wrote / 9 edited / 15 searched), all with correct strength values matching the JSONL importer's tiering.
+
+### Carried over from v0.3.3
+- Search dispatcher logic unchanged; the new `default_preference` parameter is the only signature change. Existing `--source fts5` / `--source convo` / etc. behavior identical.
+
 ## [0.3.3] -- 2026-05-18 (prealpha)
 
 The keystone v0.3.x deliverable: `csb search` now actually queries FTS5. Designed source-agnostic from the start -- FTS5 is a first-class peer in the preference list alongside `.convo` / `.sesslog` / `.jsonl`, not a layer bolted on top. A single uniform dispatcher walks the preference order per session and returns the first source that's available for that session. Each source is independently optional: a user without claude-session-logger automatically skips `.convo` / `.sesslog`; a user who hasn't run `csb build-fts5` skips `fts5`; a user with only raw transcripts falls through to `jsonl`. New `--source fts5` choice for users who want FTS5-only semantics. 519/519 tests pass (was 510 at v0.3.2; +9 net).
@@ -267,7 +289,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.4...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

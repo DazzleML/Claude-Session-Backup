@@ -13,6 +13,7 @@ from claude_session_backup.search import (
     _build_matcher,
     _pick_source_for_session,
     _resolve_preference,
+    effective_default_preference,
     parse_jsonl_events,
     parse_log_blocks,
     parse_source,
@@ -636,6 +637,71 @@ def test_resolve_preference_explicit_pins_single_source():
     assert _resolve_preference("fts5") == ("fts5",)
     assert _resolve_preference("convo") == ("convo",)
     assert _resolve_preference("jsonl") == ("jsonl",)
+
+
+def test_resolve_preference_accepts_custom_default():
+    """The default_preference arg lets the caller adapt to vault state
+    (v0.3.4: dropping convo/sesslog when no logger present)."""
+    custom = ("fts5", "jsonl")
+    assert _resolve_preference(None, default_preference=custom) == custom
+    assert _resolve_preference("auto", default_preference=custom) == custom
+    # Explicit single source still wins, ignoring the custom default.
+    assert _resolve_preference("convo", default_preference=custom) == ("convo",)
+
+
+# v0.3.4: vault-aware default preference
+
+
+def test_effective_default_with_logger_present_keeps_full_preference(mock_db):
+    """If session_sources has at least one convo/sesslog row, the
+    default preference stays at the full ("fts5", "convo", "sesslog",
+    "jsonl") order."""
+    mock_db.execute(
+        "INSERT INTO sessions (session_id, session_name, project, last_active_at) "
+        "VALUES (?, ?, ?, ?)",
+        ("logger-sess", "x", "proj", "2026-05-18T10:00:00Z"),
+    )
+    mock_db.execute(
+        "INSERT INTO session_sources "
+        "(session_id, project, source_type, source_path, last_seen) "
+        "VALUES (?, ?, 'convo', ?, ?)",
+        ("logger-sess", "proj", "/tmp/x.convo", "2026-05-18T10:00:00Z"),
+    )
+    mock_db.commit()
+
+    pref = effective_default_preference(mock_db)
+    assert pref == _SOURCE_PREFERENCE
+
+
+def test_effective_default_without_logger_drops_convo_sesslog(mock_db):
+    """User with no claude-session-logger output -> preference collapses
+    to ("fts5", "jsonl"). No wasted lookups against sources that
+    can't exist for them."""
+    mock_db.execute(
+        "INSERT INTO sessions (session_id, session_name, project, last_active_at) "
+        "VALUES (?, ?, ?, ?)",
+        ("no-logger", "x", "proj", "2026-05-18T10:00:00Z"),
+    )
+    mock_db.execute(
+        "INSERT INTO session_sources "
+        "(session_id, project, source_type, source_path, last_seen) "
+        "VALUES (?, ?, 'jsonl', ?, ?)",
+        ("no-logger", "proj", "/tmp/x.jsonl", "2026-05-18T10:00:00Z"),
+    )
+    mock_db.commit()
+
+    pref = effective_default_preference(mock_db)
+    assert "convo" not in pref
+    assert "sesslog" not in pref
+    assert pref == ("fts5", "jsonl")
+
+
+def test_effective_default_with_empty_db_drops_logger_sources(mock_db):
+    """Fresh DB with no session_sources rows at all -> assume no logger
+    until proven otherwise. (When sessions do get backed up, the
+    logger detection updates naturally.)"""
+    pref = effective_default_preference(mock_db)
+    assert pref == ("fts5", "jsonl")
 
 
 # _pick_source_for_session: walks preference, returns first available
