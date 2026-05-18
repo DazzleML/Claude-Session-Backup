@@ -227,6 +227,86 @@ def test_parse_jsonl_missing_file(tmp_path):
     assert events == []
 
 
+# ── v0.3.1 parity: JSONL parser surfaces AGENT content + attribution ──
+
+
+def test_parse_jsonl_skill_attributed_assistant_is_agent(tmp_path):
+    """v0.3.1: attributionSkill on assistant event -> role 'AGENT:<skill>'.
+
+    Previously, the Phase 1 parser labeled ALL assistant events as 'AI',
+    silently dropping the attribution.
+    """
+    p = _write_jsonl(tmp_path, [
+        {"type": "assistant", "timestamp": "t1",
+         "attributionSkill": "fullpostmortem",
+         "message": {"content": [{"type": "text", "text": "writing PM"}]}},
+    ])
+    events = list(parse_jsonl_events(str(p)))
+    assert len(events) == 1
+    assert events[0].role == "AGENT:fullpostmortem"
+    assert events[0].text == "writing PM"
+
+
+def test_parse_jsonl_task_launched_agent_surfaces(tmp_path):
+    """v0.3.1 parity: Task-launched (Agent tool) sub-agent output now
+    surfaces under --source jsonl.
+
+    Previously the Phase 1 parser ignored tool_result blocks entirely,
+    so Explore / oracle / Plan agent responses were invisible to
+    `csb search --source jsonl`.
+    """
+    p = _write_jsonl(tmp_path, [
+        # 1. Assistant launches an Explore agent
+        {"type": "assistant", "timestamp": "t1", "message": {"content": [
+            {"type": "tool_use", "id": "tu1", "name": "Agent",
+             "input": {"subagent_type": "Explore", "prompt": "..."}},
+        ]}},
+        # 2. User event wrapping the agent's reply
+        {"type": "user", "timestamp": "t2", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tu1",
+             "content": [{"type": "text", "text": "explore agent reply"}]},
+        ]}},
+    ])
+    events = list(parse_jsonl_events(str(p), session_id="sid"))
+    agent_events = [e for e in events if e.role.startswith("AGENT")]
+    assert len(agent_events) == 1
+    assert agent_events[0].role == "AGENT:explore"
+    assert agent_events[0].text == "explore agent reply"
+
+
+def test_parse_jsonl_agent_role_label_format(tmp_path):
+    """AGENT subtype is rendered exactly as 'AGENT:<lowercased subtype>'.
+
+    Lowercasing happens in the walker so e.g. 'Senior-Engineer' becomes
+    'AGENT:senior-engineer' regardless of casing in the source.
+    """
+    p = _write_jsonl(tmp_path, [
+        {"type": "assistant", "timestamp": "t1", "message": {"content": [
+            {"type": "tool_use", "id": "tu1", "name": "Agent",
+             "input": {"subagent_type": "Senior-Engineer"}},
+        ]}},
+        {"type": "user", "timestamp": "t2", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "tu1",
+             "content": "engineer reply"},
+        ]}},
+    ])
+    events = list(parse_jsonl_events(str(p)))
+    agent = [e for e in events if e.role.startswith("AGENT")][0]
+    assert agent.role == "AGENT:senior-engineer"
+
+
+def test_parse_jsonl_signature_accepts_optional_session_id(tmp_path):
+    """Calling with the new positional session_id arg works the same
+    as the legacy single-arg form (Event payloads are identical)."""
+    p = _write_jsonl(tmp_path, [
+        {"type": "user", "timestamp": "t", "message": {"content": "x"}},
+    ])
+    a = list(parse_jsonl_events(str(p)))
+    b = list(parse_jsonl_events(str(p), session_id="sid"))
+    assert a[0].role == b[0].role == "USER"
+    assert a[0].text == b[0].text == "x"
+
+
 # ── _build_matcher ────────────────────────────────────────────────────
 
 

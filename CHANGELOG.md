@@ -9,6 +9,30 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.1] -- 2026-05-17 (prealpha)
+
+Foundation step for the v0.3.x parity story (issue #3): extract the JSONL walker into a shared module that both the FTS5 importer AND Phase 1 grep search consume, add a `strength` weighting to the `file_operations` table for future ranking, and close a long-standing parity bug where `csb search --source jsonl` silently missed Task-launched sub-agent content. 496/496 tests pass (was 487 at v0.3.0). FTS5 still NOT wired into the search dispatcher -- that ships in v0.3.2.
+
+### Added
+- **`claude_session_backup/transcript_walker.py`** (new module) -- single source of truth for the JSONL → `ImportRow` + `FileOpRow` extraction. Both the FTS5 importer and the Phase 1 JSONL search use it, so the two paths now produce the same role surface (USER / AI / `AGENT:<subtype>`) and the same file-op metadata.
+- **`file_operations.strength`** column on each per-project FTS5 DB -- INTEGER, NOT NULL, DEFAULT 2. Assigned at import time per operation kind: 3 = active modification (`wrote`, `edited`, `notebook_edit`), 2 = passive `read`, 1 = `searched` (Grep probe). Enables future ranking queries like "files this session was actually working on" without a Python post-pass.
+- **Per-project DB schema versioning** -- new `fts_schema_version` table inside each per-project FTS5 DB. v0.3.0 DBs (no version table, no strength column) are detected as v1 and migrated in place on first open: `ALTER TABLE` adds the strength column, then values are backfilled from the operation kind, then the version is stamped to 2. Verified against 49 real DBs on disk.
+- **`transcript_walker.format_role_label(role, role_subtype)`** -- shared helper that renders the (role, role_subtype) tuple as `"AGENT:explore"` / `"USER"` / `"AI"`, matching the role-token grammar Phase 1 `.convo` / `.sesslog` parsers already produce.
+- **9 new tests** -- 5 in `test_fts5_db.py` (strength column present + correct type/default, `fts_schema_version` table, v1→v2 in-place migration with backfill, migration idempotency, end-to-end strength write at import time); 4 in `test_search.py` (`--source jsonl` surfaces skill-attributed assistant events as `AGENT:<skill>`, Task-launched Agent tool_result blocks surface as `AGENT:<subtype>`, role subtype is lowercased consistently, the new optional `session_id` arg is back-compatible with the single-arg call form). Total 496/496 (was 487).
+
+### Changed
+- **`csb search --source jsonl` now sees Task-launched sub-agent content.** Pre-v0.3.1 the Phase 1 JSONL parser only looked at user/assistant text blocks and silently dropped `tool_result` blocks, so output from `/commit`, `/dev-workflow-process`, `Explore`, `oracle`, `Plan`, `senior-engineer`, etc. was invisible to `csb search` when the source was JSONL. The shared walker tracks `Agent` tool_use → tool_result correlation during the linear walk and labels the matching tool_result text as `AGENT:<subagent_type>`.
+- **`csb search --source jsonl` now respects `attributionSkill`.** Skill-launched assistant events (the path used by `/commit`, `/fullpostmortem`, etc.) are labeled `AGENT:<skill>` instead of the previous generic `AI`. Matches what FTS5 import has done since v0.3.0.
+- **`parse_jsonl_events(path)` gained an optional `session_id` parameter** -- forwarded to the walker for parity with the FTS5 importer's signature, ignored by the rendered Event. Calls without the arg keep working unchanged.
+
+### Refactored (no behavior change for the FTS5 importer)
+- **`fts5_importer.py` is now a thin shim** (~120 LOC down from ~430). The walker functions (`iter_rows_from_jsonl`, `ImportRow`, `FileOpRow`, `_extract_file_ops`, `_extract_agent_tool_uses`, `_find_matching_tool_result`, `_flatten_text_blocks`, `_flatten_tool_result_content`) moved to `transcript_walker.py` and are re-exported from `fts5_importer` so downstream callers / existing tests keep importing from the old location.
+- **`_extract_file_ops` now yields `(operation, path, strength)` 3-tuples** (was 2-tuples) so the strength weight follows the row to the importer's INSERT statement.
+- **`_FILE_OP_TOOLS` constant** gains the strength field per entry.
+
+### Carried over from v0.3.0
+- `csb build-fts5` and per-project FTS5 DB convention unchanged. Existing v0.3.0 DBs get migrated to v2 on next open (transparently); a `csb build-fts5 --force` will produce identical row content with the new strength column populated.
+
 ## [0.3.0] -- 2026-05-17 (prealpha)
 
 Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Adds the `csb build-fts5` command that imports each session's JSONL transcript into `~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db` with role-aware classification, sub-agent attribution, and file-operation metadata. `csb search` behavior is **unchanged in v0.3.0** -- this is the data-layer foundation; v0.3.1 will wire it into the search dispatcher. 487/487 tests pass.
@@ -192,7 +216,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.1...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

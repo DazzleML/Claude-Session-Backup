@@ -157,14 +157,20 @@ def test_extract_file_ops_read_edit_write():
         {"type": "tool_use", "name": "Write", "input": {"file_path": "/c.py"}},
     ]
     result = list(_extract_file_ops(content))
-    assert result == [("read", "/a.py"), ("edited", "/b.py"), ("wrote", "/c.py")]
+    # v0.3.1: each tuple is (operation, path, strength). 3 = active modify, 2 = read.
+    assert result == [
+        ("read", "/a.py", 2),
+        ("edited", "/b.py", 3),
+        ("wrote", "/c.py", 3),
+    ]
 
 
 def test_extract_file_ops_grep_uses_path_field():
     content = [
         {"type": "tool_use", "name": "Grep", "input": {"path": "src/", "pattern": "x"}},
     ]
-    assert list(_extract_file_ops(content)) == [("searched", "src/")]
+    # Grep gets the lowest strength (1) -- search probe, not certain the file was read.
+    assert list(_extract_file_ops(content)) == [("searched", "src/", 1)]
 
 
 def test_extract_file_ops_notebook_edit():
@@ -172,7 +178,10 @@ def test_extract_file_ops_notebook_edit():
         {"type": "tool_use", "name": "NotebookEdit",
          "input": {"notebook_path": "/notebook.ipynb"}},
     ]
-    assert list(_extract_file_ops(content)) == [("notebook_edit", "/notebook.ipynb")]
+    # Notebook edit = active modification (3), same tier as Edit/Write.
+    assert list(_extract_file_ops(content)) == [
+        ("notebook_edit", "/notebook.ipynb", 3),
+    ]
 
 
 def test_extract_file_ops_bash_excluded():

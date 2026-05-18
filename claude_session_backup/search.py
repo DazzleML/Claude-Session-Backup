@@ -1,5 +1,5 @@
 """
-Transcript content search -- Phase 1 of #3.
+Transcript content search -- Phase 1 of #3 (parity-fixed in v0.3.1).
 
 Walks the ``session_sources`` table (populated by ``csb backup``), parses
 each source file for USER / AI / AGENT message blocks, and yields ``Hit``
@@ -14,8 +14,9 @@ Three source channels are supported (per-session fallback):
   blocks (Bash, Read, Grep, ...). Tool blocks are filtered out at parse
   time; only USER/AI/AGENT survive.
 - ``<uuid>.jsonl`` (authoritative fallback) -- raw Claude Code transcript.
-  Event-level parser extracts ``type:user`` and ``type:assistant`` events
-  only; assistant content blocks are flattened to plain text.
+  Delegates to :mod:`transcript_walker` for the actual JSONL walk, which
+  also handles Task-launched Agent tool_use -> tool_result correlation
+  (a v0.3.0 capability previously only available to the FTS5 importer).
 
 The role-token grammar accepts ``USER``, ``AI``, ``AGENT``, and
 ``AGENT:<subtype>`` (e.g. ``AGENT:explore``, ``AGENT:senior-engineer``).
@@ -30,12 +31,17 @@ the next N events after a match, ``-B N`` the previous N. For ``.convo`` /
 
 from __future__ import annotations
 
-import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
+
+from .transcript_walker import (
+    ImportRow,
+    format_role_label,
+    iter_rows_from_jsonl,
+)
 
 
 # Opening of a USER / AI / AGENT[:subtype] block in .convo / .sesslog files.
@@ -151,73 +157,52 @@ def parse_log_blocks(path: str) -> Iterator[Event]:
         )
 
 
-def _flatten_assistant_content(content) -> str:
-    """Concatenate the text from every ``type:'text'`` block in an assistant
-    message's ``content`` array. Other block types (tool_use, thinking, etc.)
-    are skipped -- we are searching conversation, not tool I/O.
+def parse_jsonl_events(
+    path: str, session_id: Optional[str] = None
+) -> Iterator[Event]:
+    """Yield Event for every conversation row produced by the shared walker.
+
+    Delegates to :func:`transcript_walker.iter_rows_from_jsonl` so the
+    JSONL path produces the same role surface as the FTS5 importer:
+    USER / AI / ``AGENT:<subtype>`` for both Skill-attributed AND
+    Task-launched sub-agent output.
+
+    The walker yields both ``ImportRow`` (conversation events) and
+    ``FileOpRow`` (path-bearing tool_use blocks). For search rendering
+    we only need the conversation events; FileOpRow rows are quietly
+    dropped here. The (v0.3.x) ``--files`` / ``-d`` query paths will
+    iterate the walker themselves and consume both kinds.
+
+    ``session_id`` is plumbed for parity with the walker's signature
+    but unused in the rendered Event (the caller already knows it).
     """
-    if isinstance(content, str):
-        return content
-    if not isinstance(content, list):
-        return ""
-    parts: list[str] = []
-    for block in content:
-        if isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
-    return "\n".join(parts)
+    sid = session_id or ""
+    msg_index = 0
+    for row in iter_rows_from_jsonl(Path(path), sid):
+        if not isinstance(row, ImportRow):
+            continue
+        msg_index += 1
+        yield Event(
+            line_num=msg_index,  # 1-based event index, same shape as the old parser
+            role=format_role_label(row.role, row.role_subtype),
+            timestamp=row.timestamp,
+            text=row.content,
+        )
 
 
-def parse_jsonl_events(path: str) -> Iterator[Event]:
-    """Yield Event for ``type:user`` and ``type:assistant`` events in a JSONL.
+def parse_source(
+    source_type: str, path: str, session_id: Optional[str] = None
+) -> Iterator[Event]:
+    """Dispatch to the correct parser for a source type.
 
-    User events: ``message.content`` is a plain string.
-    Assistant events: ``message.content`` is a list of content blocks --
-    flatten ``text`` blocks only.
-
-    Malformed lines are skipped silently (matches the existing csb metadata
-    parser's tolerance).
+    ``session_id`` is forwarded to the JSONL parser so the walker can
+    label rows with the proper session id; ``.convo`` and ``.sesslog``
+    parsers ignore it (they self-contain the role/timestamp grammar).
     """
-    try:
-        f = open(path, "r", encoding="utf-8", errors="replace")
-    except OSError:
-        return
-
-    try:
-        for i, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            etype = event.get("type")
-            if etype not in ("user", "assistant"):
-                continue
-            ts = event.get("timestamp") or None
-            msg = event.get("message", {}) or {}
-            content = msg.get("content", "")
-            text = _flatten_assistant_content(content) if etype == "assistant" else (
-                content if isinstance(content, str) else _flatten_assistant_content(content)
-            )
-            if not text:
-                continue
-            yield Event(
-                line_num=i,
-                role="USER" if etype == "user" else "AI",
-                timestamp=ts,
-                text=text,
-            )
-    finally:
-        f.close()
-
-
-def parse_source(source_type: str, path: str) -> Iterator[Event]:
-    """Dispatch to the correct parser for a source type."""
     if source_type in ("convo", "sesslog"):
         yield from parse_log_blocks(path)
     elif source_type == "jsonl":
-        yield from parse_jsonl_events(path)
+        yield from parse_jsonl_events(path, session_id)
     else:
         return
 
@@ -369,7 +354,11 @@ def search(
             continue
 
         # Materialize events so we can slice context windows
-        events = list(parse_source(picked["source_type"], picked["source_path"]))
+        events = list(parse_source(
+            picked["source_type"],
+            picked["source_path"],
+            session_row["session_id"],
+        ))
         if not events:
             continue
 

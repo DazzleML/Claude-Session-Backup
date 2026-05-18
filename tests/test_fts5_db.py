@@ -48,8 +48,155 @@ def test_init_schema_creates_file_operations_table(tmp_path):
     cols = [r[1] for r in conn.execute("PRAGMA table_info(file_operations)").fetchall()]
     assert set(cols) >= {
         "id", "session_id", "message_index", "operation",
-        "file_path", "timestamp",
+        "file_path", "timestamp", "strength",  # v0.3.1: strength column
     }
+
+
+def test_init_schema_file_operations_has_strength_column(tmp_path):
+    """v0.3.1: strength column is INTEGER NOT NULL DEFAULT 2."""
+    conn = _open_temp_db(tmp_path)
+    cols = {r[1]: r for r in conn.execute(
+        "PRAGMA table_info(file_operations)"
+    ).fetchall()}
+    assert "strength" in cols
+    # Format: (cid, name, type, notnull, dflt_value, pk)
+    assert cols["strength"][2].upper() == "INTEGER"
+    assert cols["strength"][3] == 1  # NOT NULL
+    assert cols["strength"][4] == "2"  # DEFAULT 2
+
+
+def test_init_schema_creates_fts_schema_version_table(tmp_path):
+    """v0.3.1: per-project DB version tracking."""
+    conn = _open_temp_db(tmp_path)
+    # Table exists
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='fts_schema_version'"
+    ).fetchone()
+    assert row is not None
+    # Fresh DB is stamped at the current version
+    from claude_session_backup.fts5_db import CURRENT_FTS_SCHEMA_VERSION
+    version = conn.execute(
+        "SELECT version FROM fts_schema_version"
+    ).fetchone()[0]
+    assert version == CURRENT_FTS_SCHEMA_VERSION
+
+
+def test_migration_v1_to_v2_adds_strength_and_backfills(tmp_path):
+    """Simulate a v0.3.0 DB (no strength column, no version table) and
+    confirm in-place migration on open."""
+    db_path = tmp_path / "legacy.db"
+    # Construct a v1 DB manually: file_operations WITHOUT strength column,
+    # no fts_schema_version table. Mimics v0.3.0 layout.
+    raw = sqlite3.connect(str(db_path))
+    raw.executescript("""
+        CREATE TABLE messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            uuid TEXT, message_index INTEGER NOT NULL,
+            role TEXT NOT NULL, role_subtype TEXT,
+            content TEXT NOT NULL, timestamp TEXT,
+            UNIQUE (session_id, message_index)
+        );
+        CREATE TABLE file_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            message_index INTEGER,
+            operation TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            timestamp TEXT,
+            UNIQUE (session_id, message_index, operation, file_path)
+        );
+        INSERT INTO file_operations
+            (session_id, message_index, operation, file_path)
+        VALUES
+            ('s1', 0, 'wrote',         '/a.py'),
+            ('s1', 1, 'edited',        '/b.py'),
+            ('s1', 2, 'read',          '/c.py'),
+            ('s1', 3, 'searched',      '/d/'),
+            ('s1', 4, 'notebook_edit', '/e.ipynb');
+    """)
+    raw.commit()
+    raw.close()
+
+    # Pre-condition: no strength column, no version table
+    raw = sqlite3.connect(str(db_path))
+    cols_before = [r[1] for r in raw.execute(
+        "PRAGMA table_info(file_operations)"
+    ).fetchall()]
+    assert "strength" not in cols_before
+    raw.close()
+
+    # Open via the public path -> migration runs
+    conn = open_fts5_db(db_path)
+
+    # Post-condition: column exists, backfilled by operation kind
+    cols_after = [r[1] for r in conn.execute(
+        "PRAGMA table_info(file_operations)"
+    ).fetchall()]
+    assert "strength" in cols_after
+
+    rows = conn.execute(
+        "SELECT operation, strength FROM file_operations ORDER BY message_index"
+    ).fetchall()
+    assert [(r["operation"], r["strength"]) for r in rows] == [
+        ("wrote",         3),
+        ("edited",        3),
+        ("read",          2),
+        ("searched",      1),
+        ("notebook_edit", 3),
+    ]
+
+    # And version is now stamped
+    from claude_session_backup.fts5_db import CURRENT_FTS_SCHEMA_VERSION
+    version = conn.execute(
+        "SELECT version FROM fts_schema_version"
+    ).fetchone()[0]
+    assert version == CURRENT_FTS_SCHEMA_VERSION
+
+
+def test_migration_idempotent_when_already_at_current_version(tmp_path):
+    """Re-opening a v2 DB does NOT re-run migration or duplicate rows."""
+    conn = _open_temp_db(tmp_path)
+    conn.close()
+    # Re-open
+    conn = open_fts5_db(tmp_path / "test.db")
+    # Exactly one version row
+    n = conn.execute("SELECT COUNT(*) FROM fts_schema_version").fetchone()[0]
+    assert n == 1
+
+
+def test_import_writes_strength_per_operation(tmp_path):
+    """End-to-end: import a JSONL with all 5 op kinds, confirm strength
+    is written correctly at INSERT time (not just by migration)."""
+    import json
+    from claude_session_backup.fts5_importer import import_jsonl_to_db
+
+    p = tmp_path / "session.jsonl"
+    p.write_text("\n".join(json.dumps(e) for e in [
+        {"type": "assistant", "uuid": "u1",
+         "message": {"content": [
+             {"type": "tool_use", "name": "Read",  "input": {"file_path": "/a.py"}},
+             {"type": "tool_use", "name": "Edit",  "input": {"file_path": "/b.py"}},
+             {"type": "tool_use", "name": "Write", "input": {"file_path": "/c.py"}},
+             {"type": "tool_use", "name": "Grep",  "input": {"path": "src/"}},
+             {"type": "tool_use", "name": "NotebookEdit",
+              "input": {"notebook_path": "/n.ipynb"}},
+         ]}},
+    ]) + "\n", encoding="utf-8")
+
+    conn = _open_temp_db(tmp_path)
+    import_jsonl_to_db(conn, "sid", p)
+    rows = conn.execute(
+        "SELECT operation, strength FROM file_operations ORDER BY operation"
+    ).fetchall()
+    assert [(r["operation"], r["strength"]) for r in rows] == [
+        ("edited",        3),
+        ("notebook_edit", 3),
+        ("read",          2),
+        ("searched",      1),
+        ("wrote",         3),
+    ]
 
 
 def test_init_schema_creates_indexed_sessions_table(tmp_path):

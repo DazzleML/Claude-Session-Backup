@@ -88,12 +88,19 @@ CREATE TABLE IF NOT EXISTS indexed_sessions (
 -- which files). Populated from tool_use blocks during the SAME JSONL
 -- walk that fills `messages`. We record the path + operation kind,
 -- NOT the contents of changes (diffs live in git / on disk).
+--
+-- `strength` column (v0.3.1): per-row importance weight assigned at
+-- import time. 3 = wrote/edited/notebook_edit (active modification),
+-- 2 = read (passive view), 1 = searched (Grep probe). Used by future
+-- ranking queries (`csb search -d` directory-scope mode). Default 2
+-- so legacy rows pre-migration land on the median.
 CREATE TABLE IF NOT EXISTS file_operations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
     message_index INTEGER,           -- nullable: the originating msg row's index, if known
     operation TEXT NOT NULL,         -- 'read' | 'edited' | 'wrote' | 'searched' | 'notebook_edit'
     file_path TEXT NOT NULL,
+    strength INTEGER NOT NULL DEFAULT 2,  -- v0.3.1: 3 (active) / 2 (read) / 1 (search)
     timestamp TEXT,
     UNIQUE (session_id, message_index, operation, file_path)
 );
@@ -104,17 +111,85 @@ CREATE INDEX IF NOT EXISTS idx_file_ops_path
     ON file_operations(file_path);
 CREATE INDEX IF NOT EXISTS idx_file_ops_op
     ON file_operations(operation);
+
+-- Per-project DB schema version. v1 = v0.3.0 (no strength column;
+-- detected by ABSENCE of this table). v2 = v0.3.1 (strength column +
+-- this version table). Migrations are applied in init_fts5_schema()
+-- below before any further work touches the DB.
+CREATE TABLE IF NOT EXISTS fts_schema_version (
+    version INTEGER NOT NULL
+);
 """
+
+# Current per-project schema version. Bump when adding new columns /
+# tables. v0.3.0 DBs in the wild are at v1 (no fts_schema_version row);
+# init_fts5_schema migrates them in place on first open.
+CURRENT_FTS_SCHEMA_VERSION = 2
 
 
 def init_fts5_schema(conn: sqlite3.Connection) -> None:
     """Create the messages / messages_fts / indexed_sessions schema.
 
-    Idempotent -- safe to call on an already-initialized DB. All
+    Idempotent -- safe to call on an already-initialized DB. All CREATE
     statements use IF NOT EXISTS.
+
+    Also performs in-place migration of pre-v0.3.1 per-project DBs:
+    adds the ``file_operations.strength`` column and backfills values
+    derived from each row's ``operation``. After migration the
+    ``fts_schema_version`` row is stamped to
+    :data:`CURRENT_FTS_SCHEMA_VERSION`.
     """
     conn.executescript(_SCHEMA_SQL)
+    _migrate_per_project_schema(conn)
     conn.commit()
+
+
+def _migrate_per_project_schema(conn: sqlite3.Connection) -> None:
+    """Apply any pending per-project schema migrations in place.
+
+    v1 -> v2: add ``file_operations.strength`` column (CREATE TABLE IF
+    NOT EXISTS is a no-op when the table already exists, so the strength
+    column needs an explicit ALTER for pre-existing v0.3.0 DBs). Backfill
+    values from the operation kind.
+    """
+    # Determine current version. A row in fts_schema_version is
+    # authoritative; absence means "v0.3.0 layout (pre-v0.3.1)".
+    row = conn.execute(
+        "SELECT version FROM fts_schema_version LIMIT 1"
+    ).fetchone()
+    current_version = row[0] if row else 1
+
+    if current_version >= CURRENT_FTS_SCHEMA_VERSION:
+        return  # already up-to-date
+
+    # v1 -> v2: strength column on file_operations.
+    if current_version < 2:
+        cols = [r[1] for r in conn.execute(
+            "PRAGMA table_info(file_operations)"
+        ).fetchall()]
+        if "strength" not in cols:
+            conn.execute(
+                "ALTER TABLE file_operations "
+                "ADD COLUMN strength INTEGER NOT NULL DEFAULT 2"
+            )
+            # Backfill existing rows from the operation kind. Default 2
+            # is correct for 'read'; bump active ops to 3, search to 1.
+            conn.execute(
+                "UPDATE file_operations SET strength = 3 "
+                "WHERE operation IN ('wrote', 'edited', 'notebook_edit')"
+            )
+            conn.execute(
+                "UPDATE file_operations SET strength = 1 "
+                "WHERE operation = 'searched'"
+            )
+
+    # Stamp current version. DELETE first so we never accumulate rows
+    # across multiple migrations / restarts.
+    conn.execute("DELETE FROM fts_schema_version")
+    conn.execute(
+        "INSERT INTO fts_schema_version (version) VALUES (?)",
+        (CURRENT_FTS_SCHEMA_VERSION,),
+    )
 
 
 def open_fts5_db(path: Path) -> sqlite3.Connection:
