@@ -184,7 +184,9 @@ def build_all(
             )
             if fts_path not in open_fts_conns:
                 try:
-                    open_fts_conns[fts_path] = fts5_db.open_fts5_db(fts_path)
+                    open_fts_conns[fts_path] = fts5_db.open_fts5_db(
+                        fts_path, quiet=quiet,
+                    )
                 except sqlite3.DatabaseError as e:
                     if not quiet:
                         print(

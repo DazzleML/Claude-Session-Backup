@@ -127,77 +127,43 @@ CREATE TABLE IF NOT EXISTS fts_schema_version (
 CURRENT_FTS_SCHEMA_VERSION = 2
 
 
-def init_fts5_schema(conn: sqlite3.Connection) -> None:
-    """Create the messages / messages_fts / indexed_sessions schema.
+def init_fts5_schema(
+    conn: sqlite3.Connection,
+    quiet: bool = False,
+) -> None:
+    """Create the messages / messages_fts / indexed_sessions schema and
+    apply any pending per-project schema migrations.
 
     Idempotent -- safe to call on an already-initialized DB. All CREATE
     statements use IF NOT EXISTS.
 
-    Also performs in-place migration of pre-v0.3.1 per-project DBs:
-    adds the ``file_operations.strength`` column and backfills values
-    derived from each row's ``operation``. After migration the
-    ``fts_schema_version`` row is stamped to
-    :data:`CURRENT_FTS_SCHEMA_VERSION`.
+    Migration logic lives in :mod:`fts5_migrations` (parallel to
+    :mod:`migrations` for the main DB). Each open of a per-project DB
+    consults the registry there and applies any pending steps in order.
+    ``quiet`` is forwarded to suppress the per-migration notice line
+    that ``apply_pending`` prints by default.
     """
+    # Deferred import to keep the public surface of this module clean
+    # and avoid a circular dep (fts5_migrations may eventually want to
+    # reference fts5_db symbols for cross-version schema introspection).
+    from . import fts5_migrations
     conn.executescript(_SCHEMA_SQL)
-    _migrate_per_project_schema(conn)
+    fts5_migrations.apply_pending(conn, quiet=quiet)
     conn.commit()
 
 
-def _migrate_per_project_schema(conn: sqlite3.Connection) -> None:
-    """Apply any pending per-project schema migrations in place.
-
-    v1 -> v2: add ``file_operations.strength`` column (CREATE TABLE IF
-    NOT EXISTS is a no-op when the table already exists, so the strength
-    column needs an explicit ALTER for pre-existing v0.3.0 DBs). Backfill
-    values from the operation kind.
-    """
-    # Determine current version. A row in fts_schema_version is
-    # authoritative; absence means "v0.3.0 layout (pre-v0.3.1)".
-    row = conn.execute(
-        "SELECT version FROM fts_schema_version LIMIT 1"
-    ).fetchone()
-    current_version = row[0] if row else 1
-
-    if current_version >= CURRENT_FTS_SCHEMA_VERSION:
-        return  # already up-to-date
-
-    # v1 -> v2: strength column on file_operations.
-    if current_version < 2:
-        cols = [r[1] for r in conn.execute(
-            "PRAGMA table_info(file_operations)"
-        ).fetchall()]
-        if "strength" not in cols:
-            conn.execute(
-                "ALTER TABLE file_operations "
-                "ADD COLUMN strength INTEGER NOT NULL DEFAULT 2"
-            )
-            # Backfill existing rows from the operation kind. Default 2
-            # is correct for 'read'; bump active ops to 3, search to 1.
-            conn.execute(
-                "UPDATE file_operations SET strength = 3 "
-                "WHERE operation IN ('wrote', 'edited', 'notebook_edit')"
-            )
-            conn.execute(
-                "UPDATE file_operations SET strength = 1 "
-                "WHERE operation = 'searched'"
-            )
-
-    # Stamp current version. DELETE first so we never accumulate rows
-    # across multiple migrations / restarts.
-    conn.execute("DELETE FROM fts_schema_version")
-    conn.execute(
-        "INSERT INTO fts_schema_version (version) VALUES (?)",
-        (CURRENT_FTS_SCHEMA_VERSION,),
-    )
-
-
-def open_fts5_db(path: Path) -> sqlite3.Connection:
+def open_fts5_db(path: Path, quiet: bool = False) -> sqlite3.Connection:
     """Open (or create) a per-project FTS5 database at ``path``.
 
-    Creates the parent directory if missing. Initializes schema. Returns
-    a connection with ``row_factory = sqlite3.Row`` so callers can read
-    columns by name.
+    Creates the parent directory if missing. Initializes schema and
+    applies any pending migrations. Returns a connection with
+    ``row_factory = sqlite3.Row`` so callers can read columns by name.
+
+    ``quiet`` suppresses the per-migration auto-upgrade notice from
+    ``fts5_migrations.apply_pending`` -- pass True from contexts that
+    print their own progress (e.g. ``csb build-fts5 --quiet``) and
+    leave default False everywhere else so users see when their per-
+    project DBs are silently auto-upgraded after an upgrade.
 
     Raises :class:`sqlite3.DatabaseError` (or subclass) if the file
     exists but isn't a valid SQLite DB. The caller's responsibility to
@@ -209,7 +175,7 @@ def open_fts5_db(path: Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     # Enforce foreign-key cascades for any future relations; cheap, idiomatic.
     conn.execute("PRAGMA foreign_keys = ON")
-    init_fts5_schema(conn)
+    init_fts5_schema(conn, quiet=quiet)
     return conn
 
 

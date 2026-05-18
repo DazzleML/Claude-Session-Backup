@@ -9,6 +9,32 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.2] -- 2026-05-18 (prealpha)
+
+Maintenance step ahead of the v0.3.3 search dispatcher work: refactor the per-project FTS5 DB migration logic from an inline conditional in `fts5_db.py` into a registry-pattern module matching the main DB's `migrations.py`. Same shape, same convention -- adding future per-project schema versions is now "write a function, register it" instead of editing a branch. Per-project migrations now also print a user-visible notice on auto-upgrade (matching the main DB's existing audit-trail style). 510/510 tests pass (was 496 at v0.3.1; +14 net).
+
+### Added
+- **`claude_session_backup/fts5_migrations.py`** -- new module parallel to `migrations.py`. Exports:
+  - `MIGRATIONS: dict[int, Callable]` registry keyed by target version
+  - `apply_pending(conn, quiet=False)` -- forward-only runner; reads `fts_schema_version`, applies every pending migration in order, commits after each step (partial failure leaves the DB at a well-defined intermediate version)
+  - `_v2_add_strength_to_file_ops(conn)` -- the single existing migration, extracted from the previous inline conditional
+- **User-visible auto-upgrade notice** -- when a per-project FTS5 DB is opened and migrations run, csb now prints `csb: per-project FTS5 schema migrated to v{version}` per applied step (matching the format the main DB uses via `migrations.apply_pending`). Suppressible via `csb build-fts5 --quiet` (the `quiet` flag threads through `open_fts5_db` → `init_fts5_schema` → `apply_pending`). No-op opens print nothing.
+- **14 new tests** in `tests/test_fts5_migrations.py`: registry shape sanity, version getter/setter behavior, fresh-DB vs v1-DB apply_pending paths, idempotency on already-current DBs, **partial-migration self-healing** (ALTER succeeded but UPDATE was interrupted → re-running the body restores correct strength values), no-op on fresh DBs where the column already exists from `_SCHEMA_SQL`, and the new visibility behavior (default prints notice, `quiet=True` suppresses, no-op opens are silent).
+
+### Changed
+- **`fts5_db.init_fts5_schema`** now delegates to `fts5_migrations.apply_pending` instead of running an inline conditional. Behavior identical; structure parallel to main DB.
+- **`fts5_db.open_fts5_db(path, quiet=False)`** and **`init_fts5_schema(conn, quiet=False)`** gained a `quiet` parameter that forwards through to the migration runner.
+- **`fts5_index.build_all`** passes its `quiet` flag through to `open_fts5_db` so `csb build-fts5 --quiet` cleanly suppresses migration notices alongside its own per-session progress.
+
+### Removed (internal)
+- **`fts5_db._migrate_per_project_schema`** -- inlined into `_v2_add_strength_to_file_ops` in the new `fts5_migrations` module. No external callers; entirely internal.
+
+### Carried over from v0.3.1
+- All v0.3.1 behavior is preserved bit-for-bit: real DBs that migrated to v2 under v0.3.1 stay at v2 under v0.3.2 with no rework; fresh DBs created under v0.3.2 still land at v2 with strength column populated at INSERT time.
+
+### Why a separate release
+Per the project's per-commit-version-bump convention. This is a pure refactor with one new module + framework tests; bundling it with the v0.3.3 dispatcher work would mix unrelated concerns and make either step harder to revert. The framework lands first so v0.3.3 can write its dispatcher tests against a stable migration foundation.
+
 ## [0.3.1] -- 2026-05-17 (prealpha)
 
 Foundation step for the v0.3.x parity story (issue #3): extract the JSONL walker into a shared module that both the FTS5 importer AND Phase 1 grep search consume, add a `strength` weighting to the `file_operations` table for future ranking, and close a long-standing parity bug where `csb search --source jsonl` silently missed Task-launched sub-agent content. 496/496 tests pass (was 487 at v0.3.0). FTS5 still NOT wired into the search dispatcher -- that ships in v0.3.2.
@@ -216,7 +242,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.2...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9
