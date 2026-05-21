@@ -243,22 +243,26 @@ def cmd_list(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
 
+    # v0.3.5: --deleted is two-valued. None / "only" / "all".
+    # The old separate --all flag was folded into --deleted all.
+    deleted_mode = getattr(args, "deleted", None)
     filter_keyword = getattr(args, "filter", None)
     sessions = list_sessions(
         conn,
         limit=args.n,
-        show_deleted=args.deleted,
-        show_all=args.all,
+        show_deleted=(deleted_mode == "only"),
+        show_all=(deleted_mode == "all"),
         filter_keyword=filter_keyword,
         sort_key=getattr(args, "sort", "last-used"),
     )
 
     # Filter-aware "N deleted hidden" footer (Phase 3 / #27).
-    # Only emit when running in default active-only mode (--deleted / --all
-    # explicitly show the otherwise-hidden rows, so the footer would be
-    # noise). Suppressed when count is zero -- don't say "0 deleted hidden".
+    # Only emit when running in default live-only mode (deleted_mode is None).
+    # When --deleted only/all is passed, the deleted rows are already on
+    # screen, so the footer would be noise. Suppressed when count is zero
+    # -- don't say "0 deleted hidden".
     deleted_hidden_count = 0
-    if not args.deleted and not args.all:
+    if deleted_mode is None:
         deleted_hidden_count = count_deleted_with_filter(conn, filter_keyword)
 
     conn.close()
@@ -721,6 +725,10 @@ def cmd_search(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn, quiet=getattr(args, "quiet", False))
 
+    # Read cleanup_days once -- the --full-info renderer uses it for the
+    # purge-countdown ("purge in 87d") field. Same source csb list uses.
+    cleanup_days = read_cleanup_period(config["claude_dir"])
+
     # Resolve -C N into above/below
     above = args.before
     below = args.after
@@ -729,6 +737,35 @@ def cmd_search(args) -> int:
 
     source_override = None if args.source == "auto" else args.source
 
+    # v0.3.5: directory-scope (-d / -D) and --min-strength wiring. The
+    # mutex on argparse guarantees at most one of -d/-D is set; we
+    # additionally reject incompatible --source overrides (anything
+    # other than auto or fts5) since dir-scope queries the per-project
+    # FTS5 DBs exclusively -- there's no analog over .convo / .sesslog
+    # / .jsonl yet.
+    directories_below = getattr(args, "directories_below", None)
+    directory_only = getattr(args, "directory_only", None)
+    dir_path = directories_below or directory_only
+    dir_scope: dict | None = None
+    if dir_path is not None:
+        if args.source not in ("auto", "fts5"):
+            print(
+                f"Error: -d/-D directory-scope is incompatible with "
+                f"--source {args.source}. -d/-D requires FTS5; omit "
+                f"--source (auto resolves to fts5) or pass --source fts5.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 2
+        abs_path = str(Path(dir_path).resolve())
+        dir_scope = {
+            "abs_path": abs_path,
+            "include_descendants": directory_only is None,  # -D excludes
+            "min_strength": getattr(args, "min_strength", 1),
+        }
+        # The dispatcher always runs against FTS5 -- pin the source.
+        source_override = "fts5"
+
     # Parse --session-id: comma-separated list of UUID prefixes. Empty
     # entries (e.g. trailing comma) and whitespace are tolerated.
     session_filter: list[str] = []
@@ -736,13 +773,26 @@ def cmd_search(args) -> int:
     if raw:
         session_filter = [p.strip() for p in raw.split(",") if p.strip()]
 
-    # --sessions-only wants ALL sessions that match, not just N hits' worth.
-    # If the user didn't explicitly raise --limit, bump it so a single
-    # noisy session can't crowd out other sessions in the summary.
-    sessions_only = getattr(args, "sessions_only", False)
+    # v0.3.5: --only {files,sessions} replaced the old --files-only /
+    # --sessions-only pair. The output dispatcher below maps `only_mode`
+    # straight to render()'s `mode` parameter.
+    only_mode = getattr(args, "only", None)  # None | "files" | "sessions"
+
+    # v0.3.5: --limit semantics flip when --only is set. Default mode
+    # treats --limit as hits (one matched event = one output line).
+    # --only sessions / --only files collapse hits into rows of a
+    # higher-level unit, and the user's mental model is "give me N of
+    # those" -- not "give me N raw hits, capped before they fill N
+    # distinct rows." So when --only is set, we pull a generous
+    # ceiling of raw hits from search() and cap by distinct units
+    # below. ``user_limit`` is what the user actually typed.
+    user_limit = args.limit
     effective_limit = args.limit
-    if sessions_only and args.limit == 20:
-        effective_limit = 10_000
+    if only_mode in ("sessions", "files"):
+        effective_limit = 10_000  # generous ceiling; cap-by-unit below
+
+    # --full-info is action="count": -f=1, -ff=2. Cap at 2 (current max level).
+    full_info_level = min(getattr(args, "full_info", 0) or 0, 2)
 
     try:
         hits = list(run_search(
@@ -754,15 +804,27 @@ def cmd_search(args) -> int:
             below=below,
             session_filter=session_filter or None,
             source_override=source_override,
-            include_deleted=args.all,
-            only_deleted=args.deleted,
+            # v0.3.5: --deleted is two-valued. None / "only" / "all".
+            include_deleted=(args.deleted == "all"),
+            only_deleted=(args.deleted == "only"),
             limit=effective_limit,
+            sort_key=getattr(args, "sort", "last-used"),
+            fetch_folders=full_info_level >= 2,
+            claude_dir=config["claude_dir"],
+            dir_scope=dir_scope,
         ))
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
         conn.close()
         return 2
     conn.close()
+
+    # v0.3.5: apply the unit-aware cap. In default mode this is a no-op.
+    # In --only sessions / --only files, this turns the user's --limit
+    # into "N output rows" (consistent with the rendered output unit).
+    if only_mode in ("sessions", "files"):
+        from .search import cap_hits_by_output_unit
+        hits = cap_hits_by_output_unit(hits, user_limit, only_mode)
 
     if not hits:
         print(f"No content matches for {args.query!r}")
@@ -774,20 +836,82 @@ def cmd_search(args) -> int:
 
     if args.json:
         mode = "json"
-    elif args.files_only:
+    elif only_mode == "files":
         mode = "files"
-    elif sessions_only:
+    elif only_mode == "sessions":
         mode = "sessions"
     else:
         mode = "human"
 
     use_color = None if not args.no_color else False
+    # ``query`` is forwarded to render() for two purposes:
+    #   - "sessions" mode uses it to compose the "Next: csb search ..." hint
+    #   - "human" mode uses it (plus regex / case_sensitive) to highlight
+    #     in-line matches with bold green
+    # JSON / files modes ignore it.
     render(
         hits, mode=mode, use_color=use_color, full_match=args.full_match,
         shortid=getattr(args, "shortid", False),
-        query=args.query if mode == "sessions" else None,
+        query=args.query,
+        full_info=full_info_level,
+        cleanup_days=cleanup_days,
+        regex=args.regex,
+        case_sensitive=args.case_sensitive,
     )
 
+    return 0
+
+
+def cmd_build_fts5(args) -> int:
+    """Build / refresh per-project FTS5 content indices (Phase 2 of #3).
+
+    Idempotent: by default only re-indexes sessions whose JSONL mtime
+    has advanced past ``indexed_sessions.last_jsonl_mtime``. Use
+    ``--force`` to rebuild unconditionally.
+
+    Returns:
+        0 on success (even if 0 sessions needed indexing)
+        1 if FTS5 isn't available in the local SQLite build
+        2 if --session-id was passed but doesn't resolve
+    """
+    from . import fts5_db, fts5_index
+
+    # Bail early if the local SQLite lacks FTS5 (rare, but defensive).
+    if not fts5_db.fts5_available():
+        print(
+            "Error: this Python's SQLite was built without FTS5 support. "
+            "Try upgrading Python or installing a SQLite with FTS5 enabled.",
+            file=sys.stderr,
+        )
+        return 1
+
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn, quiet=getattr(args, "quiet", False))
+
+    # Resolve --session-id (prefix) to a full UUID via the shared resolver.
+    resolved_session: str | None = None
+    raw_sid = getattr(args, "session_id", None)
+    if raw_sid:
+        full_id, exit_code = _resolve_session_or_exit(conn, raw_sid)
+        if full_id is None:
+            conn.close()
+            return exit_code
+        resolved_session = full_id
+
+    claude_dir = Path(config["claude_dir"])
+    quiet = getattr(args, "quiet", False)
+
+    try:
+        fts5_index.build_all(
+            conn, claude_dir,
+            project=getattr(args, "project", None),
+            session_id=resolved_session,
+            force=getattr(args, "force", False),
+            quiet=quiet,
+        )
+    finally:
+        conn.close()
     return 0
 
 

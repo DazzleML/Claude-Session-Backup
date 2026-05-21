@@ -783,8 +783,9 @@ def test_cmd_list_footer_appears_when_active_only_with_deleted_present(
     from claude_session_backup.commands import cmd_list
 
     claude, db, ids = populated_db_and_repo
+    # v0.3.5: --deleted is two-valued (None / "only" / "all"). None == live-only.
     args = _make_args_namespace(
-        n=20, deleted=False, all=False, json=False,
+        n=20, deleted=None, json=False,
         filter=None, sort="last-used", top=None, all_folders=False,
         claude_dir=str(claude), db=str(db),
     )
@@ -802,7 +803,7 @@ def test_cmd_list_footer_echoes_filter_keyword(populated_db_and_repo, capsys):
 
     claude, db, ids = populated_db_and_repo
     args = _make_args_namespace(
-        n=20, deleted=False, all=False, json=False,
+        n=20, deleted=None, json=False,
         filter="proj", sort="last-used", top=None, all_folders=False,
         claude_dir=str(claude), db=str(db),
     )
@@ -817,8 +818,9 @@ def test_cmd_list_no_footer_when_deleted_shown(populated_db_and_repo, capsys):
     from claude_session_backup.commands import cmd_list
 
     claude, db, ids = populated_db_and_repo
+    # v0.3.5: --deleted="only" replaces the old boolean --deleted=True.
     args = _make_args_namespace(
-        n=20, deleted=True, all=False, json=False,
+        n=20, deleted="only", json=False,
         filter=None, sort="last-used", top=None, all_folders=False,
         claude_dir=str(claude), db=str(db),
     )
@@ -842,8 +844,9 @@ def test_cmd_list_no_footer_when_zero_deleted(mock_claude_dir, tmp_path, capsys)
     conn.commit()
     conn.close()
 
+    # v0.3.5: deleted=None == live-only mode.
     args = _make_args_namespace(
-        n=20, deleted=False, all=False, json=False,
+        n=20, deleted=None, json=False,
         filter=None, sort="last-used", top=None, all_folders=False,
         claude_dir=str(mock_claude_dir), db=str(db),
     )

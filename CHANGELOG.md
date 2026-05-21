@@ -9,6 +9,188 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.5] -- 2026-05-21 (prealpha)
+
+Directory-scope search: `csb search -d <path>` (and `-D` for folder-only) ranks every indexed session that touched files under PATH by SUM(strength) of those file-operations, then runs FTS5 MATCH for the user's pattern within each ranked session. The killer-use-case feature of the v0.3.x track -- "I'm in folder X, which past sessions actually worked on it, and what did they say about Y?" -- finally lands. New `--min-strength {1,2,3}` filter trims out low-signal rows (Grep probes, read-only). Two small ergonomic refinements ride along: matched query terms now render in bold green inside excerpt lines, and the `--all` / `--deleted` flag pair is unified into a single `--deleted {only,all}` argument. 571/571 tests pass (was 547 at v0.3.4; +24 net new).
+
+### Added
+- **`csb search -d PATH` / `csb search -D PATH`** -- directory-scope mode. Mirrors `csb scan`'s `-d` / `-D` semantics: `-d` is recursive (folder + all subdirectories), `-D` is folder-only (no descendants). Session iteration order ignores `--sort` and uses `SUM(strength) DESC` instead, so the session that most heavily worked on PATH sorts first. Mutually exclusive flags at the argparse layer; mutex with `--source jsonl|convo|sesslog` enforced at runtime with a clear error message (the feature queries per-project FTS5 DBs exclusively).
+- **`--min-strength {1,2,3}`** for `csb search` -- filters file-operations by minimum strength when in `-d/-D` mode. `1` (default) includes everything; `2` skips Grep/Glob probes (strength=1); `3` keeps only active-modification ops (`edited` / `wrote` / `notebook_edit`, strength=3). No effect outside dir-scope mode.
+- **Per-session strength suffix in renderers** -- human mode and `--sessions-only` mode append `[N file-ops, strength=S]` to the session header when the hit came from dir-scope dispatch. JSON mode emits `strength_sum` and `file_op_count` fields. Non-dir-scope hits keep the fields at their default 0 so the suffix stays suppressed.
+- **`find_path_filtered_sessions(fts5_db_path, path_globs, exclude_descendant_globs=None, min_strength=1)`** in `search.py` -- the step-1 helper that runs `SELECT session_id, SUM(strength), COUNT(*) FROM file_operations WHERE file_path GLOB ? [...] GROUP BY session_id ORDER BY sum_strength DESC` against one per-project DB. Accepts an OR'd list of GLOBs (`-d` builds both `\\` and `/` separator variants so paths captured with either style match without prior normalization). `OperationalError` on pre-strength DBs degrades to empty; the user can rebuild via `csb build-fts5` if they want hits from that project.
+- **`_build_directory_globs(abs_path, include_descendants)`** -- builds the include and exclude GLOB lists for `-d` / `-D` semantics. `-D`'s exclude pattern (`<root>{sep}*{sep}*`) catches paths with at least one further separator past the root, dropping subdirectory matches cleanly.
+- **`_search_dir_scope(...)` + `_lookup_session_row(...)`** in `search.py` -- the directory-scope dispatcher. Walks every `<claude_dir>/csb-fts/*.db`, aggregates the per-DB ranked lists, sorts globally by `sum_strength DESC`, then for each ranked session looks up the main DB sessions row (respecting `--all` / `--deleted` / `--session-id` filters) and runs `query_fts5_for_session` for the user's pattern. Sessions missing from the main DB or filtered out drop quietly -- no orphan hits.
+- **15 new dir-scope tests** in `tests/test_search.py` covering GLOB-builder shape (`-d`, `-D`, trailing separator), `find_path_filtered_sessions` (ranking, `min_strength` filtering, `-D` exclude, missing DB tolerance), and end-to-end `search()` against `dir_scope` (strength ordering across multiple sessions, empty-pattern matches all, `--min-strength 3` filters Grep-only sessions, orphan session skip, no-csb-fts-dir tolerance, `Hit.strength_sum` / `Hit.file_op_count` plumbed, non-dir-scope hits leave strength at 0, `-D` excludes descendants while `-d` keeps them).
+- **In-line query highlighting in `csb search` human-mode output** -- every occurrence of the user's pattern inside the matched-text excerpt (and context lines that happen to contain the pattern) is wrapped in bold green ANSI. Auto-disabled when stdout is not a TTY or `--no-color` is passed. Empty / invalid-regex patterns degrade to plain rendering rather than crashing.
+- **`_highlight(text, pattern, regex, case_sensitive, enabled)`** in `search_render.py` -- the helper. Literal mode internally escapes regex metacharacters so `oauth.flow` matches the literal sequence and not `oauthXflow`. Regex mode honors `-s` (case-sensitive) and inline `(?i)` flags compose normally. Called AFTER truncation so the embedded ANSI codes don't corrupt slice math.
+- **9 new highlight tests** in `tests/test_search_render.py` covering: literal match (case-insensitive default) wraps in `\033[1;32m...\033[0m`, `enabled=False` is a no-op, empty / None pattern is a no-op (mirrors search()'s empty=match-all semantics), case-sensitive miss returns plain, regex alternation wraps each branch, invalid regex falls back to plain, literal metacharacters stay literal, `render_human(query=...)` ends-to-end emits the ANSI in the matched-line output, `query=None` produces no bold-green ANSI anywhere.
+
+### Changed
+- **`Hit` dataclass** gained `strength_sum: int = 0` and `file_op_count: int = 0`. Default zero on every non-dir-scope hit, so existing renderers don't print the suffix for normal searches.
+- **`search()` signature** gained `dir_scope: Optional[dict] = None`. The dict carries `{"abs_path", "include_descendants", "min_strength"}` and triggers the dir-scope dispatcher. Backwards-compatible -- existing callers that don't pass the argument run the same code path they did at v0.3.4.
+- **`render_human()` and `render()`** signatures gained `query`, `regex`, `case_sensitive` kwargs so `cmd_search` can plumb the in-line highlight rules into the renderer. Defaults preserve the v0.3.4 behavior (no highlight) for any caller that doesn't pass them.
+
+### Breaking (CLI surface, prealpha)
+- **`csb list` and `csb search` `--all` flag removed; `--deleted` now takes an optional `{only,all}` argument.** Old behavior maps directly: old `--deleted` -> new `--deleted only` (bare `--deleted` defaults to `only`); old `--all` -> new `--deleted all`; omitting the flag still means "live only" as before. Simpler flag surface, clearer relationship between the two modes, no orphan `--all` that hid the fact it was actually a deleted-related option. Pre-alpha breaking change; documented for any shell scripts.
+- **`csb search` `--files-only` and `--sessions-only` flags removed; `--only {files,sessions}` replaces them.** Same semantics, smaller flag surface, mutually exclusive with `--json` as before. Old `--files-only` -> new `--only files`; old `--sessions-only` -> new `--only sessions`. Default (no flag) still produces grouped excerpts. Pre-alpha breaking change. See #30 for the deferred decision on extending `--only` to `csb list` and `csb scan`.
+- **`csb search --files-only` (now `--only files`) returns transcript paths instead of internal FTS5 DB paths.** New `Hit.transcript_path` field, resolved via convo > sesslog > jsonl preference per session. The v0.3.3 FTS5 dispatch was returning the per-project `.db` path through `Hit.source_path` -- technically honest but unhelpful, because users running `--files-only` want a file they can `cat` / `grep` / open. Now uniform across all dispatch paths. JSON output gains an explicit `transcript_path` key when populated; `source_path` keeps its "what the dispatcher walked" meaning.
+- **`csb search --limit N` semantics are now contextual to `--only`.** Default mode (no `--only`) treats `--limit N` as N raw hits (current behavior, preserved). `--only sessions` treats it as N distinct sessions; `--only files` treats it as N unique transcript paths. The implicit "one hit = one output line" relationship from the default mode is preserved when the output unit changes. Fixes the surprising behavior where `csb search "" -d <path> --only sessions --limit 3` would show only ONE session (the highest-strength session ate all 3 hits before the iterator could visit other sessions). Internal: new `cap_hits_by_output_unit(hits, user_limit, unit)` helper applied in `cmd_search` after `run_search` returns.
+
+### NO CHANGE (with rationale)
+- **`fts5_db.py`** schema -- the `file_operations.strength` column landed in v0.3.1; v0.3.5 only consumes it. No new tables or columns; no migration.
+- **`fts5_importer.py`** -- still writes the same `FileOpRow` shape into `file_operations`. `-d` / `-D` queries that table at read time; the importer doesn't know about the new feature.
+- **`transcript_walker.py`** -- still yields `FileOpRow` with `(operation, path, strength)`. The strength weights set in v0.3.1 (`3/2/1` for active / read / search) are the same weights the dir-scope ranker uses, so importer and query agree by construction.
+- **`fts_paths.py`** -- per-project DB resolution and `list_fts_dbs(claude_dir)` already existed for v0.3.3's dispatcher. v0.3.5's dir-scope code iterates the same `csb-fts/*.db` glob.
+
+### Verified live
+- `csb search "FTS5" -d <vault>` against this project's vault: the session that built the FTS5 feature sorts first with `[149 file-ops, strength=377]` in its header, followed by older sessions in strength-descending order.
+- `--min-strength 3` against the same scope drops that to `[93 file-ops, strength=279]` (the search/read entries removed), as expected from the strength tiering.
+
+### Carried over from v0.3.4
+- The auto-mode default preference (`effective_default_preference`) still adapts to vault state for non-dir-scope searches. Dir-scope mode pins source to `fts5` regardless because the ranking SQL only exists in the per-project FTS5 DB.
+
+## [0.3.4] -- 2026-05-18 (prealpha)
+
+Logger-side parity: csb can now derive file-operation metadata from `claude-session-logger`'s output channels (`.sesslog_*`, `.tools_*`, `.fileio_*`) without walking the raw JSONL or building the FTS5 index. The search dispatcher's default preference adapts to the vault -- users without the logger see `("fts5", "jsonl")` as their auto-mode preference instead of the full list. 547/547 tests pass (was 519 at v0.3.3; +28 net).
+
+### Added
+- **`claude_session_backup/sesslog_parser.py`** (new module) -- parses the structured block format claude-session-logger emits to `.sesslog_*` / `.tools_*` / `.fileio_*` channels and yields `transcript_walker.FileOpRow` records (same shape FTS5 import produces from JSONL). Closes the logger-side half of the v0.3.x parity story: file-operation metadata is now derivable from ANY of the three sources (JSONL, FTS5, logger output).
+- **`iter_file_ops_from_sesslog(path, session_id)`** -- streams `FileOpRow` from one logger file. Handles single-line + multi-line blocks; recognizes `Read` / `Edit` / `Write` / `MultiEdit` / `NotebookEdit` (path-bearing, first-quoted parser) plus `Grep` / `Glob` (path target via `... in "..."` body). Skips `Bash` / `Skill` / `Agent` / `WebSearch` / `Task` blocks (not file-ops). Strips `:LINE` / `:LINE-RANGE` suffixes from Read paths. Strength matches the JSONL walker: 3 = active modify, 2 = passive read, 1 = search probe.
+- **`find_fileop_channels_for_session(session_dir)`** -- lists every logger output file in a session's directory that carries file-op metadata (any name starting with `.sesslog_`, `.tools_`, or `.fileio_`). Useful for future code that wants to merge file-op data from multiple channels of the same session.
+- **`has_session_logger(main_conn)`** -- O(1) probe of `session_sources` for any `convo` / `sesslog` row. Used by the search dispatcher to decide whether the default preference should include those sources.
+- **`effective_default_preference(conn)`** in `search.py` -- returns the auto-detected default preference for the vault. Logger present -> full `("fts5", "convo", "sesslog", "jsonl")` list. Logger absent -> collapsed `("fts5", "jsonl")` -- no wasted lookups against sources that can't exist. User-explicit `--source X` still wins.
+- **28 new tests** -- 24 in `tests/test_sesslog_parser.py` (every tool kind, line-range stripping, agent-attributed tags, multi-line blocks, banner/blank skipping, malformed tolerance, message_index increment per-emitted-row only, sub-channel discovery, logger presence in 4 vault states); 4 in `tests/test_search.py` (`_resolve_preference` accepts custom `default_preference`; `effective_default_preference` returns full list when logger present, collapsed list when absent, collapsed list for empty DB).
+
+### Changed
+- **`_resolve_preference(source_override, default_preference=_SOURCE_PREFERENCE)`** gained an optional `default_preference` parameter so the caller can adapt the auto-mode preference to vault state. Backwards-compatible: existing callers that don't pass the new arg get the module-level constant they had before.
+- **`csb search`** in auto mode now adapts to vault state via `effective_default_preference`. A user who has never run claude-session-logger sees their `csb search` walk `fts5 -> jsonl` only -- previously the dispatcher would have probed `convo` / `sesslog` for every session before falling through to JSONL. Performance win and conceptual cleanliness for the "no logger" configuration.
+
+### Verified live
+- Parsed 74 file-op rows from a real `.tools_*` log (39 read / 11 wrote / 9 edited / 15 searched), all with correct strength values matching the JSONL importer's tiering.
+
+### Carried over from v0.3.3
+- Search dispatcher logic unchanged; the new `default_preference` parameter is the only signature change. Existing `--source fts5` / `--source convo` / etc. behavior identical.
+
+## [0.3.3] -- 2026-05-18 (prealpha)
+
+The keystone v0.3.x deliverable: `csb search` now actually queries FTS5. Designed source-agnostic from the start -- FTS5 is a first-class peer in the preference list alongside `.convo` / `.sesslog` / `.jsonl`, not a layer bolted on top. A single uniform dispatcher walks the preference order per session and returns the first source that's available for that session. Each source is independently optional: a user without claude-session-logger automatically skips `.convo` / `.sesslog`; a user who hasn't run `csb build-fts5` skips `fts5`; a user with only raw transcripts falls through to `jsonl`. New `--source fts5` choice for users who want FTS5-only semantics. 519/519 tests pass (was 510 at v0.3.2; +9 net).
+
+### Added
+- **`--source fts5`** as a `csb search` choice. Returns hits only from sessions present in the per-project `indexed_sessions` table; sessions not yet built (via `csb build-fts5`) are skipped silently with no fallback. The user-explicit "I want FTS5 results, even possibly stale" knob -- pair with `csb build-fts5 --force` if you want the freshest index.
+- **Source-agnostic dispatcher** in `search.py`. `_SOURCE_PREFERENCE = ("fts5", "convo", "sesslog", "jsonl")` defines the project's default attempt order. `_resolve_preference(--source)` translates the user choice to a preference tuple (auto -> the full default; explicit single source -> a one-element tuple). `_pick_source_for_session(...)` walks the tuple in order and returns the first source whose availability check passes -- one loop, no FTS5 special-casing.
+- **`query_fts5_for_session(fts5_db_path, session_id, pattern)`** in `search.py`. Yields `Event` records for matches in a single session's per-project FTS5 DB. Uses FTS5 `MATCH` for fast candidate narrowing (porter unicode61 tokenizer) followed by the same Python-side literal / regex matcher the rest of `csb search` uses -- preserves csb's literal-substring semantics even though the tokenizer would otherwise expand "run" -> "running".
+- **`_fts5_path_if_indexed(claude_dir, project, encoded_slug, session_id, jsonl_mtime=None)`** in `search.py`. Read-only freshness probe; opens the per-project DB RAW (bypasses `open_fts5_db`) so the search path never triggers migrations or prints the migration-notice line. `jsonl_mtime=None` -> any indexed session counts (`--source fts5` contract). `jsonl_mtime=N` -> `last_jsonl_mtime >= N` required (`--source auto` contract).
+- **`claude_dir` parameter on `search.search()`** -- forwarded by `cmd_search` from the active config. Required for resolving per-project FTS5 DB paths; when None, the dispatcher cannot evaluate the `fts5` source and treats it as unavailable for every session (the rest of the preference list runs normally).
+- **9 new / reframed tests** in `tests/test_search.py`: preference resolution (auto -> full default, single name -> singleton tuple), default order has fts5 first plus all four expected names, picker walks preference and returns first available, picker walks past unavailable sources to the next, pinned source returns only itself, pinned to a missing source returns `(None, None)`, plus 5 end-to-end search() tests: `--source fts5` returns indexed hit, `--source fts5` skips unindexed, auto picks FTS5 when fresh, auto walks past FTS5 when stale, FTS5 path preserves `AGENT:<subtype>` role label.
+
+### Changed
+- **`_SOURCE_PREFERENCE`** now lists `"fts5"` first. The old constant `("convo", "sesslog", "jsonl")` is gone; FTS5 takes its rightful place at the top of the attempt order.
+- **`csb search` SQL** in the session-enumeration loop now selects `s.jsonl_path` so the dispatcher can derive each session's encoded slug for FTS5 DB path resolution.
+
+### Removed (internal)
+- **`_pick_one_source(sources, source_override)`** -- replaced by the source-agnostic `_pick_source_for_session` walker. The old function only knew about file-based sources and required the search() loop to special-case FTS5 dispatch before calling it; the new picker handles all four sources uniformly in a single loop.
+
+### Performance
+- For sessions whose FTS5 index is fresh, `csb search` now returns hits in roughly the time of a SQLite `MATCH` query (sub-100ms on test vaults of ~200 sessions) instead of walking the `.convo` / `.sesslog` / JSONL file every time. The cross-project case still iterates per project (no cross-DB join yet) -- one query per per-project DB.
+
+### Carried over from v0.3.2
+- Migration framework + visible auto-upgrade notice unchanged. `csb search` opens FTS5 DBs RAW for its freshness check and the actual MATCH query, so it never trips the migration runner -- migrations only happen via `csb build-fts5` (which is the right place).
+
+## [0.3.2] -- 2026-05-18 (prealpha)
+
+Maintenance step ahead of the v0.3.3 search dispatcher work: refactor the per-project FTS5 DB migration logic from an inline conditional in `fts5_db.py` into a registry-pattern module matching the main DB's `migrations.py`. Same shape, same convention -- adding future per-project schema versions is now "write a function, register it" instead of editing a branch. Per-project migrations now also print a user-visible notice on auto-upgrade (matching the main DB's existing audit-trail style). 510/510 tests pass (was 496 at v0.3.1; +14 net).
+
+### Added
+- **`claude_session_backup/fts5_migrations.py`** -- new module parallel to `migrations.py`. Exports:
+  - `MIGRATIONS: dict[int, Callable]` registry keyed by target version
+  - `apply_pending(conn, quiet=False)` -- forward-only runner; reads `fts_schema_version`, applies every pending migration in order, commits after each step (partial failure leaves the DB at a well-defined intermediate version)
+  - `_v2_add_strength_to_file_ops(conn)` -- the single existing migration, extracted from the previous inline conditional
+- **User-visible auto-upgrade notice** -- when a per-project FTS5 DB is opened and migrations run, csb now prints `csb: per-project FTS5 schema migrated to v{version}` per applied step (matching the format the main DB uses via `migrations.apply_pending`). Suppressible via `csb build-fts5 --quiet` (the `quiet` flag threads through `open_fts5_db` → `init_fts5_schema` → `apply_pending`). No-op opens print nothing.
+- **14 new tests** in `tests/test_fts5_migrations.py`: registry shape sanity, version getter/setter behavior, fresh-DB vs v1-DB apply_pending paths, idempotency on already-current DBs, **partial-migration self-healing** (ALTER succeeded but UPDATE was interrupted → re-running the body restores correct strength values), no-op on fresh DBs where the column already exists from `_SCHEMA_SQL`, and the new visibility behavior (default prints notice, `quiet=True` suppresses, no-op opens are silent).
+
+### Changed
+- **`fts5_db.init_fts5_schema`** now delegates to `fts5_migrations.apply_pending` instead of running an inline conditional. Behavior identical; structure parallel to main DB.
+- **`fts5_db.open_fts5_db(path, quiet=False)`** and **`init_fts5_schema(conn, quiet=False)`** gained a `quiet` parameter that forwards through to the migration runner.
+- **`fts5_index.build_all`** passes its `quiet` flag through to `open_fts5_db` so `csb build-fts5 --quiet` cleanly suppresses migration notices alongside its own per-session progress.
+
+### Removed (internal)
+- **`fts5_db._migrate_per_project_schema`** -- inlined into `_v2_add_strength_to_file_ops` in the new `fts5_migrations` module. No external callers; entirely internal.
+
+### Carried over from v0.3.1
+- All v0.3.1 behavior is preserved bit-for-bit: real DBs that migrated to v2 under v0.3.1 stay at v2 under v0.3.2 with no rework; fresh DBs created under v0.3.2 still land at v2 with strength column populated at INSERT time.
+
+### Why a separate release
+Per the project's per-commit-version-bump convention. This is a pure refactor with one new module + framework tests; bundling it with the v0.3.3 dispatcher work would mix unrelated concerns and make either step harder to revert. The framework lands first so v0.3.3 can write its dispatcher tests against a stable migration foundation.
+
+## [0.3.1] -- 2026-05-17 (prealpha)
+
+Foundation step for the v0.3.x parity story (issue #3): extract the JSONL walker into a shared module that both the FTS5 importer AND Phase 1 grep search consume, add a `strength` weighting to the `file_operations` table for future ranking, and close a long-standing parity bug where `csb search --source jsonl` silently missed Task-launched sub-agent content. 496/496 tests pass (was 487 at v0.3.0). FTS5 still NOT wired into the search dispatcher -- that ships in v0.3.2.
+
+### Added
+- **`claude_session_backup/transcript_walker.py`** (new module) -- single source of truth for the JSONL → `ImportRow` + `FileOpRow` extraction. Both the FTS5 importer and the Phase 1 JSONL search use it, so the two paths now produce the same role surface (USER / AI / `AGENT:<subtype>`) and the same file-op metadata.
+- **`file_operations.strength`** column on each per-project FTS5 DB -- INTEGER, NOT NULL, DEFAULT 2. Assigned at import time per operation kind: 3 = active modification (`wrote`, `edited`, `notebook_edit`), 2 = passive `read`, 1 = `searched` (Grep probe). Enables future ranking queries like "files this session was actually working on" without a Python post-pass.
+- **Per-project DB schema versioning** -- new `fts_schema_version` table inside each per-project FTS5 DB. v0.3.0 DBs (no version table, no strength column) are detected as v1 and migrated in place on first open: `ALTER TABLE` adds the strength column, then values are backfilled from the operation kind, then the version is stamped to 2. Verified against 49 real DBs on disk.
+- **`transcript_walker.format_role_label(role, role_subtype)`** -- shared helper that renders the (role, role_subtype) tuple as `"AGENT:explore"` / `"USER"` / `"AI"`, matching the role-token grammar Phase 1 `.convo` / `.sesslog` parsers already produce.
+- **9 new tests** -- 5 in `test_fts5_db.py` (strength column present + correct type/default, `fts_schema_version` table, v1→v2 in-place migration with backfill, migration idempotency, end-to-end strength write at import time); 4 in `test_search.py` (`--source jsonl` surfaces skill-attributed assistant events as `AGENT:<skill>`, Task-launched Agent tool_result blocks surface as `AGENT:<subtype>`, role subtype is lowercased consistently, the new optional `session_id` arg is back-compatible with the single-arg call form). Total 496/496 (was 487).
+
+### Changed
+- **`csb search --source jsonl` now sees Task-launched sub-agent content.** Pre-v0.3.1 the Phase 1 JSONL parser only looked at user/assistant text blocks and silently dropped `tool_result` blocks, so output from `/commit`, `/dev-workflow-process`, `Explore`, `oracle`, `Plan`, `senior-engineer`, etc. was invisible to `csb search` when the source was JSONL. The shared walker tracks `Agent` tool_use → tool_result correlation during the linear walk and labels the matching tool_result text as `AGENT:<subagent_type>`.
+- **`csb search --source jsonl` now respects `attributionSkill`.** Skill-launched assistant events (the path used by `/commit`, `/fullpostmortem`, etc.) are labeled `AGENT:<skill>` instead of the previous generic `AI`. Matches what FTS5 import has done since v0.3.0.
+- **`parse_jsonl_events(path)` gained an optional `session_id` parameter** -- forwarded to the walker for parity with the FTS5 importer's signature, ignored by the rendered Event. Calls without the arg keep working unchanged.
+
+### Refactored (no behavior change for the FTS5 importer)
+- **`fts5_importer.py` is now a thin shim** (~120 LOC down from ~430). The walker functions (`iter_rows_from_jsonl`, `ImportRow`, `FileOpRow`, `_extract_file_ops`, `_extract_agent_tool_uses`, `_find_matching_tool_result`, `_flatten_text_blocks`, `_flatten_tool_result_content`) moved to `transcript_walker.py` and are re-exported from `fts5_importer` so downstream callers / existing tests keep importing from the old location.
+- **`_extract_file_ops` now yields `(operation, path, strength)` 3-tuples** (was 2-tuples) so the strength weight follows the row to the importer's INSERT statement.
+- **`_FILE_OP_TOOLS` constant** gains the strength field per entry.
+
+### Carried over from v0.3.0
+- `csb build-fts5` and per-project FTS5 DB convention unchanged. Existing v0.3.0 DBs get migrated to v2 on next open (transparently); a `csb build-fts5 --force` will produce identical row content with the new strength column populated.
+
+## [0.3.0] -- 2026-05-17 (prealpha)
+
+Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Adds the `csb build-fts5` command that imports each session's JSONL transcript into `~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db` with role-aware classification, sub-agent attribution, and file-operation metadata. `csb search` behavior is **unchanged in v0.3.0** -- this is the data-layer foundation; v0.3.1 will wire it into the search dispatcher. 487/487 tests pass.
+
+### Added
+- **`csb build-fts5`** -- new subcommand that builds / refreshes the FTS5 indices. Flags: `--project <slug>` (limit to one), `--session-id <uuid-prefix>` (limit to one via the shared resolver), `--force` (rebuild unconditionally), `--quiet`. Idempotent: skips sessions whose JSONL mtime hasn't advanced past `indexed_sessions.last_jsonl_mtime`. The per-project DB convention (`<project>__<slug-hash>_<USER>.db`) was locked at v0.2.5 in `fts_paths.py`; v0.3.0 fills in the actual DB schema + ingest.
+- **Per-project FTS5 schema** -- `messages` base table (id, session_id, uuid, message_index, role, role_subtype, content, timestamp) + `messages_fts` virtual table with `content='messages'` external content + `porter unicode61` tokenizer. Sync triggers (INSERT/UPDATE/DELETE → FTS) mirror the claude-vault production pattern. `indexed_sessions` table inside each per-project DB is the authoritative "is this session indexed" tracker.
+- **Two AGENT-attribution paths** in the JSONL importer:
+  - **Skill-attributed** (slash-command skills like `/commit`, `/dev-workflow-process`): `message.attributionSkill` on `type:'assistant'` events → `role='AGENT'`, `role_subtype=<skill>`.
+  - **Task-launched** (Agent-tool sub-agents like `Explore`, `Plan`, `oracle`, `senior-engineer`): tracked via `tool_use.id` → `subagent_type`, then the matching `tool_result` block in the next user event is labeled `AGENT:<subagent_type>`. This is the path that puts sub-agent output into the search corpus -- previously invisible to grep.
+- **File-operation metadata** (`file_operations` table inside each per-project DB) -- discoverability layer for "which conversations touched which files." Populated from path-bearing tool_use blocks during the same JSONL walk: `Read` → `op='read'`, `Edit` → `'edited'`, `Write` → `'wrote'`, `Grep` → `'searched'`, `NotebookEdit` → `'notebook_edit'`. Bash command parsing deliberately deferred. The search-side UX (`csb files <pattern>` / `csb search --files <glob>`) ships in a future patch -- v0.3.0 just captures the data so users build the index once.
+- **`fts5_db.py` / `fts5_importer.py` / `fts5_index.py`** -- three new modules:
+  - `fts5_db.py` (~190 LOC) -- schema, `open_fts5_db`, `init_fts5_schema`, `is_session_indexed`, `mark_session_indexed`, `delete_session`, `escape_fts_query`, `fts5_available` probe
+  - `fts5_importer.py` (~330 LOC) -- `iter_rows_from_jsonl` (streams `ImportRow` + `FileOpRow` with both AGENT paths), `import_jsonl_to_db`, content-hash helper
+  - `fts5_index.py` (~200 LOC) -- `build_all` orchestrator with project / session filters, freshness check, force re-index, per-session error tolerance
+- **64 new tests** -- 21 in `test_fts5_db.py` (schema, triggers, dedup, freshness, escape), 33 in `test_fts5_importer.py` (every role classification path including Agent tool chain, file-op extraction, dedup-on-reimport, malformed JSON tolerance, system-reminder verbatim preservation), 10 in `test_fts5_index.py` (orchestrator: single + multi-project, idempotency, mtime change → re-index, force, project / session filters, deleted-skip, missing-file-skip, session_sources hint update). Total 487/487 (was 423 at v0.2.10).
+
+### Behavior unchanged
+- `csb search` still walks `.convo` / `.sesslog` / JSONL files. The FTS5 backend exists but is not yet consulted -- v0.3.1 will add the smart-fallback dispatcher.
+
+### Notes
+- Content cleaning policy: **no stripping** of `<system-reminder>`, `<command-name>`, etc. (csb preserves verbatim, diverges from claude-vault which cleans).
+- Tokenizer choice: `porter unicode61` (same as claude-vault's production setup).
+- Per-project DBs (not one monolithic vault): smaller files, faster targeted queries, per-project archive/move/delete, multi-user safety via the `_<USER>` filename suffix.
+- Schema migration: **NO** `schema_version=4` bump on the main DB. Per-project DBs are self-contained; main DB stays at v3. The reserved slot remains available for a future cross-DB linker table if one is ever needed.
+
+## [0.2.10] -- 2026-05-17 (prealpha)
+
+`csb search` polish pass to bring it to parity with `csb list` and `csb scan`: per-session sort order, escalating richer-info levels (`-f` / `-ff`), readable date format by default, visual block separation. 420/420 tests pass.
+
+### Added
+- **`csb search --sort {last-used,expiration,started,oldest,messages,size}`** -- mirrors `csb list --sort` exactly. Default `last-used` matches the v0.2.6 implicit behavior, so adding the flag is non-breaking. The chosen sort drives the session enumeration order in `search()` and therefore which sessions surface first under `--limit`, what `--sessions-only` lists at the top, and which session the `Next:` hint points at. ORDER BY clauses are reused from `index.SORT_SQL` (the same whitelist `csb list` consumes) -- one source of truth for sort vocabulary.
+- **`csb search -f` / `--full-info`** (level 1) -- adds `started: <date> (purge in Nd)` second header line per session, matching the format `csb list` shows. Reuses `timeline.relative_date` / `format_timestamp` / `purge_countdown` so wording stays consistent across the CLI. `cleanup_days=0` (no purge configured) suppresses the countdown half cleanly.
+- **`csb search -ff`** (level 2) -- escalates further to add the folder list (start_folder + top N other folders with usage counts) and a `N messages | vX.Y.Z` meta line. Brings search output to parity with `csb list` / `csb scan` per-session detail. In `--sessions-only` mode the helper suppresses its own `start at:` line (the renderer already prints one with the inline `[csb resume ...]` hint) to avoid duplication.
+- **argparse `action="count"`** on `--full-info` -- standard verbosity-style escalation (`-f`, `-ff`, `-fff...`). `cmd_search` caps the effective level at 2.
+- **`Hit.started_at`, `Hit.jsonl_mtime`, `Hit.folders`, `Hit.message_count`, `Hit.claude_version`** -- new fields on the search Hit so renderers don't need extra DB round-trips. `folders` only populated when `search(..., fetch_folders=True)` is requested by the caller (level 2 path).
+
+### Changed
+- **Default `csb search` header now shows human-readable last-active**: `<relative> (<human-date>)` (e.g. `today (2026-05-17, at 10:27)`) replaces the raw ISO `last: 2026-05-17T10:27:00.123Z`. The relative+human form is far easier to scan at a glance and takes about the same column width. Raw ISO is preserved in `--json` output and `csb show <uuid>` for the rare case where exact timestamps are needed for grep'ing the JSONL.
+- **Session names render in bold cyan**, matching `csb list` and `csb scan` conventions. Previously plain bold, which competed with hit content above it for visual prominence.
+- **Blank line between session blocks** in both default and `--sessions-only` modes. Adjacent session headers were running together; the separator makes it obvious where one session's hits end and the next session begins.
+
+### Notes
+- 36 new tests across `test_search.py` (6 for --sort + 3 for fetch_folders/Hit fields), `test_cli.py` (6 for --sort + 6 for -f / -ff levels), and `test_search_render.py` (12 for --full-info level 1 / human-readable default / bold-cyan ANSI / blank-line separator + 8 for level-2 folder list / meta line / sessions-only no-duplicate-start-at / level-0-omits-all). Total 420/420 pass (was 384 at v0.2.9).
+
 ## [0.2.9] -- 2026-05-17 (prealpha)
 
 `csb search --sessions-only` for "which sessions mention X" summary queries, plus a small CLI cleanup: `--session` is renamed to `--session-id` and now accepts comma-separated UUID prefixes for multi-session OR-match. The three output modes (`--json`, `--files-only`, `--sessions-only`) are now wrapped in an argparse mutex group so accidental combinations fail loud at parse time. 384/384 tests pass.
@@ -208,7 +390,14 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.4...v0.3.5
+[0.3.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.3...v0.3.4
+[0.3.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.2...v0.3.3
+[0.3.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.1...v0.3.2
+[0.3.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
+[0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7

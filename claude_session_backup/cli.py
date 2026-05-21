@@ -6,7 +6,7 @@ deletion detection, and session restore.
 
 Usage:
     csb backup                           # scan, index, git commit
-    csb list [-n 20] [--deleted]         # timeline view sorted by last-used
+    csb list [-n 20] [--deleted [only|all]]  # timeline view sorted by last-used
     csb status                           # summary of sessions, deletions, git state
     csb show <session-id>                # detailed session info with folder analysis
     csb restore <session-id>             # restore deleted session from git history
@@ -147,8 +147,16 @@ def build_parser():
         help="Sort order: last-used (default), expiration (soonest purge first), "
              "started (newest first), oldest (oldest first), messages, size",
     )
-    p_list.add_argument("--deleted", action="store_true", help="Show only deleted sessions")
-    p_list.add_argument("--all", action="store_true", help="Show all sessions including deleted")
+    # ``--deleted`` is two-valued in v0.3.5: bare or ``only`` shows only
+    # deleted; ``all`` shows live + deleted (replaces the old ``--all``).
+    # Default (flag absent) -> live only, same as before.
+    p_list.add_argument(
+        "--deleted", nargs="?", choices=["only", "all"], const="only",
+        default=None,
+        help="Include deleted sessions. 'only' (bare or explicit) -- show "
+             "deleted exclusively. 'all' -- show live AND deleted. "
+             "Omit the flag for live-only (default).",
+    )
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
     p_list.add_argument(
         "--shortid", "-sid", action="store_true",
@@ -325,44 +333,121 @@ def build_parser():
              "Comma-separated for multi-prefix OR-match.",
     )
     p_search.add_argument(
-        "--source", choices=["auto", "convo", "sesslog", "jsonl"], default="auto",
-        help="Force a source channel (default: auto -- prefers .convo > .sesslog > jsonl)",
+        "--source",
+        choices=["auto", "fts5", "convo", "sesslog", "jsonl"], default="auto",
+        help="Force a source channel (default: auto -- FTS5 when fresh, "
+             "else .convo > .sesslog > jsonl). 'fts5' returns no hits for "
+             "sessions not yet indexed by `csb build-fts5`.",
     )
-    p_search.add_argument("--all", action="store_true", help="Include deleted sessions")
-    p_search.add_argument("--deleted", action="store_true", help="Only deleted sessions")
+    p_search.add_argument(
+        "--sort",
+        choices=["last-used", "expiration", "started", "oldest", "messages", "size"],
+        default="last-used",
+        help="Session iteration order: last-used (default), expiration "
+             "(soonest purge first), started (newest first), oldest (oldest "
+             "first), messages, size. Matches 'csb list --sort' choices.",
+    )
+    # Same two-valued ``--deleted`` shape as ``csb list``. See p_list above.
+    p_search.add_argument(
+        "--deleted", nargs="?", choices=["only", "all"], const="only",
+        default=None,
+        help="Include deleted sessions. 'only' (bare or explicit) -- search "
+             "only deleted. 'all' -- search live AND deleted. Omit the flag "
+             "for live-only (default).",
+    )
     p_search.add_argument(
         "--limit", type=int, default=20,
         help="Stop after N matches (default: 20)",
     )
     p_search.add_argument(
-        "--full-match", action="store_true",
+        "-F", "--full-match", action="store_true",
         help="Don't truncate long matched lines (default: 500 chars)",
     )
+    p_search.add_argument(
+        "-f", "--full-info", action="count", default=0,
+        help="Add richer per-session header info. -f / --full-info for "
+             "level 1 ('started: <date> (purge in Nd)'). -ff for level 2 "
+             "(adds folder list + 'N messages | vX.Y.Z' meta line). "
+             "Mirrors 'csb list' shape. Repeat to escalate (capped at 2).",
+    )
     p_search.add_argument("--no-color", action="store_true", help="Disable ANSI color")
-    # Output-mode mutex group: at most one of --json / --files-only / --sessions-only.
+    # Output-mode mutex group: at most one of --json / --only.
     # Default mode (no flag): grouped human-readable hits with excerpts.
     p_search_mode = p_search.add_mutually_exclusive_group()
     p_search_mode.add_argument(
         "--json", action="store_true",
-        help="JSON output (one line per hit)",
+        help="NDJSON output -- one JSON object per hit (jq-friendly)",
     )
     p_search_mode.add_argument(
-        "--files-only", action="store_true",
-        help="List unique source files containing matches, no excerpts",
-    )
-    p_search_mode.add_argument(
-        "--sessions-only", action="store_true",
-        help="Per-session summary: name + UUID + project + start-at + hit count, no excerpts",
+        "--only", choices=["files", "sessions"], default=None,
+        metavar="{files,sessions}",
+        help="Collapse output to a one-line-per-item summary. "
+             "'files': unique transcript paths (convo > sesslog > jsonl). "
+             "'sessions': per-session summary (name + UUID + project + "
+             "start-at + hit count). Default (no flag): grouped excerpts.",
     )
     p_search.add_argument(
         "--shortid", "-sid", action="store_true",
         help="Display compact UUID form (<head>-...-<tail>) in session headers. "
              "Default is the full UUID so users can paste into 'claude --resume <uuid>'.",
     )
+    # Directory-scope mutex (v0.3.5). Names mirror `csb scan`'s -d / -D:
+    #   -d <path>  -- folder + descendants (recursive)
+    #   -D <path>  -- folder only (no descendants)
+    # Requires FTS5; rejects --source jsonl|convo|sesslog. See cmd_search.
+    p_search_dir_scope = p_search.add_mutually_exclusive_group()
+    p_search_dir_scope.add_argument(
+        "-d", "--directories-below", metavar="PATH", default=None,
+        help="Rank sessions by how heavily each worked on files under "
+             "PATH (active edits weigh most; reads middle; Grep probes "
+             "lightest), then narrow to ones whose transcripts match the "
+             "query. Recurses into subdirectories -- answers 'what's "
+             "been done in this folder, and who said what about it?'. "
+             "Requires `csb build-fts5` for affected projects.",
+    )
+    p_search_dir_scope.add_argument(
+        "-D", "--directory-only", metavar="PATH", default=None,
+        help="Same as -d but PATH only -- subdirectories excluded. Use "
+             "when you care about work DIRECTLY in this folder, not in "
+             "nested children. 'What's been done right here, not below?'",
+    )
+    p_search.add_argument(
+        "--min-strength", type=int, choices=[1, 2, 3], default=1,
+        metavar="N",
+        help="Filter -d/-D file-ops by minimum strength. 1 (default) "
+             "includes everything; 2 skips Grep/Glob probes; 3 keeps "
+             "only active-modification ops (edited/wrote/notebook_edit). "
+             "No effect outside -d/-D mode.",
+    )
 
     # rebuild-index
     p_rebuild = sub.add_parser("rebuild-index", help="Reconstruct SQLite index from git history")
     _add_common_flags(p_rebuild)
+
+    # build-fts5
+    p_build = sub.add_parser(
+        "build-fts5",
+        help="Build/refresh FTS5 content index (per-project DBs in ~/.claude/csb-fts/)",
+        description=(
+            "Index session transcripts into per-project SQLite FTS5 "
+            "databases for fast content search. Idempotent -- skips "
+            "sessions whose JSONL mtime hasn't changed since the last "
+            "build. Use --force to re-index unconditionally."
+        ),
+    )
+    _add_common_flags(p_build)
+    p_build.add_argument(
+        "--project", default=None, metavar="SLUG",
+        help="Limit to one project (encoded slug form, e.g. 'C--code-myproj')",
+    )
+    p_build.add_argument(
+        "--session-id", default=None, metavar="UUID",
+        help="Limit to one session (UUID prefix; uses the shared resolver)",
+    )
+    p_build.add_argument(
+        "--force", action="store_true",
+        help="Re-index every candidate even if up-to-date",
+    )
 
     # config
     p_config = sub.add_parser("config", help="View/edit configuration")
@@ -416,6 +501,9 @@ def main(argv=None):
     elif args.command == "rebuild-index":
         from .commands import cmd_rebuild_index
         return cmd_rebuild_index(args)
+    elif args.command == "build-fts5":
+        from .commands import cmd_build_fts5
+        return cmd_build_fts5(args)
     elif args.command == "config":
         from .commands import cmd_config
         return cmd_config(args)

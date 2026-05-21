@@ -480,36 +480,131 @@ def test_search_session_id_accepts_value():
     assert args.session_id == "abc1,def2"
 
 
-def test_search_old_session_flag_no_longer_accepted():
-    """--session is gone (renamed); argparse should reject it."""
+def test_search_canonical_session_id_attribute_is_session_id():
+    """The v0.2.7 rename took effect: the argparse attribute is
+    ``session_id``, not ``session``. (Note: at v0.3.5 the removal of
+    ``--sessions-only`` happens to make ``--session`` a unique
+    argparse prefix abbreviation for ``--session-id``, but the
+    canonical attribute name is the only stable contract.)"""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--session-id", "abc1"])
+    assert args.session_id == "abc1"
+    assert not hasattr(args, "session")  # legacy attribute is gone
+
+
+def test_search_output_mode_mutex_json_vs_only_files():
+    """--json + --only files is rejected (v0.3.5 mutex)."""
     parser = build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["search", "foo", "--session", "abc1"])
+        parser.parse_args(["search", "foo", "--json", "--only", "files"])
 
 
-def test_search_output_mode_mutex_json_vs_files_only():
-    """--json + --files-only is rejected."""
+def test_search_output_mode_mutex_json_vs_only_sessions():
+    """--json + --only sessions is rejected (v0.3.5 mutex)."""
     parser = build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["search", "foo", "--json", "--files-only"])
+        parser.parse_args(["search", "foo", "--json", "--only", "sessions"])
 
 
-def test_search_output_mode_mutex_json_vs_sessions_only():
-    """--json + --sessions-only is rejected."""
+def test_search_only_files_parses():
+    """--only files alone is accepted; args.only == 'files'."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--only", "files"])
+    assert args.only == "files"
+
+
+def test_search_only_sessions_parses():
+    """--only sessions alone is accepted; args.only == 'sessions'."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--only", "sessions"])
+    assert args.only == "sessions"
+
+
+def test_search_only_rejects_invalid_choice():
+    """--only files-and-sessions is rejected with a clear choices list."""
     parser = build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["search", "foo", "--json", "--sessions-only"])
+        parser.parse_args(["search", "foo", "--only", "everything"])
 
 
-def test_search_output_mode_mutex_files_vs_sessions():
-    """--files-only + --sessions-only is rejected."""
+def test_search_old_files_only_flag_gone():
+    """v0.3.5 breaking: --files-only no longer exists."""
     parser = build_parser()
     with pytest.raises(SystemExit):
-        parser.parse_args(["search", "foo", "--files-only", "--sessions-only"])
+        parser.parse_args(["search", "foo", "--files-only"])
 
 
-def test_search_sessions_only_flag_parses():
-    """--sessions-only alone is accepted."""
+def test_search_old_sessions_only_flag_gone():
+    """v0.3.5 breaking: --sessions-only no longer exists."""
     parser = build_parser()
-    args = parser.parse_args(["search", "foo", "--sessions-only"])
-    assert args.sessions_only is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--sessions-only"])
+
+
+# ── csb search --sort (v0.3.0) ───────────────────────────────────────
+
+
+def test_search_sort_default_is_last_used():
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo"])
+    assert args.sort == "last-used"
+
+
+def test_search_sort_accepts_all_csb_list_choices():
+    """The choices set MUST match csb list's --sort, so users only learn
+    one vocabulary."""
+    parser = build_parser()
+    for choice in ["last-used", "expiration", "started", "oldest", "messages", "size"]:
+        args = parser.parse_args(["search", "foo", "--sort", choice])
+        assert args.sort == choice
+
+
+def test_search_sort_rejects_invalid_choice():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["search", "foo", "--sort", "bogus"])
+
+
+# ── csb search --full-info / -f / -ff (v0.2.10) ─────────────────────
+
+
+def test_search_full_info_default_is_zero():
+    """No flag = level 0 (compact one-line header)."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo"])
+    assert args.full_info == 0
+
+
+def test_search_full_info_long_flag_is_level_1():
+    """--full-info = level 1 via action='count'."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "--full-info"])
+    assert args.full_info == 1
+
+
+def test_search_short_f_is_level_1():
+    """-f = level 1 (single increment)."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-f"])
+    assert args.full_info == 1
+
+
+def test_search_double_ff_is_level_2():
+    """-ff = level 2 (two increments via standard argparse repeated-short)."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-ff"])
+    assert args.full_info == 2
+
+
+def test_search_full_info_combines_with_only_sessions():
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-ff", "--only", "sessions"])
+    assert args.full_info == 2
+    assert args.only == "sessions"
+
+
+def test_search_triple_fff_does_not_crash():
+    """-fff parses (=3); cmd_search caps at 2. argparse counts unbounded."""
+    parser = build_parser()
+    args = parser.parse_args(["search", "foo", "-fff"])
+    assert args.full_info == 3
