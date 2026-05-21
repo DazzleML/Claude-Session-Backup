@@ -91,6 +91,21 @@ class Hit:
     claude_version: Optional[str] = None
     context_above: list[Event] = field(default_factory=list)
     context_below: list[Event] = field(default_factory=list)
+    # v0.3.5: populated only by directory-scope mode (-d / -D). Carry the
+    # session's file-op summary forward so renderers can show the
+    # "[N file-ops, strength=S]" suffix that motivates the ranking. Zero
+    # in normal search means "not a dir-scope hit" -- renderers should
+    # suppress the suffix in that case.
+    strength_sum: int = 0
+    file_op_count: int = 0
+    # v0.3.5: best navigable transcript path for this session, independent
+    # of the source the dispatcher actually walked. For file-based
+    # sources this equals ``source_path``; for FTS5 we resolve the
+    # session's best file-based source (convo > sesslog > jsonl) so
+    # ``--files-only`` returns a file users can open instead of an
+    # opaque per-project DB. None if no transcript could be resolved
+    # (rare; means no session_sources rows AND no sessions.jsonl_path).
+    transcript_path: str | None = None
 
 
 # ── Parsers ───────────────────────────────────────────────────────────
@@ -385,6 +400,90 @@ def _fts5_handle_for_session(
     )
 
 
+# ── --only-aware output-row cap (v0.3.5) ──────────────────────────────
+
+
+def cap_hits_by_output_unit(
+    hits: list["Hit"],
+    user_limit: int,
+    unit: str,
+) -> list["Hit"]:
+    """Truncate ``hits`` so the renderer emits at most ``user_limit``
+    distinct output rows.
+
+    When ``--only`` collapses hits into sessions or files, the natural
+    user expectation is ``--limit N`` = N output rows -- not N raw
+    hits (a single noisy session can otherwise consume the whole
+    limit and the rest of the ranked list is invisible). ``search()``
+    yields hits one at a time, so the cap happens here after the
+    fact: keep every hit belonging to the first N distinct units, and
+    drop the rest.
+
+    ``unit`` is either ``"sessions"`` (key on ``session_id``) or
+    ``"files"`` (key on ``transcript_path`` with ``source_path`` as
+    fallback). Any other value returns the input list unchanged --
+    callers in non-``--only`` modes should not invoke this.
+
+    Returns a new list; does not mutate the input.
+    """
+    if unit not in ("sessions", "files"):
+        return list(hits)
+    seen: list[str] = []
+    capped: list["Hit"] = []
+    for h in hits:
+        if unit == "sessions":
+            key = h.session_id
+        else:
+            key = h.transcript_path or h.source_path or ""
+        if key not in seen:
+            if len(seen) >= user_limit:
+                break
+            seen.append(key)
+        capped.append(h)
+    return capped
+
+
+# ── Transcript-path resolution (v0.3.5) ───────────────────────────────
+
+
+# File-based sources only, in user-navigability order: convo and sesslog
+# are plain text (grep-friendly); jsonl is the last-resort authoritative
+# fallback. FTS5 is deliberately excluded -- the per-project DB is what
+# the dispatcher queries, not what a human would open.
+_TRANSCRIPT_PREFERENCE = ("convo", "sesslog", "jsonl")
+
+
+def _best_transcript_path(
+    source_rows: list[sqlite3.Row],
+    session_row: sqlite3.Row,
+    claude_dir: Optional[Path],
+) -> Optional[str]:
+    """Pick the best human-navigable transcript file for a session.
+
+    Walks :data:`_TRANSCRIPT_PREFERENCE` over the session's
+    ``session_sources`` rows and returns the first available
+    ``source_path`` (already absolute). If no file-based source rows
+    exist (e.g. session indexed into FTS5 but never recorded by
+    ``csb backup``), falls back to ``sessions.jsonl_path`` resolved
+    against ``claude_dir``. Returns None if neither route yields a
+    path (vanishingly rare in practice).
+
+    Used to populate :attr:`Hit.transcript_path` so ``csb search
+    --files-only`` returns the same kind of navigable file path
+    regardless of whether the dispatcher walked the file or queried
+    FTS5 -- parity with the pre-FTS5 behavior users had at v0.3.2.
+    """
+    by_type = {row["source_type"]: row["source_path"] for row in source_rows}
+    for source_type in _TRANSCRIPT_PREFERENCE:
+        if source_type in by_type and by_type[source_type]:
+            return by_type[source_type]
+    # Fallback: derive from sessions.jsonl_path (stored relative).
+    jsonl_rel = session_row["jsonl_path"] if "jsonl_path" in session_row.keys() else None
+    if jsonl_rel and claude_dir is not None:
+        return str(Path(claude_dir) / jsonl_rel)
+    return None
+
+
 # ── FTS5 dispatch helpers (v0.3.3) ────────────────────────────────────
 
 
@@ -439,6 +538,7 @@ def query_fts5_for_session(
     fts5_db_path: Path,
     session_id: str,
     pattern: str,
+    regex: bool = False,
 ) -> Iterator[Event]:
     """Yield :class:`Event` for messages in this session's FTS5 DB.
 
@@ -448,12 +548,17 @@ def query_fts5_for_session(
     doesn't preserve exact-substring semantics, so we always validate
     Python-side after the FTS5 filter.
 
+    When ``regex=True``, FTS5 MATCH is bypassed entirely -- regex syntax
+    (``\\d``, ``|``, ``?``, etc.) is not valid FTS5 query language, so
+    feeding it to MATCH yields zero candidates and the Python regex
+    filter never gets to run (the v0.3.3 bug this argument fixes).
+    Full-session scan instead; the caller's matcher does all the work.
+
     If :func:`fts5_db.escape_fts_query` produces an empty pattern (all
-    punctuation / whitespace), falls back to a full table scan of this
-    session's messages so the Python matcher still gets to do its job.
+    punctuation / whitespace), the same full-scan fallback kicks in.
     Matches Phase 1's "empty pattern = match all" semantics.
     """
-    escaped = fts5_db.escape_fts_query(pattern)
+    escaped = fts5_db.escape_fts_query(pattern) if not regex else ""
     try:
         conn = sqlite3.connect(str(fts5_db_path))
         conn.row_factory = sqlite3.Row
@@ -501,6 +606,273 @@ def query_fts5_for_session(
         conn.close()
 
 
+# ── Directory-scope helpers (v0.3.5) ──────────────────────────────────
+
+
+def _build_directory_globs(
+    abs_path: str, include_descendants: bool
+) -> tuple[list[str], list[str] | None]:
+    """Build the GLOB pattern lists for ``-d`` / ``-D`` directory-scope.
+
+    Returns ``(include_globs, exclude_globs_or_None)``:
+
+      * ``include_globs`` -- always two patterns, one with ``\\`` separators
+        and one with ``/`` separators. We OR them at query time so paths
+        stored by Claude (forward-slash in most tool_use blocks; native
+        backslash in some Bash output) both match without prior
+        normalization.
+      * ``exclude_globs`` -- only set for ``-D`` (folder-only). Two
+        patterns ``<root>{sep}*{sep}*`` -- any path with at least one
+        further separator past the root is excluded. The dispatcher
+        applies these as ``NOT (file_path GLOB ? OR file_path GLOB ?)``.
+
+    ``abs_path`` should already be resolved to an absolute path; this
+    function only handles the separator-variant fan-out. Trailing
+    separators are stripped so patterns never have a doubled ``\\\\`` /
+    ``//`` at the boundary.
+    """
+    path_norm = abs_path.rstrip("/\\")
+    back_root = path_norm.replace("/", "\\")
+    fwd_root = path_norm.replace("\\", "/")
+    include = [back_root + "\\*", fwd_root + "/*"]
+    if include_descendants:
+        return include, None
+    exclude = [back_root + "\\*\\*", fwd_root + "/*/*"]
+    return include, exclude
+
+
+def find_path_filtered_sessions(
+    fts5_db_path: Path,
+    path_globs: list[str],
+    exclude_descendant_globs: list[str] | None = None,
+    min_strength: int = 1,
+) -> list[tuple[str, int, int]]:
+    """Step 1 of ``-d`` / ``-D`` ranking: sessions ordered by file-op strength.
+
+    Runs a single grouped query against one per-project FTS5 DB's
+    ``file_operations`` table and returns
+    ``[(session_id, sum_strength, file_op_count), ...]`` sorted by
+    ``sum_strength`` descending. Empty list if the file doesn't exist,
+    fails to open, or has no matching rows.
+
+    Pattern lists are OR'd together so callers can pass both separator
+    variants without rewriting the SQL. ``min_strength`` adds
+    ``AND strength >= ?`` when greater than 1; at 1 the clause is
+    omitted so legacy rows (which all have strength >= 1 by default)
+    are included without an unnecessary comparison.
+
+    Opens the DB RAW (no schema init, no migrations). This is the same
+    contract as the FTS5 freshness probe -- a read-only check should
+    never mutate state on disk.
+    """
+    if not fts5_db_path.exists():
+        return []
+    if not path_globs:
+        return []
+    try:
+        conn = sqlite3.connect(str(fts5_db_path))
+    except sqlite3.DatabaseError:
+        return []
+    try:
+        include_clause = " OR ".join(["file_path GLOB ?"] * len(path_globs))
+        params: list = list(path_globs)
+        sql_parts = [
+            "SELECT session_id, SUM(strength) AS sum_strength, "
+            "       COUNT(*) AS file_op_count",
+            "FROM file_operations",
+            f"WHERE ({include_clause})",
+        ]
+        if exclude_descendant_globs:
+            exclude_clause = " OR ".join(
+                ["file_path GLOB ?"] * len(exclude_descendant_globs)
+            )
+            sql_parts.append(f"  AND NOT ({exclude_clause})")
+            params.extend(exclude_descendant_globs)
+        if min_strength > 1:
+            sql_parts.append("  AND strength >= ?")
+            params.append(min_strength)
+        sql_parts.append("GROUP BY session_id")
+        sql_parts.append("ORDER BY sum_strength DESC")
+        try:
+            rows = conn.execute("\n".join(sql_parts), params).fetchall()
+        except sqlite3.OperationalError:
+            # Pre-strength DBs (v0.3.0) lack the column; rather than
+            # silently misranking, treat as empty. The user gets no hits
+            # from that DB and can run `csb build-fts5` to migrate.
+            return []
+        return [(r[0], r[1], r[2]) for r in rows]
+    except sqlite3.DatabaseError:
+        return []
+    finally:
+        conn.close()
+
+
+def _lookup_session_row(
+    conn: sqlite3.Connection,
+    session_id: str,
+    session_filter_prefixes: list[str],
+    include_deleted: bool,
+    only_deleted: bool,
+) -> Optional[sqlite3.Row]:
+    """One-shot session lookup honoring search() filters.
+
+    Returns the sessions row for ``session_id`` if it passes the same
+    visibility filters the main path applies (deleted bits +
+    ``--session-id`` prefix list). Returns None if the session doesn't
+    exist or any filter rejects it.
+    """
+    where = ["s.session_id = ?"]
+    params: list = [session_id]
+    if only_deleted:
+        where.append("s.deleted_at IS NOT NULL")
+    elif not include_deleted:
+        where.append("s.deleted_at IS NULL")
+    if session_filter_prefixes:
+        ors = " OR ".join(
+            ["s.session_id LIKE ?"] * len(session_filter_prefixes)
+        )
+        where.append(f"({ors})")
+        params.extend(f"{p}%" for p in session_filter_prefixes)
+    sql = (
+        "SELECT s.session_id, s.session_name, s.project, s.last_active_at, "
+        "s.start_folder, s.started_at, s.jsonl_mtime, s.jsonl_path, "
+        "s.message_count, s.claude_version "
+        "FROM sessions s WHERE " + " AND ".join(where)
+    )
+    return conn.execute(sql, params).fetchone()
+
+
+def _search_dir_scope(
+    conn: sqlite3.Connection,
+    pattern: str,
+    *,
+    abs_path: str,
+    include_descendants: bool,
+    min_strength: int,
+    regex: bool,
+    case_sensitive: bool,
+    above: int,
+    below: int,
+    session_filter_prefixes: list[str],
+    include_deleted: bool,
+    only_deleted: bool,
+    limit: int,
+    fetch_folders: bool,
+    claude_dir: Path,
+) -> Iterator[Hit]:
+    """Directory-scope dispatch: rank sessions by file-op strength under
+    ``abs_path`` and yield hits in that order.
+
+    Walks every per-project FTS5 DB in ``<claude_dir>/csb-fts/``, runs
+    :func:`find_path_filtered_sessions` against each, merges the results,
+    and sorts globally by ``sum_strength`` DESC. For each ranked session
+    we look up the sessions row via :func:`_lookup_session_row`, run
+    :func:`query_fts5_for_session` for the user's pattern, and yield
+    :class:`Hit` with ``strength_sum`` / ``file_op_count`` populated so
+    renderers can display the ranking signal.
+
+    Sessions whose project hasn't been built into an FTS5 DB are skipped
+    silently. Sessions filtered out (deleted bits, ``--session-id``
+    prefix) likewise drop quietly. Empty pattern matches every event in
+    the ranked sessions (mirrors the rest of search()'s "empty = match
+    all" semantics).
+    """
+    matcher = _build_matcher(pattern, regex, case_sensitive)
+    include_globs, exclude_globs = _build_directory_globs(
+        abs_path, include_descendants,
+    )
+
+    fts_dir = fts_paths.fts5_db_dir(claude_dir)
+    if not fts_dir.exists():
+        return
+
+    # Step 1: enumerate ranked (session_id, sum_strength, file_op_count,
+    # fts_db_path) across every per-project FTS5 DB in the vault.
+    ranked: list[tuple[str, int, int, Path]] = []
+    for db_file in sorted(fts_dir.glob("*.db")):
+        for sid, sum_strength, foc in find_path_filtered_sessions(
+            db_file, include_globs, exclude_globs, min_strength,
+        ):
+            ranked.append((sid, sum_strength, foc, db_file))
+
+    if not ranked:
+        return
+
+    ranked.sort(key=lambda r: r[1], reverse=True)
+
+    hits_yielded = 0
+    for session_id, sum_strength, file_op_count, fts_db_path in ranked:
+        if hits_yielded >= limit:
+            break
+
+        session_row = _lookup_session_row(
+            conn, session_id, session_filter_prefixes,
+            include_deleted, only_deleted,
+        )
+        if session_row is None:
+            continue
+
+        # v0.3.5: resolve the best file-based transcript for this session
+        # (parity with the non-dir-scope dispatch). One small query per
+        # ranked session; cheap on indexes already in place.
+        source_rows = conn.execute(
+            "SELECT source_type, source_path FROM session_sources "
+            "WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        transcript_path = _best_transcript_path(
+            source_rows, session_row, claude_dir,
+        )
+
+        events = list(query_fts5_for_session(
+            fts_db_path, session_id, pattern, regex=regex,
+        ))
+        if not events:
+            continue
+
+        folders_for_session: list[dict] = []
+        if fetch_folders:
+            folder_rows = conn.execute(
+                "SELECT folder_path, usage_count, is_start_folder "
+                "FROM folder_usage WHERE session_id = ? "
+                "ORDER BY usage_count DESC, is_start_folder DESC",
+                (session_id,),
+            ).fetchall()
+            folders_for_session = [dict(r) for r in folder_rows]
+
+        for idx, ev in enumerate(events):
+            if not matcher(ev.text):
+                continue
+            ctx_above = events[max(0, idx - above):idx] if above > 0 else []
+            ctx_below = events[idx + 1:idx + 1 + below] if below > 0 else []
+            yield Hit(
+                session_id=session_id,
+                session_name=session_row["session_name"],
+                project=session_row["project"],
+                last_active_at=session_row["last_active_at"],
+                source_type="fts5",
+                source_path=str(fts_db_path),
+                line_num=ev.line_num,
+                role=ev.role,
+                timestamp=ev.timestamp,
+                matched_text=ev.text,
+                start_folder=session_row["start_folder"],
+                started_at=session_row["started_at"],
+                jsonl_mtime=session_row["jsonl_mtime"] or 0.0,
+                folders=folders_for_session,
+                message_count=session_row["message_count"] or 0,
+                claude_version=session_row["claude_version"],
+                context_above=ctx_above,
+                context_below=ctx_below,
+                strength_sum=sum_strength,
+                file_op_count=file_op_count,
+                transcript_path=transcript_path,
+            )
+            hits_yielded += 1
+            if hits_yielded >= limit:
+                break
+
+
 # ── Main search entry point ───────────────────────────────────────────
 
 
@@ -520,6 +892,7 @@ def search(
     sort_key: str = "last-used",
     fetch_folders: bool = False,
     claude_dir: Optional[Path] = None,
+    dir_scope: Optional[dict] = None,
 ) -> Iterator[Hit]:
     """Yield ``Hit`` for every match across all relevant sessions.
 
@@ -567,6 +940,42 @@ def search(
         raise ValueError(
             f"Unknown sort_key {sort_key!r}; expected one of {sorted(SORT_SQL)}"
         )
+
+    # Normalize session_filter to a list of prefixes for uniform OR-match.
+    # We do this up here because dir-scope dispatch wants the same shape
+    # without re-doing the work below.
+    prefixes: list[str] = []
+    if isinstance(session_filter, str):
+        prefixes = [session_filter] if session_filter else []
+    elif session_filter:
+        prefixes = [p for p in session_filter if p]
+
+    # v0.3.5: directory-scope mode (-d / -D). Hands off to a separate
+    # dispatcher that ranks sessions by file-op strength under the
+    # given path -- the rest of search()'s sort-key + preference-walk
+    # machinery doesn't apply because the ordering is determined by
+    # `SUM(strength)` across each session's file_operations rows.
+    if dir_scope is not None:
+        if claude_dir is None:
+            return
+        yield from _search_dir_scope(
+            conn, pattern,
+            abs_path=dir_scope["abs_path"],
+            include_descendants=dir_scope["include_descendants"],
+            min_strength=dir_scope.get("min_strength", 1),
+            regex=regex,
+            case_sensitive=case_sensitive,
+            above=above,
+            below=below,
+            session_filter_prefixes=prefixes,
+            include_deleted=include_deleted,
+            only_deleted=only_deleted,
+            limit=limit,
+            fetch_folders=fetch_folders,
+            claude_dir=claude_dir,
+        )
+        return
+
     matcher = _build_matcher(pattern, regex, case_sensitive)
     # Auto-mode preference adapts to the user's actual vault: drops
     # convo / sesslog when no claude-session-logger output exists.
@@ -585,12 +994,8 @@ def search(
     elif not include_deleted:
         where.append("s.deleted_at IS NULL")
 
-    # Normalize session_filter to a list of prefixes for uniform OR-match.
-    prefixes: list[str] = []
-    if isinstance(session_filter, str):
-        prefixes = [session_filter] if session_filter else []
-    elif session_filter:
-        prefixes = [p for p in session_filter if p]
+    # ``prefixes`` was computed before the dir_scope branch above so both
+    # dispatchers share the same normalization.
     if prefixes:
         ors = " OR ".join(["s.session_id LIKE ?"] * len(prefixes))
         where.append(f"({ors})")
@@ -627,11 +1032,20 @@ def search(
         if picked_type is None:
             continue
 
+        # v0.3.5: resolve the best file-based transcript for THIS session
+        # once, regardless of which source the dispatcher picked. Used to
+        # populate Hit.transcript_path so --files-only / JSON consumers
+        # always see a navigable file (not a per-project FTS5 DB path).
+        transcript_path = _best_transcript_path(
+            source_rows, session_row, claude_dir,
+        )
+
         if picked_type == "fts5":
             events = list(query_fts5_for_session(
                 picked_handle,  # Path to per-project FTS5 DB
                 session_row["session_id"],
                 pattern,
+                regex=regex,
             ))
             picked_source_type = "fts5"
             picked_source_path = str(picked_handle)
@@ -687,6 +1101,7 @@ def search(
                 claude_version=session_row["claude_version"],
                 context_above=ctx_above,
                 context_below=ctx_below,
+                transcript_path=transcript_path,
             )
             hits_yielded += 1
             if hits_yielded >= limit:

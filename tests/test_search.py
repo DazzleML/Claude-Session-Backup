@@ -1164,3 +1164,774 @@ def test_search_hit_carries_message_count_and_version(mock_db, tmp_path):
     hits = list(search(mock_db, "MATCH"))
     assert hits[0].message_count == 438
     assert hits[0].claude_version == "2.1.50"
+
+
+# ── v0.3.5: directory-scope mode (-d / -D + --min-strength) ───────────
+
+
+def _build_fake_fts5_db_with_file_ops(
+    claude_dir,
+    project,
+    encoded_slug,
+    session_id,
+    messages,
+    file_ops,
+    jsonl_mtime=1700000000.0,
+):
+    """Build a per-project FTS5 DB with both messages and file_operations.
+
+    ``file_ops`` is a list of ``(operation, file_path, strength)`` tuples
+    that get inserted into the file_operations table. ``messages`` uses
+    the same shape as ``_build_fake_fts5_db``.
+
+    Returns the DB path so tests can verify on-disk state.
+    """
+    import sqlite3 as _sqlite3
+    from claude_session_backup import fts_paths
+    from claude_session_backup.fts5_db import (
+        open_fts5_db, mark_session_indexed,
+    )
+    from claude_session_backup.fts5_importer import now_iso
+
+    db_path = fts_paths.fts5_db_path(claude_dir, project, encoded_slug)
+    conn = open_fts5_db(db_path, quiet=True)
+    cur = conn.cursor()
+    for i, (role, role_subtype, content) in enumerate(messages):
+        cur.execute(
+            "INSERT INTO messages (session_id, uuid, message_index, "
+            "  role, role_subtype, content, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            # uuid namespaced by session_id so two sessions in one DB
+            # don't collide on the unique index.
+            (session_id, f"{session_id}-u{i}", i, role, role_subtype,
+             content, f"2026-05-18T10:{i:02d}:00Z"),
+        )
+    for j, (operation, file_path, strength) in enumerate(file_ops):
+        cur.execute(
+            "INSERT INTO file_operations (session_id, message_index, "
+            "  operation, file_path, strength, timestamp) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, j, operation, file_path, strength,
+             f"2026-05-18T10:{j:02d}:00Z"),
+        )
+    mark_session_indexed(conn, session_id, jsonl_mtime, "deadbeef", now_iso())
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_build_directory_globs_recursive():
+    """``-d`` builds two GLOBs (one per separator), no excludes."""
+    from claude_session_backup.search import _build_directory_globs
+    include, exclude = _build_directory_globs(
+        r"C:\code\foo", include_descendants=True,
+    )
+    assert include == [r"C:\code\foo\*", "C:/code/foo/*"]
+    assert exclude is None
+
+
+def test_build_directory_globs_folder_only():
+    """``-D`` builds includes AND excludes (paths with extra separator)."""
+    from claude_session_backup.search import _build_directory_globs
+    include, exclude = _build_directory_globs(
+        r"C:\code\foo", include_descendants=False,
+    )
+    assert include == [r"C:\code\foo\*", "C:/code/foo/*"]
+    assert exclude == [r"C:\code\foo\*\*", "C:/code/foo/*/*"]
+
+
+def test_build_directory_globs_strips_trailing_sep():
+    """Trailing ``/`` or ``\\`` on input doesn't produce ``//`` / ``\\\\``."""
+    from claude_session_backup.search import _build_directory_globs
+    include, _ = _build_directory_globs(
+        "C:/code/foo/", include_descendants=True,
+    )
+    assert include[1] == "C:/code/foo/*"  # no extra slash
+
+
+def test_find_path_filtered_sessions_ranks_by_sum_strength(tmp_path):
+    """Two sessions with different file-op profiles -- higher-strength
+    session sorts first regardless of insertion order."""
+    from claude_session_backup.search import (
+        _build_directory_globs, find_path_filtered_sessions,
+    )
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    # Build one DB containing two sessions touching the same dir.
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "lightweight-sid",
+        messages=[("USER", None, "x")],
+        file_ops=[
+            ("searched", "C:/code/foo/x.py", 1),
+            ("read",     "C:/code/foo/y.py", 2),
+        ],
+    )
+    db_path = _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "heavyweight-sid",
+        messages=[("USER", None, "y")],
+        file_ops=[
+            ("wrote",  "C:/code/foo/a.py", 3),
+            ("edited", "C:/code/foo/b.py", 3),
+            ("read",   "C:/code/foo/c.py", 2),
+        ],
+    )
+    include, _ = _build_directory_globs(
+        r"C:\code\foo", include_descendants=True,
+    )
+    rows = find_path_filtered_sessions(db_path, include)
+    # Heavyweight (3+3+2 = 8) ranks before lightweight (1+2 = 3).
+    assert [r[0] for r in rows] == ["heavyweight-sid", "lightweight-sid"]
+    assert rows[0][1] == 8 and rows[0][2] == 3
+    assert rows[1][1] == 3 and rows[1][2] == 2
+
+
+def test_find_path_filtered_sessions_min_strength_filters_low_rows(tmp_path):
+    """``min_strength=2`` excludes Grep/searched rows (strength=1)."""
+    from claude_session_backup.search import (
+        _build_directory_globs, find_path_filtered_sessions,
+    )
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    db_path = _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "sid-1",
+        messages=[("USER", None, "x")],
+        file_ops=[
+            ("searched", "C:/code/foo/x.py", 1),
+            ("read",     "C:/code/foo/y.py", 2),
+        ],
+    )
+    include, _ = _build_directory_globs(
+        r"C:\code\foo", include_descendants=True,
+    )
+    rows = find_path_filtered_sessions(db_path, include, min_strength=2)
+    assert len(rows) == 1
+    assert rows[0][0] == "sid-1"
+    assert rows[0][1] == 2  # only the read counted
+    assert rows[0][2] == 1  # one file_op survived
+
+
+def test_find_path_filtered_sessions_folder_only_excludes_descendants(tmp_path):
+    """``-D``-style exclude_descendants drops paths in subdirectories."""
+    from claude_session_backup.search import (
+        _build_directory_globs, find_path_filtered_sessions,
+    )
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    db_path = _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "sid-1",
+        messages=[("USER", None, "x")],
+        file_ops=[
+            ("read", "C:/code/foo/top.py",       2),  # immediate child
+            ("read", "C:/code/foo/sub/deep.py",  2),  # one level deeper
+        ],
+    )
+    include, exclude = _build_directory_globs(
+        r"C:\code\foo", include_descendants=False,
+    )
+    rows = find_path_filtered_sessions(db_path, include, exclude)
+    # Only the immediate child survives the NOT (GLOB '*/*/*') exclude.
+    assert rows[0][2] == 1
+
+
+def test_find_path_filtered_sessions_missing_db_returns_empty(tmp_path):
+    """Non-existent DB path returns [] (graceful skip)."""
+    from claude_session_backup.search import find_path_filtered_sessions
+    rows = find_path_filtered_sessions(
+        tmp_path / "nope.db", [r"C:\code\foo\*"],
+    )
+    assert rows == []
+
+
+def test_search_dir_scope_orders_sessions_by_strength(mock_db, tmp_path):
+    """End-to-end: dir-scope dispatch returns hits in
+    SUM(strength)-DESC order across multiple sessions."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+
+    # heavy session: strength 3+3 = 6, indexed
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "C--code-foo", "C--code-foo", "heavy-sid",
+        messages=[("USER", None, "needle in heavy")],
+        file_ops=[
+            ("wrote",  "C:/code/foo/a.py", 3),
+            ("edited", "C:/code/foo/b.py", 3),
+        ],
+    )
+    # light session: strength 2, indexed in same DB
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "C--code-foo", "C--code-foo", "light-sid",
+        messages=[("USER", None, "needle in light")],
+        file_ops=[("read", "C:/code/foo/x.py", 2)],
+    )
+    # Both sessions exist in the main DB (encoded_slug = parent of jsonl)
+    _insert_session_with_jsonl(
+        mock_db, "heavy-sid", "C--code-foo",
+        "projects/C--code-foo/heavy-sid.jsonl", 1700000000.0,
+    )
+    _insert_session_with_jsonl(
+        mock_db, "light-sid", "C--code-foo",
+        "projects/C--code-foo/light-sid.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "needle", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    # Heavy session's hit should be first (higher SUM(strength)).
+    assert [h.session_id for h in hits] == ["heavy-sid", "light-sid"]
+    assert hits[0].strength_sum == 6 and hits[0].file_op_count == 2
+    assert hits[1].strength_sum == 2 and hits[1].file_op_count == 1
+    # All hits come from the FTS5 source.
+    assert all(h.source_type == "fts5" for h in hits)
+
+
+def test_search_dir_scope_empty_pattern_matches_all_in_ranked(mock_db, tmp_path):
+    """Empty pattern + dir-scope -- every event in matched sessions
+    surfaces (rest of search() honors empty = match-all semantics)."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "sid-1",
+        messages=[
+            ("USER", None, "anything"),
+            ("AI",   None, "anything else"),
+        ],
+        file_ops=[("wrote", "C:/code/foo/a.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "sid-1", "p", "projects/p/sid-1.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert len(hits) == 2  # both events surfaced
+
+
+def test_search_dir_scope_min_strength_filters_low_signal(mock_db, tmp_path):
+    """``min_strength=3`` keeps only edit/wrote/notebook_edit sessions."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    # session-A: only a Grep (strength=1) -- should be filtered out
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "grep-only-sid",
+        messages=[("USER", None, "needle")],
+        file_ops=[("searched", "C:/code/foo/x.py", 1)],
+    )
+    # session-B: a wrote (strength=3) -- survives
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "wrote-sid",
+        messages=[("USER", None, "needle here")],
+        file_ops=[("wrote", "C:/code/foo/y.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "grep-only-sid", "p",
+        "projects/p/grep-only-sid.jsonl", 1700000000.0,
+    )
+    _insert_session_with_jsonl(
+        mock_db, "wrote-sid", "p",
+        "projects/p/wrote-sid.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "needle", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 3,
+        },
+    ))
+    # Only the wrote session passed the strength filter.
+    assert [h.session_id for h in hits] == ["wrote-sid"]
+
+
+def test_search_dir_scope_skips_session_not_in_main_db(mock_db, tmp_path):
+    """Session present in FTS5 but missing from main sessions table is
+    dropped quietly -- no orphan hit."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "orphan-sid",
+        messages=[("USER", None, "x")],
+        file_ops=[("wrote", "C:/code/foo/a.py", 3)],
+    )
+    # NOTE: no _insert_session_with_jsonl call -- orphan in main DB.
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "x", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert hits == []
+
+
+def test_search_dir_scope_no_fts_dir_returns_empty(mock_db, tmp_path):
+    """Vault with no ``csb-fts/`` directory yet -> empty result, no
+    crash."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    # No csb-fts directory created. dir_scope path should return cleanly.
+    hits = list(search(
+        mock_db, "x", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert hits == []
+
+
+def test_search_dir_scope_carries_strength_into_hit(mock_db, tmp_path):
+    """Hit.strength_sum + Hit.file_op_count populated for dir-scope hits
+    so renderers can show the ``[N file-ops, strength=S]`` suffix."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "sid-1",
+        messages=[("USER", None, "FIND_ME")],
+        file_ops=[
+            ("wrote",  "C:/code/foo/a.py", 3),
+            ("edited", "C:/code/foo/b.py", 3),
+            ("read",   "C:/code/foo/c.py", 2),
+        ],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "sid-1", "p", "projects/p/sid-1.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "FIND_ME", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert len(hits) == 1
+    assert hits[0].strength_sum == 8
+    assert hits[0].file_op_count == 3
+
+
+def test_search_dir_scope_non_dir_hits_leave_strength_at_zero(mock_db, tmp_path):
+    """A regular (non-dir-scope) search Hit keeps strength_sum=0 /
+    file_op_count=0 so the renderer suppresses the suffix."""
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "needle")])
+    _insert_session(mock_db, "sess-1", "test", "proj")
+    _insert_source(mock_db, "sess-1", "proj", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "needle"))
+    assert len(hits) == 1
+    assert hits[0].strength_sum == 0
+    assert hits[0].file_op_count == 0
+
+
+# ── v0.3.5: transcript_path resolution ────────────────────────────────
+
+
+def test_best_transcript_path_prefers_convo():
+    """convo > sesslog > jsonl in the resolver preference."""
+    from claude_session_backup.search import _best_transcript_path
+
+    class _Row(dict):
+        def keys(self): return super().keys()
+        def __getitem__(self, k): return super().__getitem__(k)
+
+    source_rows = [
+        _Row(source_type="jsonl",   source_path="/path/x.jsonl"),
+        _Row(source_type="convo",   source_path="/path/x.convo.log"),
+        _Row(source_type="sesslog", source_path="/path/x.sesslog.log"),
+    ]
+    session_row = _Row(jsonl_path="projects/p/x.jsonl")
+    assert _best_transcript_path(
+        source_rows, session_row, claude_dir=None,
+    ) == "/path/x.convo.log"
+
+
+def test_best_transcript_path_falls_through_to_sesslog():
+    """No convo row -> sesslog wins."""
+    from claude_session_backup.search import _best_transcript_path
+
+    class _Row(dict):
+        def keys(self): return super().keys()
+        def __getitem__(self, k): return super().__getitem__(k)
+
+    source_rows = [
+        _Row(source_type="sesslog", source_path="/path/x.sesslog.log"),
+        _Row(source_type="jsonl",   source_path="/path/x.jsonl"),
+    ]
+    session_row = _Row(jsonl_path="projects/p/x.jsonl")
+    assert _best_transcript_path(
+        source_rows, session_row, claude_dir=None,
+    ) == "/path/x.sesslog.log"
+
+
+def test_best_transcript_path_falls_back_to_sessions_jsonl(tmp_path):
+    """No session_sources rows -> resolve sessions.jsonl_path against
+    claude_dir (the FTS5-only session case)."""
+    from claude_session_backup.search import _best_transcript_path
+
+    class _Row(dict):
+        def keys(self): return super().keys()
+        def __getitem__(self, k): return super().__getitem__(k)
+
+    session_row = _Row(jsonl_path="projects/p/abc.jsonl")
+    out = _best_transcript_path([], session_row, claude_dir=tmp_path)
+    assert out == str(tmp_path / "projects/p/abc.jsonl")
+
+
+def test_best_transcript_path_returns_none_when_nothing_available():
+    """No source_rows, no claude_dir -> nothing to return."""
+    from claude_session_backup.search import _best_transcript_path
+
+    class _Row(dict):
+        def keys(self): return super().keys()
+        def __getitem__(self, k): return super().__getitem__(k)
+
+    session_row = _Row(jsonl_path="projects/p/x.jsonl")
+    assert _best_transcript_path(
+        [], session_row, claude_dir=None,
+    ) is None
+
+
+def test_search_fts5_hit_populates_transcript_path_from_convo(
+    mock_db, tmp_path
+):
+    """An FTS5 hit yields Hit.transcript_path pointing at the session's
+    .convo log (or sesslog / jsonl, in preference order), NOT at the
+    per-project FTS5 DB. Closes the v0.3.5 --files-only parity gap."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    sid = "fff44444-4444-4444-4444-444444444444"
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "find the OAUTH phrase")],
+        jsonl_mtime=1700000000.0,
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 1700000000.0,
+    )
+    # Convo file recorded -> transcript_path should point HERE, not at
+    # the FTS5 DB.
+    convo_path = str(tmp_path / "fake.convo.log")
+    _insert_source(mock_db, sid, project, "convo", convo_path)
+    _insert_source(mock_db, sid, project, "jsonl",
+                   str(tmp_path / "fake.jsonl"))
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "OAUTH", source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert len(hits) == 1
+    assert hits[0].transcript_path == convo_path  # NOT the .db path
+    assert hits[0].source_path.endswith(".db")    # source_path stays honest
+
+
+def test_search_fts5_hit_falls_back_to_jsonl_when_no_convo(
+    mock_db, tmp_path
+):
+    """No convo/sesslog rows -> transcript_path falls back to the
+    sessions.jsonl_path resolved against claude_dir."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    sid = "fff55555-5555-5555-5555-555555555555"
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "find the OAUTH phrase")],
+        jsonl_mtime=1700000000.0,
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 1700000000.0,
+    )
+    # NO _insert_source calls -- pure FTS5-indexed session.
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "OAUTH", source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert len(hits) == 1
+    expected = str(claude_dir / jsonl_relpath)
+    assert hits[0].transcript_path == expected
+
+
+def test_search_file_based_hit_transcript_path_matches_source_path(
+    mock_db, tmp_path
+):
+    """For convo/sesslog/jsonl dispatch hits, transcript_path should
+    equal source_path -- the same file the dispatcher walked."""
+    convo = _write_convo(tmp_path, [
+        ("2026-05-16 10:00:00", "USER", "the oauth marker"),
+    ])
+    _insert_session(mock_db, "sess-1", "test", "proj")
+    _insert_source(mock_db, "sess-1", "proj", "convo", str(convo))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "oauth"))
+    assert len(hits) == 1
+    assert hits[0].transcript_path == hits[0].source_path
+    assert hits[0].source_type == "convo"
+
+
+def test_search_dir_scope_hit_populates_transcript_path(mock_db, tmp_path):
+    """Dir-scope dispatcher resolves transcript_path the same way --
+    --files-only with -d should return navigable files, not DB paths."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "sid-tp",
+        messages=[("USER", None, "needle")],
+        file_ops=[("wrote", "C:/code/foo/a.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "sid-tp", "p", "projects/p/sid-tp.jsonl", 1700000000.0,
+    )
+    sesslog_path = str(tmp_path / "fake.sesslog.log")
+    _insert_source(mock_db, "sid-tp", "p", "sesslog", sesslog_path)
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "needle", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert len(hits) == 1
+    assert hits[0].transcript_path == sesslog_path
+    # source_path is still the DB (honest about dispatch)
+    assert hits[0].source_path.endswith(".db")
+
+
+# ── v0.3.5: --only-aware limit cap ────────────────────────────────────
+
+
+def test_cap_hits_by_sessions_keeps_all_hits_of_first_n_sessions():
+    """With unit=sessions, --limit N keeps every hit from the first N
+    distinct session_ids and drops the rest."""
+    from claude_session_backup.search import cap_hits_by_output_unit
+    hits = [
+        Hit(session_id="A", session_name="a", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/a.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+        Hit(session_id="A", session_name="a", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/a.log", line_num=2, role="AI",
+            timestamp=None, matched_text="x"),
+        Hit(session_id="B", session_name="b", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/b.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+        Hit(session_id="C", session_name="c", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/c.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+    ]
+    capped = cap_hits_by_output_unit(hits, user_limit=2, unit="sessions")
+    # Keeps both A hits and the B hit -- 2 distinct sessions.
+    sids = [h.session_id for h in capped]
+    assert sids == ["A", "A", "B"]
+
+
+def test_cap_hits_by_files_keys_on_transcript_path():
+    """With unit=files, the cap keys on Hit.transcript_path (falling back
+    to source_path when transcript_path is None)."""
+    from claude_session_backup.search import cap_hits_by_output_unit
+    hits = [
+        Hit(session_id="A", session_name="a", project="p",
+            last_active_at=None, source_type="fts5",
+            source_path="/a.db", line_num=1, role="USER",
+            timestamp=None, matched_text="x",
+            transcript_path="/a.convo.log"),
+        Hit(session_id="B", session_name="b", project="p",
+            last_active_at=None, source_type="fts5",
+            source_path="/b.db", line_num=1, role="USER",
+            timestamp=None, matched_text="x",
+            transcript_path="/a.convo.log"),  # SAME transcript as A!
+        Hit(session_id="C", session_name="c", project="p",
+            last_active_at=None, source_type="fts5",
+            source_path="/c.db", line_num=1, role="USER",
+            timestamp=None, matched_text="x",
+            transcript_path="/c.convo.log"),
+    ]
+    capped = cap_hits_by_output_unit(hits, user_limit=1, unit="files")
+    # Only the unique transcript "/a.convo.log" survives -- both A and B
+    # share it, but the cap=1 stops before adding C's distinct file.
+    paths = [h.transcript_path for h in capped]
+    assert paths == ["/a.convo.log", "/a.convo.log"]
+
+
+def test_cap_hits_by_unit_invalid_unit_returns_unchanged():
+    """An unrecognized unit returns the input list unchanged."""
+    from claude_session_backup.search import cap_hits_by_output_unit
+    hits = [
+        Hit(session_id="A", session_name="a", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/a.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+    ]
+    assert cap_hits_by_output_unit(hits, 5, unit="bogus") == hits
+
+
+def test_cap_hits_by_unit_limit_zero_keeps_nothing():
+    """user_limit=0 means zero output rows -> empty list."""
+    from claude_session_backup.search import cap_hits_by_output_unit
+    hits = [
+        Hit(session_id="A", session_name="a", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/a.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+    ]
+    assert cap_hits_by_output_unit(hits, 0, unit="sessions") == []
+
+
+def test_cap_hits_by_unit_limit_exceeds_available():
+    """user_limit larger than the number of distinct units returns all
+    hits (no early break)."""
+    from claude_session_backup.search import cap_hits_by_output_unit
+    hits = [
+        Hit(session_id="A", session_name="a", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/a.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+        Hit(session_id="B", session_name="b", project="p",
+            last_active_at=None, source_type="convo",
+            source_path="/b.log", line_num=1, role="USER",
+            timestamp=None, matched_text="x"),
+    ]
+    assert cap_hits_by_output_unit(hits, 99, unit="sessions") == hits
+
+
+def test_search_fts5_regex_bypasses_match_and_finds_hits(mock_db, tmp_path):
+    """Regression for the v0.3.3 bug exposed by v0.3.5 dir-scope:
+    FTS5 MATCH doesn't understand regex syntax (``\\d``, ``|``, ``?``).
+    With ``regex=True`` we must bypass MATCH and do a full-session scan
+    so the Python regex matcher actually gets to filter, otherwise zero
+    candidates ever surface and the user sees an empty result for what
+    is clearly a matching pattern."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    sid = "fff66666-6666-6666-6666-666666666666"
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[
+            ("USER", None, "talk about FTS5 indexing"),
+            ("AI",   None, "yes the fts5 backend is fast"),
+        ],
+        jsonl_mtime=1700000000.0,
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 1700000000.0,
+    )
+    mock_db.commit()
+
+    # regex='FTS\\d?|fts5' should match BOTH messages.
+    hits = list(search(
+        mock_db, r"FTS\d?|fts5",
+        regex=True, source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert len(hits) == 2
+    # Same query with regex=False (literal) doesn't have regex syntax in
+    # the text -- should only match the literal "FTS5" message
+    hits_lit = list(search(
+        mock_db, r"FTS\d?|fts5",
+        regex=False, source_override="fts5", claude_dir=claude_dir,
+    ))
+    assert len(hits_lit) == 0  # literal pattern absent from corpus
+
+
+def test_search_dir_scope_regex_bypasses_match(mock_db, tmp_path):
+    """Same regex-bypass fix applies to the dir-scope FTS5 dispatch."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "rx-sid",
+        messages=[("USER", None, "talk about FTS5 indexing")],
+        file_ops=[("wrote", "C:/code/foo/a.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "rx-sid", "p",
+        "projects/p/rx-sid.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, r"FTS\d?|fts5",
+        regex=True, claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert len(hits) == 1
+    assert "FTS5" in hits[0].matched_text
+
+
+def test_search_dir_scope_excludes_descendants_with_folder_only(mock_db, tmp_path):
+    """``include_descendants=False`` (-D) drops sessions whose only
+    matches are inside subdirectories."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    # session-A only touches subdir files -- excluded under -D
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "subdir-sid",
+        messages=[("USER", None, "needle")],
+        file_ops=[("wrote", "C:/code/foo/sub/deep.py", 3)],
+    )
+    # session-B touches an immediate-child file -- survives -D
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "top-sid",
+        messages=[("USER", None, "needle here")],
+        file_ops=[("wrote", "C:/code/foo/top.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "subdir-sid", "p",
+        "projects/p/subdir-sid.jsonl", 1700000000.0,
+    )
+    _insert_session_with_jsonl(
+        mock_db, "top-sid", "p",
+        "projects/p/top-sid.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "needle", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": False,
+            "min_strength": 1,
+        },
+    ))
+    assert [h.session_id for h in hits] == ["top-sid"]

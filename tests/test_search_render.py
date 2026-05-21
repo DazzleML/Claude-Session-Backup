@@ -417,3 +417,106 @@ def test_full_info_level0_no_blank_line_before_first_hit(capsys):
     non_empty = [ln for ln in lines if ln.strip()]
     assert len(non_empty) >= 2
     assert "L1 " in non_empty[1]
+
+
+# ── v0.3.5: query-match highlight helper ──────────────────────────────
+
+
+def test_highlight_wraps_literal_match_in_bold_green():
+    """Literal pattern occurrences get bold-green ANSI codes around them."""
+    from claude_session_backup.search_render import _highlight
+    out = _highlight(
+        "find the oauth bug in oauth flow", "oauth",
+        regex=False, case_sensitive=False, enabled=True,
+    )
+    assert out.count("\033[1;32m") == 2
+    assert out.count("\033[0m") == 2
+    assert "find the " in out and " bug in " in out and " flow" in out
+
+
+def test_highlight_disabled_returns_text_unchanged():
+    """``enabled=False`` is a no-op even with a valid pattern."""
+    from claude_session_backup.search_render import _highlight
+    plain = "find the oauth bug"
+    assert _highlight(
+        plain, "oauth", regex=False, case_sensitive=False, enabled=False,
+    ) == plain
+
+
+def test_highlight_empty_pattern_returns_text_unchanged():
+    """Empty / None pattern is a no-op -- highlighting every char would
+    be visual garbage when the user passed an empty query for
+    'match all events in this session' semantics."""
+    from claude_session_backup.search_render import _highlight
+    plain = "find the oauth bug"
+    assert _highlight(
+        plain, "", regex=False, case_sensitive=False, enabled=True,
+    ) == plain
+    assert _highlight(
+        plain, None, regex=False, case_sensitive=False, enabled=True,
+    ) == plain
+
+
+def test_highlight_case_sensitive_skips_wrong_case():
+    """``case_sensitive=True`` makes uppercase pattern miss lowercase match."""
+    from claude_session_backup.search_render import _highlight
+    out = _highlight(
+        "find the oauth bug", "OAUTH",
+        regex=False, case_sensitive=True, enabled=True,
+    )
+    assert "\033[1;32m" not in out
+    assert out == "find the oauth bug"
+
+
+def test_highlight_regex_alternation_wraps_each_branch():
+    """Regex mode supports alternation and other re features."""
+    from claude_session_backup.search_render import _highlight
+    out = _highlight(
+        "alpha bravo charlie", "alpha|charlie",
+        regex=True, case_sensitive=False, enabled=True,
+    )
+    assert out.count("\033[1;32m") == 2
+
+
+def test_highlight_invalid_regex_falls_back_to_plain():
+    """Malformed regex returns text plain instead of crashing the render."""
+    from claude_session_backup.search_render import _highlight
+    out = _highlight(
+        "abc", "[",
+        regex=True, case_sensitive=False, enabled=True,
+    )
+    assert out == "abc"
+
+
+def test_highlight_literal_treats_metacharacters_as_literal():
+    """Literal mode escapes regex metacharacters internally so
+    ``oauth.flow`` only matches the literal sequence, not ``oauthXflow``."""
+    from claude_session_backup.search_render import _highlight
+    out = _highlight(
+        "see oauth.flow and oauthXflow", "oauth.flow",
+        regex=False, case_sensitive=False, enabled=True,
+    )
+    assert out.count("\033[1;32m") == 1
+
+
+def test_render_human_highlights_query_in_matched_line(capsys):
+    """End-to-end: render_human propagates query / regex / case_sensitive
+    into in-line highlights inside the matched-text excerpt."""
+    from claude_session_backup.search_render import render_human
+    h = _hit("s1", matched="found the oauth marker")
+    render_human(
+        [h], use_color=True, query="oauth",
+        regex=False, case_sensitive=False,
+    )
+    out = capsys.readouterr().out
+    assert "\033[1;32moauth\033[0m" in out
+
+
+def test_render_human_no_highlight_when_query_none(capsys):
+    """No query -> no bold-green ANSI anywhere in the output. The leading
+    ``>`` uses ``green`` (not ``bold_green``) so we check the bold variant."""
+    from claude_session_backup.search_render import render_human
+    h = _hit("s1", matched="found the oauth marker")
+    render_human([h], use_color=True, query=None)
+    out = capsys.readouterr().out
+    assert "\033[1;32m" not in out

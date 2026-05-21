@@ -7,7 +7,9 @@ Three output modes:
   shows session name + UUID + project + last-active; each hit prints role
   tag, timestamp, line number, surrounding context (if requested), and
   the matched text. ANSI color is enabled by default (auto-disabled when
-  stdout is not a TTY or ``--no-color`` is passed).
+  stdout is not a TTY or ``--no-color`` is passed). Occurrences of the
+  user's query are highlighted in bold green inside the matched line
+  (and context lines, when they happen to contain the query too).
 - **--files-only**: one line per unique source path, no excerpts.
 - **--json**: one JSON object per hit, newline-delimited (jq-friendly).
 
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from typing import Iterable
 
@@ -51,6 +54,10 @@ _ANSI = {
     # Session-name style: bold cyan to match csb list / csb scan's
     # session-name convention (timeline.py uses "bold cyan" via Rich).
     "bold_cyan": "\033[1;36m",
+    # Query-match highlight: bold green. Used to mark every occurrence
+    # of the user's pattern inside the matched line (and context lines
+    # where it happens to appear).
+    "bold_green": "\033[1;32m",
 }
 
 
@@ -85,6 +92,45 @@ def _truncate(text: str, max_len: int) -> str:
     if len(text) > max_len:
         return text[:max_len] + " ..."
     return text
+
+
+def _highlight(
+    text: str,
+    pattern: str | None,
+    regex: bool,
+    case_sensitive: bool,
+    enabled: bool,
+) -> str:
+    """Wrap every occurrence of ``pattern`` in ``text`` with bold-green ANSI.
+
+    Returns ``text`` unchanged when:
+      - colors are disabled (``enabled=False``)
+      - ``pattern`` is None or empty
+      - the regex (in regex mode) fails to compile -- render plain
+        rather than crash on a malformed pattern at render time
+
+    Case sensitivity mirrors the search itself: literal mode is
+    case-insensitive by default (``re.IGNORECASE``); ``-s`` flips it.
+    Regex mode follows the same rule -- the pattern's own ``(?i)`` /
+    ``(?-i)`` inline flags compose normally.
+
+    Call AFTER any truncation, never before: ANSI codes embedded in a
+    string change its byte length, so truncation would slice through
+    escape sequences.
+    """
+    if not enabled or not pattern:
+        return text
+    flags = 0 if case_sensitive else re.IGNORECASE
+    if regex:
+        try:
+            compiled = re.compile(pattern, flags)
+        except re.error:
+            return text
+    else:
+        compiled = re.compile(re.escape(pattern), flags)
+    on = _ANSI["bold_green"]
+    off = _ANSI["reset"]
+    return compiled.sub(lambda m: f"{on}{m.group(0)}{off}", text)
 
 
 # ── Renderers ─────────────────────────────────────────────────────────
@@ -189,6 +235,9 @@ def render_human(
     shortid: bool = False,
     full_info: int = 0,
     cleanup_days: int = 0,
+    query: str | None = None,
+    regex: bool = False,
+    case_sensitive: bool = False,
 ) -> None:
     """Group-by-session human-readable output.
 
@@ -243,6 +292,18 @@ def render_human(
             f"{_c('dim', '(' + first.project + ')', use_color)}  "
             f"{last_label}"
         )
+        # v0.3.5: append the dir-scope ranking signal when present.
+        # ``strength_sum > 0`` distinguishes a dir-scope hit (Hit was
+        # produced by _search_dir_scope) from a normal hit (those rows
+        # leave the fields at their default 0).
+        if first.strength_sum > 0:
+            ops_plural = "" if first.file_op_count == 1 else "s"
+            hdr += "  " + _c(
+                "dim",
+                f"[{first.file_op_count} file-op{ops_plural}, "
+                f"strength={first.strength_sum}]",
+                use_color,
+            )
         print(hdr)
         if full_info >= 1:
             extra = _full_info_line(first, cleanup_days, use_color)
@@ -264,29 +325,46 @@ def render_human(
             # Context above
             for ev in h.context_above:
                 sub_role = _c(_role_color(ev.role), f"[{ev.role}]", use_color)
-                print(f"    {_c('dim', sub_role, use_color)} {_truncate(ev.text, _CONTEXT_MAX)}")
+                ctx_text = _truncate(ev.text, _CONTEXT_MAX)
+                ctx_text = _highlight(
+                    ctx_text, query, regex, case_sensitive, use_color,
+                )
+                print(f"    {_c('dim', sub_role, use_color)} {ctx_text}")
 
             # Matched line
             text = h.matched_text if full_match else _truncate(h.matched_text, _MATCH_MAX)
+            text = _highlight(text, query, regex, case_sensitive, use_color)
             print(f"    {_c('green', '>', use_color)} {text}")
 
             # Context below
             for ev in h.context_below:
                 sub_role = _c(_role_color(ev.role), f"[{ev.role}]", use_color)
-                print(f"    {_c('dim', sub_role, use_color)} {_truncate(ev.text, _CONTEXT_MAX)}")
+                ctx_text = _truncate(ev.text, _CONTEXT_MAX)
+                ctx_text = _highlight(
+                    ctx_text, query, regex, case_sensitive, use_color,
+                )
+                print(f"    {_c('dim', sub_role, use_color)} {ctx_text}")
 
             # Spacer between hits in the same session
             print()
 
 
 def render_files_only(hits: list[Hit]) -> None:
-    """One line per unique source path, sorted by appearance order."""
+    """One line per unique transcript file, sorted by appearance order.
+
+    Prefers ``Hit.transcript_path`` (the human-navigable source resolved
+    by ``search()`` -- convo > sesslog > jsonl, FTS5 DBs deliberately
+    excluded). Falls back to ``Hit.source_path`` if for some reason
+    transcript_path didn't get populated -- preserves the v0.3.4
+    behavior for any hit shape that bypassed the v0.3.5 resolver.
+    """
     seen: set[str] = set()
     for h in hits:
-        if h.source_path in seen:
+        path = h.transcript_path or h.source_path
+        if path in seen:
             continue
-        seen.add(h.source_path)
-        print(h.source_path)
+        seen.add(path)
+        print(path)
 
 
 def render_sessions_only(
@@ -338,6 +416,16 @@ def render_sessions_only(
             f"{_c('dim', '(' + first.project + ')', use_color)}  "
             f"-- {_c('yellow', f'{n} {hit_word}', use_color)}"
         )
+        # v0.3.5: dir-scope ranking signal -- mirror the suffix the
+        # human-mode renderer prints so users can correlate the two.
+        if first.strength_sum > 0:
+            ops_plural = "" if first.file_op_count == 1 else "s"
+            head_line += "  " + _c(
+                "dim",
+                f"[{first.file_op_count} file-op{ops_plural}, "
+                f"strength={first.strength_sum}]",
+                use_color,
+            )
         print(head_line)
         if full_info >= 1:
             extra = _full_info_line(first, cleanup_days, use_color)
@@ -393,6 +481,19 @@ def render_json(hits: Iterable[Hit]) -> None:
                 for e in h.context_below
             ],
         }
+        # v0.3.5: only emit dir-scope ranking fields when populated --
+        # keeps the JSON shape stable for non-dir-scope callers.
+        if h.strength_sum > 0:
+            obj["strength_sum"] = h.strength_sum
+            obj["file_op_count"] = h.file_op_count
+        # v0.3.5: transcript_path is the navigable source file for this
+        # session. Emitted whenever non-None (almost always) so JSON
+        # consumers can read it directly without falling back to
+        # source_path. For file-based dispatcher hits it equals
+        # source_path; for FTS5 hits it resolves to the convo/sesslog/
+        # jsonl that the user can actually open.
+        if h.transcript_path is not None:
+            obj["transcript_path"] = h.transcript_path
         print(json.dumps(obj, ensure_ascii=False))
 
 
@@ -406,15 +507,20 @@ def render(
     query: str | None = None,
     full_info: int = 0,
     cleanup_days: int = 0,
+    regex: bool = False,
+    case_sensitive: bool = False,
 ) -> None:
     """Top-level dispatcher used by ``cmd_search``.
 
     Modes:
-      - "human" (default): grouped excerpts with role/timestamp/context
-      - "json": NDJSON, one hit per line (jq-friendly)
-      - "files": unique source paths only
+      - "human" (default): grouped excerpts with role/timestamp/context.
+        ``query`` + ``regex`` + ``case_sensitive`` drive in-line bold-green
+        highlighting of every match inside excerpt lines.
+      - "json": NDJSON, one hit per line (jq-friendly). No highlighting --
+        downstream tools parse the matched_text verbatim.
+      - "files": unique source paths only. No highlighting.
       - "sessions": per-session summary with hit counts (uses ``query`` to
-        compose a drill-in hint at the bottom)
+        compose a drill-in hint at the bottom).
 
     ``full_info`` adds 'started: <date> (purge in Nd)' second header line
     to human and sessions modes. Has no effect on json / files modes.
@@ -435,4 +541,5 @@ def render(
         render_human(
             hits, use_color=use_color, full_match=full_match, shortid=shortid,
             full_info=full_info, cleanup_days=cleanup_days,
+            query=query, regex=regex, case_sensitive=case_sensitive,
         )
