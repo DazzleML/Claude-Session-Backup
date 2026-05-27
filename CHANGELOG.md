@@ -9,6 +9,28 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.6] -- 2026-05-27 (prealpha)
+
+Fixes a silent, indefinite backup-freeze bug. The backup lock (`.csb-backup.lock`) only checked whether *some* process with the recorded PID was alive -- with no defense against PID reuse. When a backup died without releasing its lock (a computer restart mid-backup), the OS recycled its PID to another long-lived process, the lock looked permanently held, and **every subsequent backup silently skipped** -- freezing the session index so new sessions became invisible to `csb search`. Observed live: a backup's PID was reused by `WindowsTerminal.exe` after a restart and backups silently skipped for two days. 602/602 tests pass (was 589 at v0.3.5; +13 across the rewritten `test_lockfile.py`).
+
+### Fixed
+- **PID-reuse staleness in `lockfile.py`** -- the lock now records process *identity*, not just a number, and reclaims a stale lock when ANY of four signals fire: (1) the PID is not alive; (2) the PID is alive but its executable name differs from what was recorded (reuse by a different program); (3) the PID is alive but its start-time differs (reuse by the same program name); (4) the lock is older than `STALE_LOCK_AGE_SECONDS` (30 min) -- a portable backstop for hung backups and platforms where identity can't be read. The first three reclaim instantly; the age backstop guarantees eventual recovery everywhere.
+- **Backup-skip is no longer silent** -- a genuine concurrent run now prints `Another csb backup is running (PID N, started Nm ago). Skipping.`, and reclaiming a stale lock prints `csb: reclaimed stale backup lock (PID N, <reason>) -- a prior backup was interrupted`. The original failure was invisible; this makes both the benign and the recovered cases legible. Suppressed under `--quiet` (hook / cron contract preserved).
+
+### Changed
+- **Lock file format is now a JSON object** -- `{"pid", "acquired_at", "proc_name", "start_time", "host"}` instead of a bare PID line. A non-object / non-JSON lock (including the old bare-PID format) reads as corrupted and is safely reclaimed.
+- **`backup_lock(claude_dir, *, quiet=False)`** gained a `quiet` keyword so it owns the skip / reclaim messaging (it has the lock's identity + age); `cmd_backup` no longer prints its own skip line.
+- **Lock acquisition does a readback-verify** -- after writing our identity we re-read the lock and yield False if another run won the file, giving a single winner under the (low-contention) race between two backups reclaiming the same stale lock.
+
+### Added
+- **Best-effort, dependency-free process introspection** in `lockfile.py`: `_proc_name(pid)` (Windows `QueryFullProcessImageNameW`; Linux `/proc/<pid>/comm`) and `_proc_start_time(pid)` (Windows `GetProcessTimes`; Linux `ctime` of `/proc/<pid>`). Both return `None` on unsupported platforms or any failure, degrading to the age backstop. Windows ctypes calls use explicit `HANDLE` arg/return types for Win64 correctness.
+- **13 net-new lockfile tests** covering reuse-by-different-name, reuse-by-same-name-newer-start, genuine-live (must NOT reclaim), hung-under-threshold (skip) vs hung-over-threshold (reclaim), identity-unavailable age fallback, clock-skew negative-age guard, reclaim/skip/quiet messaging, readback-verify race loser, and release-only-when-owned.
+
+### NO CHANGE (with rationale)
+- **`scanner.py` / `metadata.py` / `index.py`** -- the indexing path was never broken; it simply never ran while the lock was wedged. No change needed once the lock self-heals.
+- **`search.py`** -- the search engine was never broken; the missing session was unindexed (invisible to `search()`'s session enumeration), not mis-searched.
+- **Hook scripts (`hooks/`)** -- they invoke `csb --quiet backup`, routing through the same `cmd_backup` lock; the fix applies to unattended runs (where silent-skip-forever was most damaging) with no hook change.
+
 ## [0.3.5] -- 2026-05-21 (prealpha)
 
 Directory-scope search: `csb search -d <path>` (and `-D` for folder-only) ranks every indexed session that touched files under PATH by SUM(strength) of those file-operations, then runs FTS5 MATCH for the user's pattern within each ranked session. The killer-use-case feature of the v0.3.x track -- "I'm in folder X, which past sessions actually worked on it, and what did they say about Y?" -- finally lands. New `--min-strength {1,2,3}` filter trims out low-signal rows (Grep probes, read-only). Two small ergonomic refinements ride along: matched query terms now render in bold green inside excerpt lines, and the `--all` / `--deleted` flag pair is unified into a single `--deleted {only,all}` argument. 571/571 tests pass (was 547 at v0.3.4; +24 net new).
@@ -329,7 +351,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.6...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

@@ -15,13 +15,13 @@ To bump version: python scripts/sync-versions.py --bump patch
 # Version components - edit these for version bumps
 MAJOR = 0
 MINOR = 3
-PATCH = 5
+PATCH = 6
 PHASE = ""  # Per-MINOR feature set: None, "alpha", "beta", "rc1", etc.
 PRE_RELEASE_NUM = 1  # PEP 440 pre-release number (e.g., a1, b2)
 PROJECT_PHASE = "prealpha"  # Project-wide: "prealpha", "alpha", "beta", "stable"
 
 # Auto-updated by git hooks - do not edit manually
-__version__ = "0.3.5_main_24-20260518-a8600885"
+__version__ = "0.3.6_main_25-20260527-0c4f09d2"
 __app_name__ = "claude-session-backup"
 
 

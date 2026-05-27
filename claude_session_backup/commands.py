@@ -100,12 +100,12 @@ def cmd_backup(args) -> int:
     claude_dir = config["claude_dir"]
     quiet = getattr(args, "quiet", False)
 
-    # Acquire lock (prevent concurrent cron runs)
-    with backup_lock(claude_dir) as acquired:
+    # Acquire lock (prevent concurrent cron runs). backup_lock now owns the
+    # skip / stale-reclaim messaging (it has the lock's identity + age), so
+    # we just honor the acquired flag here.
+    with backup_lock(claude_dir, quiet=quiet) as acquired:
         if not acquired:
-            if not quiet:
-                print("Another csb backup is already running. Skipping.", file=sys.stderr)
-            return 0  # Not an error -- just skip
+            return 0  # Not an error -- another instance is running
         return _cmd_backup_inner(args, config, claude_dir, quiet)
 
 
