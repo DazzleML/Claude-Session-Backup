@@ -9,6 +9,30 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.7] -- 2026-05-28 (prealpha)
+
+Durable "backups just happen" -- adds a `SessionStart` backup hook and runs all hook-triggered backups in the **background**, so the session index stays fresh after exits, resumes, and `/fork` / `/rewind`. Fixes the root cause of a session that was unsearchable after a `/rewind`: csb only hooked PreCompact + SessionEnd, and SessionEnd is hard-killed by Claude Code's process-tree teardown before it finishes -- leaving the just-ended (or just-forked) session un-indexed. 621/621 tests pass (was 602 at v0.3.6; +19 in a new `tests/test_backup_hook.py`).
+
+### Added
+- **`SessionStart` backup hook** (`hooks/hooks.json`). Claude Code fires `SessionStart` on `startup` / `resume` / `clear` -- and crucially on `/fork`, `/branch`, and `/rewind`-continue, which enter the new forked session via `source="resume"` (verified against the client source: `createFork()` -> `context.resume(..., 'fork')` -> `processSessionStartHooks('resume')`; the SessionStart `source` enum is `startup|resume|clear|compact`). So a fork is now backed up the instant you enter it, in a live session -- not racing teardown. This is the trigger that was missing and the direct fix for the "forked session not searchable" report.
+- **`_should_run_backup(hook_event_name, source)`** in `hooks/scripts/backup-hook.py` -- the source-aware decision. Skips ONLY `SessionStart` with `source="compact"` (PreCompact already captured the pre-compaction transcript; backing up again would be redundant and contend for the lock at compaction time). Everything else runs: SessionStart startup/resume/clear, PreCompact, SessionEnd, and manual invocation.
+- **Per-event background-run log** at `~/.claude/csb-logs/backup-<event>.log` -- every fire records a `start background backup` or `skip` line so a background run is never silent.
+- **`tests/test_backup_hook.py`** (19 tests) -- the decision matrix (startup/resume/clear -> run, compact -> skip, PreCompact/SessionEnd/manual -> run), stdin parsing tolerance (valid / empty / garbage / non-dict / TTY guard), and `main()` spawn behavior with `subprocess.Popen` mocked (skips on compact, spawns on resume/SessionEnd/manual, stdin=DEVNULL, and never `.wait()`s).
+
+### Changed
+- **`hooks/scripts/backup-hook.py` now fires the backup in the background and returns immediately** (`subprocess.Popen`, no `.wait()`), replacing the blocking `subprocess.run(..., timeout=120)`. The hook no longer blocks the session: at SessionStart/PreCompact the session stays alive so the background backup completes; at SessionEnd it's best-effort (if teardown kills it, the next SessionStart reclaims the lock via the v0.3.6 logic and catches up). Reads the hook JSON from stdin (UTF-8, TTY-guarded, tolerant of empty/garbage) to get `hook_event_name` + `source`.
+- **`tests/test_hook.py`** updated for the new contract: the subprocess smoke test now feeds a `SessionStart/compact` payload (skip path -> clean exit, no real backup side effect), and the old "has a timeout" assertion is replaced by a "backgrounds via Popen, doesn't block on subprocess.run" assertion.
+
+### Deferred (noted, not built)
+- OS advisory lock in `lockfile.py` (the v0.3.6 PID-reuse reclaim + the new SessionStart catch-up already make backups reliable; advisory locking would only further prevent transient leaks).
+- Targeted `csb backup --session-id <id>` and an index/commit job split -- unnecessary now that full backups complete on the live-session triggers.
+- Fork-awareness / parent_session_id metadata (#15, #22) remains a separate epic; this release makes forks *get backed up*, not *modeled as forks*.
+
+### NO CHANGE (with rationale)
+- **`commands.py` `cmd_backup`** -- still a full vault scan + two git commits. The fix is *when/how* the backup is invoked (background, on more triggers), not *what* it does. "Get everything," not targeted.
+- **`lockfile.py`** -- v0.3.6 reclaim is the safety net for any SessionEnd backup the teardown still kills; unchanged.
+- **`run-hook.mjs`** -- still `spawnSync` to `backup-hook.py`, which now returns immediately after the background spawn, so the Node layer no longer blocks either.
+
 ## [0.3.6] -- 2026-05-27 (prealpha)
 
 Fixes a silent, indefinite backup-freeze bug. The backup lock (`.csb-backup.lock`) only checked whether *some* process with the recorded PID was alive -- with no defense against PID reuse. When a backup died without releasing its lock (a computer restart mid-backup), the OS recycled its PID to another long-lived process, the lock looked permanently held, and **every subsequent backup silently skipped** -- freezing the session index so new sessions became invisible to `csb search`. Observed live: a backup's PID was reused by `WindowsTerminal.exe` after a restart and backups silently skipped for two days. 602/602 tests pass (was 589 at v0.3.5; +13 across the rewritten `test_lockfile.py`).
@@ -351,7 +375,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.7...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

@@ -1,0 +1,157 @@
+"""Tests for the SessionStart/PreCompact/SessionEnd backup hook (v0.3.7).
+
+The hook is a standalone script (hooks/scripts/backup-hook.py), not part of
+the installable package, so we load it via importlib and exercise its pure
+decision + parse functions plus main()'s spawn behavior (with subprocess.Popen
+monkeypatched so no real backup runs).
+"""
+
+import importlib.util
+import io
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+HOOK_PATH = (
+    Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "backup-hook.py"
+)
+
+
+def _load_hook():
+    spec = importlib.util.spec_from_file_location("csb_backup_hook", HOOK_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+bh = _load_hook()
+
+
+class _FakeStdin:
+    def __init__(self, data: bytes):
+        self.buffer = io.BytesIO(data)
+
+    def isatty(self):
+        return False
+
+
+def _set_stdin(monkeypatch, text: str):
+    monkeypatch.setattr(sys, "stdin", _FakeStdin(text.encode("utf-8")))
+
+
+# ── _should_run_backup: the trigger matrix ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "event,source,expected",
+    [
+        ("SessionStart", "startup", True),
+        ("SessionStart", "resume", True),   # /fork, /branch, /rewind-continue
+        ("SessionStart", "clear", True),
+        ("SessionStart", "compact", False),  # PreCompact already covered it
+        ("SessionStart", "", True),          # unknown source -> run (safe)
+        ("PreCompact", "", True),
+        ("SessionEnd", "", True),
+        ("", "", True),                      # manual invocation
+    ],
+)
+def test_should_run_backup(event, source, expected):
+    assert bh._should_run_backup(event, source) is expected
+
+
+# ── _read_hook_input: stdin parsing tolerance ──────────────────────────
+
+
+def test_read_hook_input_valid(monkeypatch):
+    _set_stdin(monkeypatch, json.dumps(
+        {"hook_event_name": "SessionStart", "source": "resume", "extra": 1}
+    ))
+    assert bh._read_hook_input() == ("SessionStart", "resume")
+
+
+def test_read_hook_input_precompact_no_source(monkeypatch):
+    _set_stdin(monkeypatch, json.dumps({"hook_event_name": "PreCompact"}))
+    assert bh._read_hook_input() == ("PreCompact", "")
+
+
+def test_read_hook_input_empty(monkeypatch):
+    _set_stdin(monkeypatch, "")
+    assert bh._read_hook_input() == ("", "")
+
+
+def test_read_hook_input_garbage(monkeypatch):
+    _set_stdin(monkeypatch, "not json at all")
+    assert bh._read_hook_input() == ("", "")
+
+
+def test_read_hook_input_non_dict(monkeypatch):
+    _set_stdin(monkeypatch, "[1, 2, 3]")
+    assert bh._read_hook_input() == ("", "")
+
+
+def test_read_hook_input_tty_returns_empty(monkeypatch):
+    class _Tty:
+        buffer = io.BytesIO(b'{"hook_event_name":"SessionStart"}')
+        def isatty(self):
+            return True
+    monkeypatch.setattr(sys, "stdin", _Tty())
+    # TTY guard: never block on read; treat as manual -> ("", "")
+    assert bh._read_hook_input() == ("", "")
+
+
+# ── main(): spawn behavior (Popen monkeypatched -> no real backup) ─────
+
+
+class _FakePopen:
+    """Records construction; intentionally has NO wait() -- if main() ever
+    waited on the backup, calling it would AttributeError and fail the test,
+    proving the fire-and-don't-wait contract."""
+    calls: list = []
+
+    def __init__(self, cmd, **kwargs):
+        type(self).calls.append((cmd, kwargs))
+
+
+@pytest.fixture
+def captured_popen(monkeypatch, tmp_path):
+    _FakePopen.calls = []
+    monkeypatch.setattr(bh.subprocess, "Popen", _FakePopen)
+    # keep logs out of the real ~/.claude
+    monkeypatch.setattr(bh.Path, "home", lambda: tmp_path)
+    return _FakePopen
+
+
+def test_main_skips_compact_no_spawn(monkeypatch, captured_popen):
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "compact"))
+    bh.main()
+    assert captured_popen.calls == []  # compaction SessionStart never backs up
+
+
+def test_main_spawns_on_resume(monkeypatch, captured_popen):
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "resume"))
+    bh.main()
+    assert len(captured_popen.calls) == 1
+    cmd, kwargs = captured_popen.calls[0]
+    assert cmd[-2:] == ["--quiet", "backup"]
+    assert kwargs.get("stdin") is bh.subprocess.DEVNULL  # can't read hook stdin
+
+
+def test_main_spawns_on_sessionend(monkeypatch, captured_popen):
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", ""))
+    bh.main()
+    assert len(captured_popen.calls) == 1
+
+
+def test_main_spawns_on_manual(monkeypatch, captured_popen):
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("", ""))
+    bh.main()
+    assert len(captured_popen.calls) == 1
+
+
+def test_main_does_not_wait(monkeypatch, captured_popen):
+    """_FakePopen has no .wait(); main() completing proves it never waits."""
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("PreCompact", ""))
+    bh.main()  # would raise AttributeError if main() called .wait()
+    assert len(captured_popen.calls) == 1

@@ -8,24 +8,23 @@ import sys
 from pathlib import Path
 
 
-def test_hook_script_finds_csb():
-    """backup-hook.py should find csb and run without error."""
+def test_hook_script_runs_cleanly():
+    """backup-hook.py should execute end-to-end and exit 0.
+
+    We feed a SessionStart/compact payload so the hook hits the SKIP path --
+    this exercises stdin parsing + the decision logic + clean exit WITHOUT
+    triggering a real background backup of ~/.claude. (Spawn behavior for
+    non-skip inputs is covered with a mocked Popen in test_backup_hook.py.)
+    """
     hook_path = Path(__file__).parent.parent / "hooks" / "scripts" / "backup-hook.py"
     assert hook_path.exists(), f"Hook script not found at {hook_path}"
 
-    # Run the hook script with a --help-like invocation to verify it can
-    # find csb. We use a subprocess to isolate from our test environment.
-    # The script will try to run `csb --quiet backup` which will succeed
-    # (scanning real ~/.claude) or fail gracefully. Either way, the script
-    # itself should exit 0.
     result = subprocess.run(
         [sys.executable, str(hook_path)],
+        input='{"hook_event_name":"SessionStart","source":"compact"}',
         capture_output=True,
         text=True,
-        timeout=120,
-        env={**dict(__import__("os").environ),
-             # Ensure csb is findable via the same Python
-             "PATH": __import__("os").environ.get("PATH", "")},
+        timeout=30,
     )
     # The hook should always exit cleanly (errors go to stderr, not exit code)
     assert result.returncode == 0
@@ -38,11 +37,15 @@ def test_hook_script_has_shebang():
     assert first_line.startswith("#!/usr/bin/env python"), f"Missing shebang: {first_line}"
 
 
-def test_hook_script_has_timeout():
-    """Hook script should have a timeout to prevent hanging."""
+def test_hook_script_backgrounds_backup():
+    """v0.3.7: the hook fires the backup in the background (Popen, no wait)
+    so the session is never blocked -- it must NOT block on the backup."""
     hook_path = Path(__file__).parent.parent / "hooks" / "scripts" / "backup-hook.py"
     content = hook_path.read_text(encoding="utf-8")
-    assert "timeout=" in content, "Hook script should have a timeout parameter"
+    assert "subprocess.Popen" in content, "Hook should spawn the backup via Popen"
+    assert "_should_run_backup" in content, "Hook should have the source-aware decision"
+    # The old blocking `subprocess.run(... timeout=120)` wait is gone.
+    assert "subprocess.run(" not in content, "Hook should not block on subprocess.run"
 
 
 def test_hook_script_has_path_fallback():

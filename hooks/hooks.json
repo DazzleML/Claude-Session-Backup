@@ -1,6 +1,17 @@
 {
-  "description": "Backup hooks for claude-session-backup plugin. Runs csb backup on PreCompact (before lossy compaction) and SessionEnd (on exit).",
+  "description": "Backup hooks for claude-session-backup plugin. Runs csb backup on SessionStart (startup/resume/clear -- catches the previous session and /fork+/rewind), PreCompact (before lossy compaction), and SessionEnd (on exit, best-effort). Backups run in the background so they never block the session; the hook returns immediately.",
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.mjs"
+          }
+        ]
+      }
+    ],
     "PreCompact": [
       {
         "matcher": ".*",
