@@ -155,3 +155,35 @@ def test_main_does_not_wait(monkeypatch, captured_popen):
     monkeypatch.setattr(bh, "_read_hook_input", lambda: ("PreCompact", ""))
     bh.main()  # would raise AttributeError if main() called .wait()
     assert len(captured_popen.calls) == 1
+
+
+# ── _detach_kwargs + detached spawn (v0.3.8: survive teardown, no window) ──
+
+
+def test_detach_kwargs_windows(monkeypatch):
+    monkeypatch.setattr(bh.sys, "platform", "win32")
+    kw = bh._detach_kwargs()
+    # CREATE_NO_WINDOW (0x08000000) | CREATE_NEW_PROCESS_GROUP (0x200).
+    # CREATE_NO_WINDOW => hidden console inherited by git children => no popups
+    # (DETACHED_PROCESS would leave csb consoleless -> each git child pops one).
+    # CREATE_NEW_PROCESS_GROUP => shielded from the teardown Ctrl-C/Break.
+    assert kw == {"creationflags": 0x08000000 | 0x00000200}
+    assert "start_new_session" not in kw
+
+
+def test_detach_kwargs_posix(monkeypatch):
+    monkeypatch.setattr(bh.sys, "platform", "linux")
+    kw = bh._detach_kwargs()
+    assert kw == {"start_new_session": True}
+    assert "creationflags" not in kw
+
+
+def test_main_spawns_detached(monkeypatch, captured_popen):
+    """The spawn must carry detach kwargs so the backup is decoupled from the
+    session's process tree (survives SessionEnd teardown) -- the v0.3.8 fix."""
+    monkeypatch.setattr(bh.sys, "platform", "win32")
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", ""))
+    bh.main()
+    assert len(captured_popen.calls) == 1
+    _cmd, kwargs = captured_popen.calls[0]
+    assert kwargs.get("creationflags") == 0x08000000 | 0x00000200

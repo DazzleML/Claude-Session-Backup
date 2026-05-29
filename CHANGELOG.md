@@ -9,6 +9,22 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.8] -- 2026-05-28 (prealpha)
+
+Makes the **SessionEnd** backup actually complete. v0.3.7 fired the backup in the background but with no detach flags, so Claude Code's process-tree teardown hard-killed it mid-run -- leaving the just-ended session un-indexed until the *next* SessionStart caught up. v0.3.8 spawns the backup **decoupled** from the session's process tree so it survives teardown and finishes on its own, and **without a console window**. Verified live: a real backup completed 12.8s *after* the window closed (rc=0), with the stale lock reclaimed and released cleanly. 624/624 tests pass (was 621 at v0.3.7; +3 in `tests/test_backup_hook.py`).
+
+### Fixed
+- **SessionEnd backup is hard-killed by teardown -> un-indexed session.** The hook now spawns the backup in its own process group that outlives the session: on Windows `CREATE_NEW_PROCESS_GROUP` shields it from the group-wide Ctrl-C/Break sent at teardown, and because the hook returns immediately the backup is orphaned before the kill walks the process tree. On POSIX, `start_new_session=True`. The backup completes regardless of how long it takes (the git commit size is unbounded), so the session is searchable right after exit -- no longer dependent on starting another session to catch up.
+- **A console window flashed on every hook fire (Windows).** The spawn now uses `CREATE_NO_WINDOW` instead of `DETACHED_PROCESS`. A `DETACHED_PROCESS` (consoleless) `csb` made each `git` child it spawns allocate its own console -> popups; `CREATE_NO_WINDOW` gives `csb` one hidden console that all its children inherit -> no window anywhere, on either SessionStart or SessionEnd.
+
+### Added
+- **`_detach_kwargs()`** in `hooks/scripts/backup-hook.py` -- the per-platform spawn-decoupling kwargs (Windows: `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`; POSIX: `start_new_session=True`), applied to the backup `Popen`.
+- **3 tests** in `tests/test_backup_hook.py` -- `_detach_kwargs` per platform (Windows flags / POSIX session) and a `main()` spawn test asserting the detach kwargs are carried.
+
+### NO CHANGE (with rationale)
+- **`SessionStart` still runs a catch-up backup** (not yet reframed to a pure error-detector). v0.3.8 makes SessionEnd reliably complete; reframing SessionStart to *detect and warn* about a missed backup (instead of silently re-running it) is the focused follow-up (v0.3.9), kept separate so this proven durability fix ships on its own.
+- **`commands.py` `cmd_backup`, `lockfile.py`, `run-hook.mjs`** -- unchanged. The fix is purely *how* the backup process is spawned by the hook; the v0.3.6 lock reclaim remains the net for OS-shutdown/logout kills.
+
 ## [0.3.7] -- 2026-05-28 (prealpha)
 
 Durable "backups just happen" -- adds a `SessionStart` backup hook and runs all hook-triggered backups in the **background**, so the session index stays fresh after exits, resumes, and `/fork` / `/rewind`. Fixes the root cause of a session that was unsearchable after a `/rewind`: csb only hooked PreCompact + SessionEnd, and SessionEnd is hard-killed by Claude Code's process-tree teardown before it finishes -- leaving the just-ended (or just-forked) session un-indexed. 621/621 tests pass (was 602 at v0.3.6; +19 in a new `tests/test_backup_hook.py`).
@@ -375,7 +391,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9
