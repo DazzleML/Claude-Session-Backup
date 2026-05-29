@@ -124,7 +124,11 @@ def build_parser():
         "--version", action="version", version=f"%(prog)s {DISPLAY_VERSION}"
     )
 
-    sub = parser.add_subparsers(dest="command", help="Available commands")
+    # metavar="<command>" keeps the usage line clean (a generic placeholder
+    # instead of the full brace list) so internal subcommands registered with
+    # help=SUPPRESS (e.g. `_check`) are hidden from `csb --help` entirely --
+    # both the usage line and the command listing.
+    sub = parser.add_subparsers(dest="command", metavar="<command>", help="Available commands")
 
     # backup
     p_backup = sub.add_parser("backup", help="Scan sessions, update index, git commit")
@@ -423,6 +427,37 @@ def build_parser():
     p_config.add_argument("key", nargs="?", help="Config key to get/set")
     p_config.add_argument("value", nargs="?", help="Value to set")
 
+    # Internal: the SessionStart hook's gap detector. Hidden from `csb --help`
+    # -- it's a hook mechanism, not a user-facing command. We OMIT help= (rather
+    # than help=SUPPRESS, which argparse renders literally as "==SUPPRESS==" for
+    # subparsers): with no help, argparse adds no entry to the command listing,
+    # and the add_subparsers metavar="<command>" keeps it out of the usage line.
+    # description= is independent of help= -- it's shown by `csb _check -h` only,
+    # so a curious user who finds the command gets a real explanation rather
+    # than a bare usage line. The hook reaches it via find_csb() the same way it
+    # reaches `backup`, because the hook's Python may not import the package
+    # directly. Invokable by hand for maintainers / post-crash triage.
+    p_check = sub.add_parser(
+        "_check",
+        description=(
+            "Internal health check used by the SessionStart backup hook. "
+            "Reports sessions whose transcript is newer than the last backup "
+            "scan (or were never indexed) -- i.e. sessions with un-backed-up "
+            "changes. Exit code: 0 = all backed up, 10 = gap(s) found, "
+            "1 = not a git repo. Hidden from `csb --help` because it's a hook "
+            "mechanism, not a user command -- the user-facing view of the same "
+            "data is the `Un-backed-up:` line in `csb status`."
+        ),
+    )
+    _add_common_flags(p_check)
+    p_check.add_argument(
+        "--exclude",
+        action="append",
+        metavar="SESSION_ID",
+        help="full session id to skip (repeatable); e.g. the currently-active "
+             "session, whose JSONL is mid-write and always looks newer",
+    )
+
     return parser
 
 
@@ -475,6 +510,9 @@ def main(argv=None):
     elif args.command == "config":
         from .commands import cmd_config
         return cmd_config(args)
+    elif args.command == "_check":
+        from .commands import cmd_check
+        return cmd_check(args)
 
     return 0
 

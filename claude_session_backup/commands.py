@@ -23,6 +23,7 @@ from .lockfile import backup_lock
 from .index import (
     get_active_session_ids,
     get_all_known_session_ids,
+    get_indexed_mtime,
     get_session,
     get_stats,
     init_schema,
@@ -269,11 +270,16 @@ def cmd_status(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
     stats = get_stats(conn)
+
+    is_repo = is_git_repo(claude_dir)
+    # Per-session "un-backed-up" detection (transcripts newer than the index).
+    # Only meaningful inside a git repo (where backups commit); skip otherwise.
+    unbacked = find_unbacked_sessions(conn, claude_dir) if is_repo else []
     conn.close()
 
     print(f"Claude Session Backup Status")
     print(f"  Claude dir:    {claude_dir}")
-    print(f"  Git repo:      {'yes' if is_git_repo(claude_dir) else 'NO'}")
+    print(f"  Git repo:      {'yes' if is_repo else 'NO'}")
     print(f"  Total sessions: {stats['total_sessions']}")
     print(f"  Active:         {stats['active_sessions']}")
     print(f"  Deleted:        {stats['deleted_sessions']}")
@@ -288,7 +294,7 @@ def cmd_status(args) -> int:
             print(f"    Commit: {scan['git_commit'][:8]}")
 
     # Git status
-    if is_git_repo(claude_dir):
+    if is_repo:
         status = git_status(claude_dir)
         changed = len([l for l in status.split("\n") if l.strip()])
         if changed:
@@ -296,7 +302,106 @@ def cmd_status(args) -> int:
         else:
             print(f"  Working tree: clean")
 
+        # Per-session backup freshness. Counts the live session honestly (its
+        # transcript is mid-write) -> goes to 0 once all sessions close.
+        if not unbacked:
+            print(f"  Un-backed-up:   none")
+        else:
+            n = len(unbacked)
+            print(f"  Un-backed-up:   {n} session"
+                  f"{'s' if n != 1 else ''} (changed since last index -- run `csb backup`)")
+            try:
+                limit = int(config.get("status_unbacked_limit", 20))
+            except (TypeError, ValueError):
+                limit = 20
+            if limit < 0:
+                limit = n  # negative -> show all (matches display_top_folders)
+            for sf, recorded in unbacked[:limit]:
+                why = "never indexed" if recorded is None else "changed since last backup"
+                name = ""
+                if getattr(sf, "name_cache", None):
+                    try:
+                        name = (read_name_cache(sf.name_cache) or "").strip()
+                    except Exception:
+                        name = ""
+                label = f"{name}  " if name else ""
+                print(f"    {sf.session_id[:8]}  {label}({why})")
+            if n > limit:
+                print(f"    + {n - limit} more not shown")
+
     return 0
+
+
+# Exit code for `_check` when un-backed-up sessions are found. Distinct from
+# 1 (error) so callers (the SessionStart hook) can tell "gap" from "broke".
+CHECK_GAP_EXIT = 10
+# mtime slack (seconds) to absorb filesystem resolution / float jitter, so a
+# freshly-backed-up session isn't flagged as stale by a sub-second difference.
+_CHECK_MTIME_EPSILON = 1.0
+
+
+def find_unbacked_sessions(conn, claude_dir, exclude=None):
+    """Return [(SessionFile, recorded_mtime_or_None)] for sessions whose live
+    JSONL is newer than the mtime recorded at the last backup scan (or that
+    aren't in the index at all) -- i.e. sessions with un-backed-up changes.
+
+    The single source of truth for "what isn't backed up", shared by the
+    SessionStart hook's `_check` and (future) user-facing surfacing in
+    ``csb status`` / ``csb list``. ``exclude`` is a set of full session ids to
+    skip (e.g. the currently-active session, whose JSONL is mid-write).
+    """
+    exclude = set(exclude or [])
+    stale = []
+    for sf in scan_projects(claude_dir):
+        if sf.session_id in exclude:
+            continue
+        recorded = get_indexed_mtime(conn, sf.session_id)
+        if recorded is None or sf.jsonl_mtime > (recorded or 0) + _CHECK_MTIME_EPSILON:
+            stale.append((sf, recorded))
+    return stale
+
+
+def cmd_check(args) -> int:
+    """INTERNAL (`csb _check`): the SessionStart hook's gap detector. Reports
+    sessions with un-backed-up changes; the hook uses the exit code to decide
+    whether to warn + recover. Hidden from `csb --help`, but invokable by hand
+    for maintainers / post-crash triage. ``--exclude <session-id>`` (repeatable)
+    skips a session -- the hook excludes the currently-active one.
+
+    Exit codes:
+      0                -- clean: every session is backed up
+      CHECK_GAP_EXIT   -- one or more sessions have un-backed-up changes
+      1                -- error (not a git repo)
+    """
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    quiet = getattr(args, "quiet", False)
+    exclude = getattr(args, "exclude", None)
+
+    if not is_git_repo(claude_dir):
+        print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
+        return 1
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    stale = find_unbacked_sessions(conn, claude_dir, exclude)
+    conn.close()
+
+    if not stale:
+        if not quiet:
+            print("All sessions backed up.")
+        return 0
+
+    # Concise, user-facing summary (the hook puts this in a systemMessage).
+    n = len(stale)
+    print(f"csb: {n} session(s) with un-backed-up changes "
+          f"(likely an unclean shutdown -- run `csb backup` to capture now):")
+    for sf, recorded in stale[:5]:
+        why = "never indexed" if recorded is None else "changed since last backup"
+        print(f"  {sf.session_id[:8]}  ({why})")
+    if n > 5:
+        print(f"  ... and {n - 5} more")
+    return CHECK_GAP_EXIT
 
 
 def _resolve_session_or_exit(conn, query: str) -> tuple[str | None, int]:

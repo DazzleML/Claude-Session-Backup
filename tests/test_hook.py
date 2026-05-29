@@ -38,14 +38,18 @@ def test_hook_script_has_shebang():
 
 
 def test_hook_script_backgrounds_backup():
-    """v0.3.7: the hook fires the backup in the background (Popen, no wait)
-    so the session is never blocked -- it must NOT block on the backup."""
+    """The backup is backgrounded (Popen, no wait) so the session is never
+    blocked, spawned detached (v0.3.8), and SessionStart runs a health check
+    (v0.3.9). The only synchronous subprocess.run is that fast check -- the
+    backup itself is never awaited (no blocking timeout=120 wait)."""
     hook_path = Path(__file__).parent.parent / "hooks" / "scripts" / "backup-hook.py"
     content = hook_path.read_text(encoding="utf-8")
     assert "subprocess.Popen" in content, "Hook should spawn the backup via Popen"
     assert "_should_run_backup" in content, "Hook should have the source-aware decision"
-    # The old blocking `subprocess.run(... timeout=120)` wait is gone.
-    assert "subprocess.run(" not in content, "Hook should not block on subprocess.run"
+    assert "_detach_kwargs" in content, "Hook should spawn the backup detached"
+    assert "_run_check" in content, "SessionStart should run the health check"
+    # The backup is never awaited with the old blocking 120s wait.
+    assert "timeout=120" not in content, "Hook should not block on the backup"
 
 
 def test_hook_script_has_path_fallback():

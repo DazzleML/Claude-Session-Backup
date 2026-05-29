@@ -20,6 +20,12 @@ DEFAULT_CONFIG = {
     # config files but coerced to int on read; ``None`` / negative means
     # "show all" (equivalent to ``--all-folders``).
     "display_top_folders": 3,
+    # ``csb status`` lists sessions with un-backed-up changes. When more than
+    # this many are found, the list is capped and the rest collapse to
+    # "+ N more not shown" -- past this count the actionable signal is "your
+    # index is behind, run csb backup", not a wall of ids. Tweak in
+    # session-backup-config.json.
+    "status_unbacked_limit": 20,
 }
 
 # Environment variable overrides (CLI flag > env var > config file > default)

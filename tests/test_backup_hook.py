@@ -66,29 +66,30 @@ def test_should_run_backup(event, source, expected):
 
 def test_read_hook_input_valid(monkeypatch):
     _set_stdin(monkeypatch, json.dumps(
-        {"hook_event_name": "SessionStart", "source": "resume", "extra": 1}
+        {"hook_event_name": "SessionStart", "source": "resume",
+         "session_id": "abc123", "extra": 1}
     ))
-    assert bh._read_hook_input() == ("SessionStart", "resume")
+    assert bh._read_hook_input() == ("SessionStart", "resume", "abc123")
 
 
 def test_read_hook_input_precompact_no_source(monkeypatch):
     _set_stdin(monkeypatch, json.dumps({"hook_event_name": "PreCompact"}))
-    assert bh._read_hook_input() == ("PreCompact", "")
+    assert bh._read_hook_input() == ("PreCompact", "", "")
 
 
 def test_read_hook_input_empty(monkeypatch):
     _set_stdin(monkeypatch, "")
-    assert bh._read_hook_input() == ("", "")
+    assert bh._read_hook_input() == ("", "", "")
 
 
 def test_read_hook_input_garbage(monkeypatch):
     _set_stdin(monkeypatch, "not json at all")
-    assert bh._read_hook_input() == ("", "")
+    assert bh._read_hook_input() == ("", "", "")
 
 
 def test_read_hook_input_non_dict(monkeypatch):
     _set_stdin(monkeypatch, "[1, 2, 3]")
-    assert bh._read_hook_input() == ("", "")
+    assert bh._read_hook_input() == ("", "", "")
 
 
 def test_read_hook_input_tty_returns_empty(monkeypatch):
@@ -97,8 +98,8 @@ def test_read_hook_input_tty_returns_empty(monkeypatch):
         def isatty(self):
             return True
     monkeypatch.setattr(sys, "stdin", _Tty())
-    # TTY guard: never block on read; treat as manual -> ("", "")
-    assert bh._read_hook_input() == ("", "")
+    # TTY guard: never block on read; treat as manual -> ("", "", "")
+    assert bh._read_hook_input() == ("", "", "")
 
 
 # ── main(): spawn behavior (Popen monkeypatched -> no real backup) ─────
@@ -124,35 +125,73 @@ def captured_popen(monkeypatch, tmp_path):
 
 
 def test_main_skips_compact_no_spawn(monkeypatch, captured_popen):
-    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "compact"))
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "compact", "s1"))
     bh.main()
     assert captured_popen.calls == []  # compaction SessionStart never backs up
 
 
-def test_main_spawns_on_resume(monkeypatch, captured_popen):
-    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "resume"))
+def test_main_sessionstart_clean_no_spawn(monkeypatch, captured_popen, capsys):
+    """SessionStart with no gap (v0.3.9): detector says clean -> NO backup,
+    NO warning. SessionEnd is the durable trigger, not SessionStart."""
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "resume", "s1"))
+    monkeypatch.setattr(bh, "_run_check", lambda sid: ("clean", ""))
     bh.main()
-    assert len(captured_popen.calls) == 1
-    cmd, kwargs = captured_popen.calls[0]
-    assert cmd[-2:] == ["--quiet", "backup"]
-    assert kwargs.get("stdin") is bh.subprocess.DEVNULL  # can't read hook stdin
+    assert captured_popen.calls == []          # no recovery backup
+    assert "systemMessage" not in capsys.readouterr().out  # no warning
+
+
+def test_main_sessionstart_gap_warns_and_spawns(monkeypatch, captured_popen, capsys):
+    """A detected gap -> emit a systemMessage warning AND spawn a recovery
+    backup (the 'warn + recover' behavior)."""
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "startup", "s1"))
+    monkeypatch.setattr(bh, "_run_check", lambda sid: ("gap", "csb: 1 session(s) un-backed-up"))
+    bh.main()
+    assert len(captured_popen.calls) == 1      # recovery backup spawned
+    out = capsys.readouterr().out
+    assert "systemMessage" in out
+    assert "un-backed-up" in out
+
+
+def test_main_sessionstart_passes_session_id_to_check(monkeypatch, captured_popen):
+    """The current session_id is forwarded to the check so it can be excluded
+    (its JSONL is mid-write and would always look stale)."""
+    seen = {}
+
+    def fake_check(sid):
+        seen["sid"] = sid
+        return ("clean", "")
+
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "startup", "cur-sid"))
+    monkeypatch.setattr(bh, "_run_check", fake_check)
+    bh.main()
+    assert seen["sid"] == "cur-sid"
+
+
+def test_main_sessionstart_check_error_defensive_backup(monkeypatch, captured_popen, capsys):
+    """If the detector itself errors, back up defensively but DON'T warn (no
+    confirmed gap to report)."""
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "resume", "s1"))
+    monkeypatch.setattr(bh, "_run_check", lambda sid: ("error", "boom"))
+    bh.main()
+    assert len(captured_popen.calls) == 1      # defensive backup
+    assert "systemMessage" not in capsys.readouterr().out  # no false warning
 
 
 def test_main_spawns_on_sessionend(monkeypatch, captured_popen):
-    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", ""))
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
     bh.main()
     assert len(captured_popen.calls) == 1
 
 
 def test_main_spawns_on_manual(monkeypatch, captured_popen):
-    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("", ""))
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("", "", ""))
     bh.main()
     assert len(captured_popen.calls) == 1
 
 
 def test_main_does_not_wait(monkeypatch, captured_popen):
     """_FakePopen has no .wait(); main() completing proves it never waits."""
-    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("PreCompact", ""))
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("PreCompact", "", "s1"))
     bh.main()  # would raise AttributeError if main() called .wait()
     assert len(captured_popen.calls) == 1
 
@@ -182,7 +221,7 @@ def test_main_spawns_detached(monkeypatch, captured_popen):
     """The spawn must carry detach kwargs so the backup is decoupled from the
     session's process tree (survives SessionEnd teardown) -- the v0.3.8 fix."""
     monkeypatch.setattr(bh.sys, "platform", "win32")
-    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", ""))
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
     bh.main()
     assert len(captured_popen.calls) == 1
     _cmd, kwargs = captured_popen.calls[0]

@@ -9,6 +9,25 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.9] -- 2026-05-28 (prealpha)
+
+Reframes **SessionStart** from a silent catch-up backup into a **health check**, and surfaces the same signal to users in **`csb status`**. Now that SessionEnd reliably completes (v0.3.8), SessionStart no longer backs up unconditionally -- it detects whether a *prior* session has un-backed-up changes (an unclean shutdown where SessionEnd never ran) and, only then, warns you (a `systemMessage` Claude Code surfaces) **and** runs a recovery backup. The clean path does nothing. This surfaces a missed backup instead of masking it by quietly redoing it. `csb status` now answers "did my session work get saved?" with a per-session `Un-backed-up:` line. 636/636 tests pass (was 624 at v0.3.8; +12).
+
+### Added
+- **`csb status` `Un-backed-up:` line** -- lists sessions whose transcript is newer than the index (or never indexed), by short id + name, e.g. `Un-backed-up: 1 session (changed since last index -- run csb backup)`. `none` when everything is captured. The live session counts honestly (its transcript is mid-write) and drops to `none` once all sessions close. More specific than the existing git-level `Uncommitted changes` line, which counts all changed files. (Related to issue #5, which tracks the analogous `csb list` staleness warning / refresh.)
+- **`find_unbacked_sessions()`** (`commands.py`) -- the single source of truth for "which sessions have un-backed-up changes": live JSONL mtime newer than the mtime recorded at the last backup scan (or not indexed), with a 1s epsilon. Shared by `csb status` and the SessionStart hook detector.
+- **`get_indexed_mtime(conn, session_id)`** in `index.py` -- exact-match getter for a session's last-scanned JSONL mtime (the detection primitive).
+- **`status_unbacked_limit` config key** (`DEFAULT_CONFIG`, default `20`) -- caps how many un-backed-up sessions `csb status` lists before collapsing the rest to `+ N more not shown` (past ~20 the signal is "index is behind", not a wall of ids). Tweakable in `session-backup-config.json`; negative means "show all".
+- **Internal `_check` subcommand** -- the SessionStart hook's gap detector (exit `0` clean / `10` gap / `1` error; `--exclude <session-id>` repeatable). Hidden from `csb --help` (it's a hook mechanism, not a user-facing command), though `csb _check -h` still carries a description so it isn't opaque if a user finds it; reached via the same `find_csb()` path as `backup`, because the hook's Python may not import the package directly. Invokable by hand for maintainers / post-crash triage.
+- **Tests (+12)**: the detector + `csb status` un-backed-up line clean / gap / limit-collapse (`test_commands.py`); SessionStart clean-no-spawn, gap-warns-and-spawns, passes-session-id, check-error-defensive-backup (`test_backup_hook.py`); `_check` hidden-but-parseable + has-description (`test_cli.py`).
+
+### Changed
+- **`hooks/scripts/backup-hook.py` SessionStart path.** Instead of always spawning a backup, SessionStart runs the internal `_check --exclude <current-session>`: on a detected gap it emits a `systemMessage` warning and spawns a recovery backup; on clean it does nothing; if the detector itself errors it backs up defensively (no false warning). PreCompact / SessionEnd / manual still always back up (detached). `_read_hook_input` now also returns `session_id`.
+- **`csb --help`** usage line shows a generic `<command>` placeholder instead of the full brace list, so the internal `_check` subcommand stays hidden.
+
+### NO CHANGE (with rationale)
+- **PreCompact / SessionEnd** remain unconditional detached backups -- they are the durable triggers. SessionStart is now purely a safety-net detector, per the design directive "detect errors, not patch them."
+
 ## [0.3.8] -- 2026-05-28 (prealpha)
 
 Makes the **SessionEnd** backup actually complete. v0.3.7 fired the backup in the background but with no detach flags, so Claude Code's process-tree teardown hard-killed it mid-run -- leaving the just-ended session un-indexed until the *next* SessionStart caught up. v0.3.8 spawns the backup **decoupled** from the session's process tree so it survives teardown and finishes on its own, and **without a console window**. Verified live: a real backup completed 12.8s *after* the window closed (rc=0), with the stale lock reclaimed and released cleanly. 624/624 tests pass (was 621 at v0.3.7; +3 in `tests/test_backup_hook.py`).
@@ -391,7 +410,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...HEAD
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

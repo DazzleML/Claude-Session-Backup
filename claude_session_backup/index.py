@@ -351,6 +351,25 @@ def get_session(conn: sqlite3.Connection, session_id_prefix: str) -> Optional[di
     return session
 
 
+def get_indexed_mtime(conn: sqlite3.Connection, session_id: str) -> Optional[float]:
+    """Return the JSONL mtime recorded for ``session_id`` at the last backup
+    scan, or ``None`` if the session is not in the index.
+
+    Exact-match (not prefix) -- callers pass a full session UUID. Used by
+    ``csb check`` to decide whether a session has un-backed-up changes: a live
+    JSONL mtime newer than this recorded value means the session changed since
+    the last backup. A ``0`` recorded mtime (the column default) is returned
+    as-is so the caller can treat it as "never really scanned".
+    """
+    row = conn.execute(
+        "SELECT jsonl_mtime FROM sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["jsonl_mtime"]
+
+
 def escape_like_value(s: str, escape_char: str = "|") -> str:
     """
     Escape ``%`` / ``_`` / ``escape_char`` in a string for use as a LIKE pattern.
