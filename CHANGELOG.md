@@ -9,6 +9,21 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.10] -- 2026-05-30 (prealpha)
+
+Exposes Claude Code's session purge **TTL** (`cleanupPeriodDays`) through `csb config`, so you can see and change how long Claude Code keeps a transcript before deleting it -- without hand-editing `settings.json`. To keep csb's own config and Claude Code's config from ever colliding, Claude Code settings are addressed through a fully-qualified `settings:` namespace: a bare key always means csb's `session-backup-config.json`; a `settings:` key always means Claude Code's `settings.json`. 674/674 tests pass (was 636 at v0.3.9; +38).
+
+### Added
+- **`csb config settings:cleanupPeriodDays [days]`** -- view or set Claude Code's session purge TTL. `csb config settings:cleanupPeriodDays` prints the current value, its source file, and guidance (default 30; "never purge" idiom; the 0 caveat). `csb config settings:cleanupPeriodDays 365` writes it. This is the same value the `(purge in Nd)` countdown in `csb list` / `scan` / `search` already reads.
+- **`settings:` config namespace** -- a fully-qualified prefix that routes a `csb config` key to Claude Code's `settings.json` instead of csb's own config. Bare keys are unchanged (csb config); only `settings:` keys touch `settings.json`, so the two can never be confused. A bare key that names a known Claude Code setting (e.g. `cleanupPeriodDays`) now prints a hint pointing at the `settings:` form rather than failing as "unknown".
+- **`--force` flag on `csb config`** -- required to set `settings:cleanupPeriodDays 0`. `0` does not mean "keep forever"; Claude Code treats it as "disable session persistence" and deletes all transcripts at next startup, so csb refuses it without explicit confirmation and points to the large-number idiom (e.g. `36500`) for "never purge".
+- **settings.json passthrough helpers** (`config.py`): `get_settings_path`, `read_claude_setting`, `write_claude_setting` (read-merge-write that preserves every other key, **writes LF endings** to match Claude Code's own format -- a text-mode write would translate `\n` -> `\r\n` on Windows and rewrite every line, flooding the `~/.claude` git repo with phantom diffs -- and **refuses to overwrite a malformed `settings.json`** rather than clobbering the user's permissions/hooks), `validate_cleanup_period`, and a `CLAUDE_SETTINGS_KEYS` registry that doubles as the writable-key allowlist.
+- **Tests (+38)**: `tests/test_config.py` covers the helpers (read/write/merge/refuse-malformed, LF-not-CRLF, byte-identical round-trip, validation, `read_cleanup_period` fall-throughs) and the `cmd_config` dispatcher end-to-end via `cli.main` (GET present/absent, SET, the 0-without/with-`--force` guard, negative/non-int rejection, malformed-file refusal, bare-key hint, unknown-key, csb-own key isolation, pure-JSON dump). Plus `tests/one-offs/` smoke + live-round-trip scripts.
+
+### Changed
+- **`read_cleanup_period`** now resolves `settings.json` via the shared `get_settings_path` (with `~` expansion) and its docstring describes the actual fall-through behavior (unset/zero/unreadable -> 30; negative passed through). Behavior is unchanged; the previous docstring claimed it returned 0 when disabled, which it never did.
+- **`csb config` help/usage** documents the `settings:` namespace and the TTL example.
+
 ## [0.3.9] -- 2026-05-28 (prealpha)
 
 Reframes **SessionStart** from a silent catch-up backup into a **health check**, and surfaces the same signal to users in **`csb status`**. Now that SessionEnd reliably completes (v0.3.8), SessionStart no longer backs up unconditionally -- it detects whether a *prior* session has un-backed-up changes (an unclean shutdown where SessionEnd never ran) and, only then, warns you (a `systemMessage` Claude Code surfaces) **and** runs a recovery backup. The clean path does nothing. This surfaces a missed backup instead of masking it by quietly redoing it. `csb status` now answers "did my session work get saved?" with a per-session `Un-backed-up:` line. 636/636 tests pass (was 624 at v0.3.8; +12).
@@ -410,7 +425,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10
 [0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
 [0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.9

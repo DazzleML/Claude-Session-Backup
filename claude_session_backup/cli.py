@@ -14,7 +14,8 @@ Usage:
     csb scan [path]                      # find sessions in current dir and children
     csb search "query"                   # search session metadata
     csb rebuild-index                    # reconstruct SQLite from git history
-    csb config [key] [value]             # view/edit configuration
+    csb config [key] [value]             # view/edit csb's own configuration
+    csb config settings:cleanupPeriodDays [days]  # view/set Claude Code's purge TTL
 """
 
 import argparse
@@ -422,10 +423,27 @@ def build_parser():
     )
 
     # config
-    p_config = sub.add_parser("config", help="View/edit configuration")
+    p_config = sub.add_parser(
+        "config",
+        help="View/edit configuration",
+        description=(
+            "View/edit configuration. A bare key (e.g. 'display_top_folders') "
+            "addresses csb's own config file. A 'settings:' key (e.g. "
+            "'settings:cleanupPeriodDays') addresses Claude Code's own "
+            "settings.json -- this is how you view or change the session purge "
+            "TTL. Examples: 'csb config settings:cleanupPeriodDays' (view), "
+            "'csb config settings:cleanupPeriodDays 365' (set)."
+        ),
+    )
     _add_common_flags(p_config)
     p_config.add_argument("key", nargs="?", help="Config key to get/set")
     p_config.add_argument("value", nargs="?", help="Value to set")
+    p_config.add_argument(
+        "--force", action="store_true",
+        help="Confirm a dangerous settings write (e.g. "
+             "settings:cleanupPeriodDays 0, which makes Claude Code delete all "
+             "transcripts at next startup).",
+    )
 
     # Internal: the SessionStart hook's gap detector. Hidden from `csb --help`
     # -- it's a hook mechanism, not a user-facing command. We OMIT help= (rather

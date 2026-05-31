@@ -10,7 +10,21 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import load_config, resolve_paths, save_config, read_cleanup_period
+from .config import (
+    load_config,
+    resolve_paths,
+    save_config,
+    read_cleanup_period,
+    DEFAULT_CLEANUP_PERIOD_DAYS,
+    SETTINGS_NS,
+    CLAUDE_SETTINGS_KEYS,
+    is_settings_key,
+    settings_key_name,
+    get_settings_path,
+    read_claude_setting,
+    write_claude_setting,
+    validate_cleanup_period,
+)
 from .git_ops import (
     git_commit_noise,
     git_commit_user,
@@ -899,34 +913,186 @@ def cmd_rebuild_index(args) -> int:
 
 
 def cmd_config(args) -> int:
-    """View/edit configuration."""
-    config = load_config(getattr(args, "claude_dir", None))
+    """View/edit configuration.
 
-    if args.key is None:
-        # Show all config
+    A bare key addresses csb's own config (``session-backup-config.json``). A
+    key in the ``settings:`` namespace addresses Claude Code's ``settings.json``
+    -- chiefly ``settings:cleanupPeriodDays``, the session purge TTL. The two
+    files never collide: bare -> ours, ``settings:`` -> Claude Code's.
+    """
+    config = load_config(getattr(args, "claude_dir", None))
+    key = args.key
+
+    # Route settings:* keys to Claude Code's settings.json.
+    if key is not None and is_settings_key(key):
+        return _config_claude_setting(args, config, key)
+
+    if key is None:
+        # Dump csb config as JSON on stdout (scriptable); surface the
+        # settings: namespace on stderr so stdout stays pure JSON.
         print(json.dumps(config, indent=2))
+        _print_settings_keys_hint(config)
         return 0
 
+    # A bare key that names a known Claude Code setting is almost certainly a
+    # mistake -- nudge toward the namespaced form rather than a dead end.
+    if key in CLAUDE_SETTINGS_KEYS:
+        print(
+            f"'{key}' is a Claude Code setting (settings.json), not a csb "
+            f"config key. Address it with the settings: namespace:\n"
+            f"    csb config {SETTINGS_NS}{key}            # view\n"
+            f"    csb config {SETTINGS_NS}{key} <value>    # change",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.value is None:
-        # Show specific key
-        if args.key in config:
-            val = config[args.key]
+        # Show specific csb config key
+        if key in config:
+            val = config[key]
             print(json.dumps(val) if isinstance(val, (list, dict)) else str(val))
         else:
-            print(f"Unknown config key: {args.key}", file=sys.stderr)
+            print(f"Unknown config key: {key}", file=sys.stderr)
             return 1
         return 0
 
-    # Set value
+    # Set csb config value
     try:
         parsed = json.loads(args.value)
     except json.JSONDecodeError:
         parsed = args.value
 
-    config[args.key] = parsed
+    config[key] = parsed
     save_config(config, getattr(args, "claude_dir", None))
-    print(f"Set {args.key} = {parsed}")
+    print(f"Set {key} = {parsed}")
     return 0
+
+
+def _config_claude_setting(args, config, namespaced_key) -> int:
+    """Handle ``csb config settings:<key> [value]`` against Claude Code's
+    settings.json (read on GET, read-merge-write on SET)."""
+    bare = settings_key_name(namespaced_key)
+    claude_dir = config["claude_dir"]
+    settings_path = get_settings_path(claude_dir)
+
+    if bare not in CLAUDE_SETTINGS_KEYS:
+        known = ", ".join(SETTINGS_NS + k for k in CLAUDE_SETTINGS_KEYS)
+        print(
+            f"Unknown Claude Code setting: {namespaced_key}. "
+            f"csb config can read/write: {known}.\n"
+            f"(Other settings.json keys: edit {settings_path} directly.)",
+            file=sys.stderr,
+        )
+        return 1
+
+    meta = CLAUDE_SETTINGS_KEYS[bare]
+
+    # GET
+    if args.value is None:
+        value, present = read_claude_setting(claude_dir, bare)
+        if present:
+            print(f"{value}  ({settings_path})")
+        else:
+            print(f"{meta['default']}  (default; not set in {settings_path})")
+        if bare == "cleanupPeriodDays":
+            _print_cleanup_guidance(value if present else meta["default"])
+        return 0
+
+    # SET -- validation is key-specific.
+    if bare == "cleanupPeriodDays":
+        return _set_cleanup_period(args, claude_dir)
+
+    # No other writable keys yet (the registry is the allowlist).
+    print(f"Setting {namespaced_key} is not writable via csb.", file=sys.stderr)
+    return 1
+
+
+def _set_cleanup_period(args, claude_dir) -> int:
+    """Validate, guard, and write ``cleanupPeriodDays`` to settings.json."""
+    value, error = validate_cleanup_period(args.value)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+    # Guard the destructive value. 0 makes Claude Code stop writing transcripts
+    # AND delete every existing one at next startup -- require explicit --force.
+    if value == 0 and not getattr(args, "force", False):
+        print(
+            "Refusing to set cleanupPeriodDays = 0 without --force.\n"
+            "  0 does NOT mean 'keep forever'. It disables session persistence: "
+            "Claude Code stops writing transcripts and DELETES all existing "
+            "ones at its next startup.\n"
+            "  To effectively never purge, set a large number instead, e.g.:\n"
+            f"      csb config {SETTINGS_NS}cleanupPeriodDays 36500\n"
+            "  If you really do want to disable persistence, re-run with --force.",
+            file=sys.stderr,
+        )
+        return 2
+
+    current = read_cleanup_period(claude_dir)
+    try:
+        path = write_claude_setting(claude_dir, "cleanupPeriodDays", value)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Set cleanupPeriodDays = {value} in {path}")
+    if value == 0:
+        print(
+            "  WARNING: session persistence is now OFF. Claude Code will delete "
+            "existing transcripts at its next startup. Your csb git backups "
+            "remain recoverable via 'csb restore'.",
+            file=sys.stderr,
+        )
+    elif value < current:
+        print(
+            f"  Note: lowering the TTL from {current} to {value} days may purge "
+            f"sessions older than {value} days at Claude Code's next start. "
+            f"csb's git backups keep them recoverable ('csb restore').",
+            file=sys.stderr,
+        )
+    print("  Takes effect the next time Claude Code starts.", file=sys.stderr)
+    return 0
+
+
+def _print_cleanup_guidance(value) -> None:
+    """Explain what cleanupPeriodDays means + how to change it. Printed to
+    stderr so a GET's stdout stays a clean, parseable value."""
+    print(
+        f"  Sessions are purged {value} day(s) after last use "
+        f"(Claude Code default: {DEFAULT_CLEANUP_PERIOD_DAYS}).",
+        file=sys.stderr,
+    )
+    print(
+        f"  Change: csb config {SETTINGS_NS}cleanupPeriodDays <days>  (e.g. 365). "
+        f"To effectively never purge, use a large number (e.g. 36500).",
+        file=sys.stderr,
+    )
+    print(
+        "  Caution: 0 disables session persistence -- Claude Code deletes all "
+        "transcripts at next startup.",
+        file=sys.stderr,
+    )
+
+
+def _print_settings_keys_hint(config) -> None:
+    """On a bare ``csb config``, point at the settings: namespace (stderr, so
+    the JSON dump on stdout stays clean and pipeable)."""
+    claude_dir = config["claude_dir"]
+    print("", file=sys.stderr)
+    print(
+        "Claude Code settings (separate file; address with the settings: "
+        "namespace):",
+        file=sys.stderr,
+    )
+    for bare, meta in CLAUDE_SETTINGS_KEYS.items():
+        value, present = read_claude_setting(claude_dir, bare)
+        shown = value if present else meta["default"]
+        src = "" if present else " (default)"
+        print(
+            f"  {SETTINGS_NS}{bare} = {shown}{src}   # {meta['summary']}",
+            file=sys.stderr,
+        )
 
 
 def cmd_resume(args) -> int:

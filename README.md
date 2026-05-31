@@ -16,13 +16,13 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 **csb** preserves every session in your existing `~/.claude` git repository, builds a searchable metadata index, detects deletions, and can restore lost sessions from git history.
 
 > [!WARNING]
-> **Prealpha software.** `csb` is functional and all tests pass, but it is not yet feature-complete and has not been broadly tested outside of active dogfooding. Expect bugs, rough edges, and breaking changes until the first alpha/beta releases. Three items gate the next milestone: distilled conversation backup (#12), end-to-end restore verification (#13), and a CLI launcher for claude-code-history-viewer (#14). By all means use it -- and please file issues -- but don't rely on `csb` as your only backup just yet.
+> **Prealpha software.** `csb` is functional and all tests pass, but it is not yet feature-complete and has not been broadly tested outside of active dogfooding. Expect bugs, rough edges, and breaking changes until the first alpha/beta releases. Three items gate the next milestone: distilled conversation backup ([#12](https://github.com/DazzleML/Claude-Session-Backup/issues/12)), end-to-end restore verification ([#13](https://github.com/DazzleML/Claude-Session-Backup/issues/13)), and a CLI launcher for claude-code-history-viewer ([#14](https://github.com/DazzleML/Claude-Session-Backup/issues/14)). By all means use it -- and please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues) -- but don't rely on `csb` as your only backup just yet.
 
 ## Quick Start
 
 ```bash
-# 1. Install the CLI (PyPI release coming shortly)
-pip install git+https://github.com/DazzleML/Claude-Session-Backup.git
+# 1. Install the CLI
+pip install claude-session-backup
 
 # 2. (recommended) Install the Claude Code plugin so pre-compact backups fire
 #    automatically. Full commands in the "Claude Code Plugin" section below.
@@ -79,7 +79,9 @@ csb search "X" --json                 # NDJSON output for piping into jq
 csb restore <session-id>              # Restore deleted session from git history
 csb resume <session-id>               # Launch claude --resume with full UUID
 csb rebuild-index                     # Reconstruct SQLite from scratch
-csb config [key] [value]              # View/edit configuration
+csb config [key] [value]              # View/edit csb's own configuration
+csb config settings:cleanupPeriodDays         # View Claude Code's session purge TTL
+csb config settings:cleanupPeriodDays 365     # Set the TTL (writes ~/.claude/settings.json)
 ```
 
 ### Searching conversations
@@ -113,6 +115,19 @@ csb list --sort expiration -n 20
 ```
 
 Sessions are sorted by the JSONL file's modification time, so active sessions (which refresh their mtime on every interaction) stay safe while dormant sessions surface to the top of the expiration list.
+
+To **view or change the TTL itself** without hand-editing `settings.json`:
+
+```bash
+csb config settings:cleanupPeriodDays         # show current value + source + guidance
+csb config settings:cleanupPeriodDays 365     # keep transcripts for a year
+csb config settings:cleanupPeriodDays 36500   # effectively never purge (~100 years)
+```
+
+The `settings:` prefix is a fully-qualified namespace: a bare key (e.g. `csb config display_top_folders`) addresses csb's own config, while a `settings:` key addresses Claude Code's `~/.claude/settings.json` -- the two never collide. The write is a read-merge-write that preserves your other settings and refuses to touch a malformed file.
+
+> [!CAUTION]
+> `cleanupPeriodDays` of **`0` does not mean "keep forever"** -- Claude Code treats it as *disable session persistence* and deletes all transcripts at its next startup. csb refuses to write `0` without `--force`. For "never purge", set a large number instead.
 
 ## How It Works
 
@@ -201,16 +216,16 @@ schtasks /create /tn "Claude Session Backup" /tr "csb backup --quiet" /sc minute
 ## Installation
 
 ```bash
-# From GitHub (recommended until PyPI publish lands)
+# From PyPI (recommended)
+pip install claude-session-backup
+
+# Latest unreleased build from GitHub
 pip install git+https://github.com/DazzleML/Claude-Session-Backup.git
 
 # From source (development / contributing)
 git clone https://github.com/DazzleML/Claude-Session-Backup.git
 cd Claude-Session-Backup
 pip install -e ".[dev]"
-
-# From PyPI (once published)
-pip install claude-session-backup
 ```
 
 ## Contributing
