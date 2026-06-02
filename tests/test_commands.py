@@ -536,3 +536,108 @@ def test_format_timestamp_includes_tz_label():
 def test_format_timestamp_unparseable_falls_back_to_input():
     """Defensive: never throw on bad input -- return as-is."""
     assert _format_timestamp("not-a-timestamp") == "not-a-timestamp"
+
+
+# ── cmd_check: un-backed-up session detection (v0.3.9) ──────────────
+#
+# `csb check` compares each session's live JSONL mtime against the mtime
+# recorded in the index at the last backup. Newer (or never indexed) -> a
+# gap (exit CHECK_GAP_EXIT). The SessionStart hook uses this to decide
+# whether to warn + recover.
+
+from claude_session_backup.commands import cmd_check, CHECK_GAP_EXIT
+from claude_session_backup.index import open_db, init_schema, upsert_session
+from claude_session_backup.scanner import scan_projects
+from claude_session_backup.metadata import extract_metadata
+
+_CONFTEST_SID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _check_args(claude_dir, db, exclude=None, quiet=True):
+    return SimpleNamespace(
+        claude_dir=str(claude_dir), db=str(db), quiet=quiet, exclude=exclude,
+    )
+
+
+def _index_sessions_at_live_mtime(claude_dir, db):
+    """Index every scanned session at its CURRENT live mtime -> 'backed up'."""
+    conn = open_db(str(db))
+    init_schema(conn)
+    for sf in scan_projects(claude_dir):
+        meta = extract_metadata(sf.jsonl_path)
+        meta.project = sf.project
+        rel = str(sf.jsonl_path.relative_to(claude_dir))
+        upsert_session(conn, meta, rel, sf.jsonl_size, sf.jsonl_mtime, "2026-01-01T00:00:00Z")
+    conn.commit()
+    conn.close()
+
+
+def test_check_gap_when_session_unindexed(mock_claude_dir, tmp_path, capsys):
+    """A session present on disk but absent from the index is a gap."""
+    db = tmp_path / "check.db"
+    rc = cmd_check(_check_args(mock_claude_dir, db))
+    assert rc == CHECK_GAP_EXIT
+    assert "un-backed-up" in capsys.readouterr().out
+
+
+def test_check_clean_when_indexed_at_live_mtime(mock_claude_dir, tmp_path):
+    """Once the session is indexed at its live mtime, check reports clean."""
+    db = tmp_path / "check.db"
+    _index_sessions_at_live_mtime(mock_claude_dir, db)
+    rc = cmd_check(_check_args(mock_claude_dir, db))
+    assert rc == 0
+
+
+def test_check_exclude_skips_session(mock_claude_dir, tmp_path):
+    """--exclude <sid> drops the (only) session -> clean even though unindexed."""
+    db = tmp_path / "check.db"
+    rc = cmd_check(_check_args(mock_claude_dir, db, exclude=[_CONFTEST_SID]))
+    assert rc == 0
+
+
+def test_check_not_git_repo_returns_1(monkeypatch, tmp_path):
+    """A non-git claude dir is an error (rc 1), not a gap. (is_git_repo is
+    mocked False -- on a dev box the temp dir can sit inside the home git
+    repo, so a tmp path isn't reliably repo-free.)"""
+    monkeypatch.setattr(commands_module, "is_git_repo", MagicMock(return_value=False))
+    plain = tmp_path / "not-claude"
+    (plain / "projects").mkdir(parents=True)
+    db = tmp_path / "check.db"
+    rc = cmd_check(_check_args(plain, db))
+    assert rc == 1
+
+
+# ── csb status: un-backed-up surfacing (v0.3.9) ────────────────────
+
+from claude_session_backup.commands import cmd_status
+
+
+def test_status_unbacked_none_when_indexed(mock_claude_dir, tmp_path, capsys):
+    """Index the session at its live mtime -> status reports 'none'."""
+    db = tmp_path / "status.db"
+    _index_sessions_at_live_mtime(mock_claude_dir, db)
+    cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir), db=str(db)))
+    assert "Un-backed-up:   none" in capsys.readouterr().out
+
+
+def test_status_unbacked_lists_gap_with_id(mock_claude_dir, tmp_path, capsys):
+    """A fresh index -> the on-disk session shows as un-backed-up, by short id."""
+    db = tmp_path / "status.db"
+    cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir), db=str(db)))
+    out = capsys.readouterr().out
+    assert "Un-backed-up:   1 session " in out
+    assert "never indexed" in out
+    assert _CONFTEST_SID[:8] in out
+
+
+def test_status_unbacked_respects_config_limit(mock_claude_dir, tmp_path, capsys):
+    """status_unbacked_limit caps the list; the rest collapse to '+ N more'."""
+    import json as _json
+    (mock_claude_dir / "session-backup-config.json").write_text(
+        _json.dumps({"status_unbacked_limit": 0}), encoding="utf-8",
+    )
+    db = tmp_path / "status.db"
+    cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir), db=str(db)))
+    out = capsys.readouterr().out
+    assert "+ 1 more not shown" in out
+    assert _CONFTEST_SID[:8] not in out  # nothing listed at limit 0

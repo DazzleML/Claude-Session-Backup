@@ -608,3 +608,29 @@ def test_search_triple_fff_does_not_crash():
     parser = build_parser()
     args = parser.parse_args(["search", "foo", "-fff"])
     assert args.full_info == 3
+
+
+# ── internal `_check` subcommand: parseable but hidden ──────────────
+
+def test_check_subcommand_parses_but_is_hidden():
+    """`_check` is the SessionStart hook's detector: it must PARSE (the hook
+    invokes it) yet stay out of `csb --help` (it's not a user-facing command)."""
+    parser = build_parser()
+    args = parser.parse_args(["_check", "--exclude", "abc123"])
+    assert args.command == "_check"
+    assert args.exclude == ["abc123"]
+    # Hidden: no help= was passed, so argparse lists no entry, and the
+    # add_subparsers metavar keeps it out of the usage line too.
+    assert "_check" not in parser.format_help()
+
+
+def test_check_subcommand_has_description(capsys):
+    """`csb _check -h` must show a real description (not a bare usage line) so
+    the hidden command doesn't feel shady to a user who finds it -- and points
+    them at the public `csb status` surface."""
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["_check", "-h"])
+    out = capsys.readouterr().out
+    assert "health check" in out.lower()
+    assert "csb status" in out

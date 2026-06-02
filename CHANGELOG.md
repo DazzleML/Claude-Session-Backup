@@ -9,6 +9,102 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.10] -- 2026-05-30 (prealpha)
+
+Exposes Claude Code's session purge **TTL** (`cleanupPeriodDays`) through `csb config`, so you can see and change how long Claude Code keeps a transcript before deleting it -- without hand-editing `settings.json`. To keep csb's own config and Claude Code's config from ever colliding, Claude Code settings are addressed through a fully-qualified `settings:` namespace: a bare key always means csb's `session-backup-config.json`; a `settings:` key always means Claude Code's `settings.json`. 674/674 tests pass (was 636 at v0.3.9; +38).
+
+### Added
+- **`csb config settings:cleanupPeriodDays [days]`** -- view or set Claude Code's session purge TTL. `csb config settings:cleanupPeriodDays` prints the current value, its source file, and guidance (default 30; "never purge" idiom; the 0 caveat). `csb config settings:cleanupPeriodDays 365` writes it. This is the same value the `(purge in Nd)` countdown in `csb list` / `scan` / `search` already reads.
+- **`settings:` config namespace** -- a fully-qualified prefix that routes a `csb config` key to Claude Code's `settings.json` instead of csb's own config. Bare keys are unchanged (csb config); only `settings:` keys touch `settings.json`, so the two can never be confused. A bare key that names a known Claude Code setting (e.g. `cleanupPeriodDays`) now prints a hint pointing at the `settings:` form rather than failing as "unknown".
+- **`--force` flag on `csb config`** -- required to set `settings:cleanupPeriodDays 0`. `0` does not mean "keep forever"; Claude Code treats it as "disable session persistence" and deletes all transcripts at next startup, so csb refuses it without explicit confirmation and points to the large-number idiom (e.g. `36500`) for "never purge".
+- **settings.json passthrough helpers** (`config.py`): `get_settings_path`, `read_claude_setting`, `write_claude_setting` (read-merge-write that preserves every other key, **writes LF endings** to match Claude Code's own format -- a text-mode write would translate `\n` -> `\r\n` on Windows and rewrite every line, flooding the `~/.claude` git repo with phantom diffs -- and **refuses to overwrite a malformed `settings.json`** rather than clobbering the user's permissions/hooks), `validate_cleanup_period`, and a `CLAUDE_SETTINGS_KEYS` registry that doubles as the writable-key allowlist.
+- **Tests (+38)**: `tests/test_config.py` covers the helpers (read/write/merge/refuse-malformed, LF-not-CRLF, byte-identical round-trip, validation, `read_cleanup_period` fall-throughs) and the `cmd_config` dispatcher end-to-end via `cli.main` (GET present/absent, SET, the 0-without/with-`--force` guard, negative/non-int rejection, malformed-file refusal, bare-key hint, unknown-key, csb-own key isolation, pure-JSON dump). Plus `tests/one-offs/` smoke + live-round-trip scripts.
+
+### Changed
+- **`read_cleanup_period`** now resolves `settings.json` via the shared `get_settings_path` (with `~` expansion) and its docstring describes the actual fall-through behavior (unset/zero/unreadable -> 30; negative passed through). Behavior is unchanged; the previous docstring claimed it returned 0 when disabled, which it never did.
+- **`csb config` help/usage** documents the `settings:` namespace and the TTL example.
+
+## [0.3.9] -- 2026-05-28 (prealpha)
+
+Reframes **SessionStart** from a silent catch-up backup into a **health check**, and surfaces the same signal to users in **`csb status`**. Now that SessionEnd reliably completes (v0.3.8), SessionStart no longer backs up unconditionally -- it detects whether a *prior* session has un-backed-up changes (an unclean shutdown where SessionEnd never ran) and, only then, warns you (a `systemMessage` Claude Code surfaces) **and** runs a recovery backup. The clean path does nothing. This surfaces a missed backup instead of masking it by quietly redoing it. `csb status` now answers "did my session work get saved?" with a per-session `Un-backed-up:` line. 636/636 tests pass (was 624 at v0.3.8; +12).
+
+### Added
+- **`csb status` `Un-backed-up:` line** -- lists sessions whose transcript is newer than the index (or never indexed), by short id + name, e.g. `Un-backed-up: 1 session (changed since last index -- run csb backup)`. `none` when everything is captured. The live session counts honestly (its transcript is mid-write) and drops to `none` once all sessions close. More specific than the existing git-level `Uncommitted changes` line, which counts all changed files. (Related to issue #5, which tracks the analogous `csb list` staleness warning / refresh.)
+- **`find_unbacked_sessions()`** (`commands.py`) -- the single source of truth for "which sessions have un-backed-up changes": live JSONL mtime newer than the mtime recorded at the last backup scan (or not indexed), with a 1s epsilon. Shared by `csb status` and the SessionStart hook detector.
+- **`get_indexed_mtime(conn, session_id)`** in `index.py` -- exact-match getter for a session's last-scanned JSONL mtime (the detection primitive).
+- **`status_unbacked_limit` config key** (`DEFAULT_CONFIG`, default `20`) -- caps how many un-backed-up sessions `csb status` lists before collapsing the rest to `+ N more not shown` (past ~20 the signal is "index is behind", not a wall of ids). Tweakable in `session-backup-config.json`; negative means "show all".
+- **Internal `_check` subcommand** -- the SessionStart hook's gap detector (exit `0` clean / `10` gap / `1` error; `--exclude <session-id>` repeatable). Hidden from `csb --help` (it's a hook mechanism, not a user-facing command), though `csb _check -h` still carries a description so it isn't opaque if a user finds it; reached via the same `find_csb()` path as `backup`, because the hook's Python may not import the package directly. Invokable by hand for maintainers / post-crash triage.
+- **Tests (+12)**: the detector + `csb status` un-backed-up line clean / gap / limit-collapse (`test_commands.py`); SessionStart clean-no-spawn, gap-warns-and-spawns, passes-session-id, check-error-defensive-backup (`test_backup_hook.py`); `_check` hidden-but-parseable + has-description (`test_cli.py`).
+
+### Changed
+- **`hooks/scripts/backup-hook.py` SessionStart path.** Instead of always spawning a backup, SessionStart runs the internal `_check --exclude <current-session>`: on a detected gap it emits a `systemMessage` warning and spawns a recovery backup; on clean it does nothing; if the detector itself errors it backs up defensively (no false warning). PreCompact / SessionEnd / manual still always back up (detached). `_read_hook_input` now also returns `session_id`.
+- **`csb --help`** usage line shows a generic `<command>` placeholder instead of the full brace list, so the internal `_check` subcommand stays hidden.
+
+### NO CHANGE (with rationale)
+- **PreCompact / SessionEnd** remain unconditional detached backups -- they are the durable triggers. SessionStart is now purely a safety-net detector, per the design directive "detect errors, not patch them."
+
+## [0.3.8] -- 2026-05-28 (prealpha)
+
+Makes the **SessionEnd** backup actually complete. v0.3.7 fired the backup in the background but with no detach flags, so Claude Code's process-tree teardown hard-killed it mid-run -- leaving the just-ended session un-indexed until the *next* SessionStart caught up. v0.3.8 spawns the backup **decoupled** from the session's process tree so it survives teardown and finishes on its own, and **without a console window**. Verified live: a real backup completed 12.8s *after* the window closed (rc=0), with the stale lock reclaimed and released cleanly. 624/624 tests pass (was 621 at v0.3.7; +3 in `tests/test_backup_hook.py`).
+
+### Fixed
+- **SessionEnd backup is hard-killed by teardown -> un-indexed session.** The hook now spawns the backup in its own process group that outlives the session: on Windows `CREATE_NEW_PROCESS_GROUP` shields it from the group-wide Ctrl-C/Break sent at teardown, and because the hook returns immediately the backup is orphaned before the kill walks the process tree. On POSIX, `start_new_session=True`. The backup completes regardless of how long it takes (the git commit size is unbounded), so the session is searchable right after exit -- no longer dependent on starting another session to catch up.
+- **A console window flashed on every hook fire (Windows).** The spawn now uses `CREATE_NO_WINDOW` instead of `DETACHED_PROCESS`. A `DETACHED_PROCESS` (consoleless) `csb` made each `git` child it spawns allocate its own console -> popups; `CREATE_NO_WINDOW` gives `csb` one hidden console that all its children inherit -> no window anywhere, on either SessionStart or SessionEnd.
+
+### Added
+- **`_detach_kwargs()`** in `hooks/scripts/backup-hook.py` -- the per-platform spawn-decoupling kwargs (Windows: `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`; POSIX: `start_new_session=True`), applied to the backup `Popen`.
+- **3 tests** in `tests/test_backup_hook.py` -- `_detach_kwargs` per platform (Windows flags / POSIX session) and a `main()` spawn test asserting the detach kwargs are carried.
+
+### NO CHANGE (with rationale)
+- **`SessionStart` still runs a catch-up backup** (not yet reframed to a pure error-detector). v0.3.8 makes SessionEnd reliably complete; reframing SessionStart to *detect and warn* about a missed backup (instead of silently re-running it) is the focused follow-up (v0.3.9), kept separate so this proven durability fix ships on its own.
+- **`commands.py` `cmd_backup`, `lockfile.py`, `run-hook.mjs`** -- unchanged. The fix is purely *how* the backup process is spawned by the hook; the v0.3.6 lock reclaim remains the net for OS-shutdown/logout kills.
+
+## [0.3.7] -- 2026-05-28 (prealpha)
+
+Durable "backups just happen" -- adds a `SessionStart` backup hook and runs all hook-triggered backups in the **background**, so the session index stays fresh after exits, resumes, and `/fork` / `/rewind`. Fixes the root cause of a session that was unsearchable after a `/rewind`: csb only hooked PreCompact + SessionEnd, and SessionEnd is hard-killed by Claude Code's process-tree teardown before it finishes -- leaving the just-ended (or just-forked) session un-indexed. 621/621 tests pass (was 602 at v0.3.6; +19 in a new `tests/test_backup_hook.py`).
+
+### Added
+- **`SessionStart` backup hook** (`hooks/hooks.json`). Claude Code fires `SessionStart` on `startup` / `resume` / `clear` -- and crucially on `/fork`, `/branch`, and `/rewind`-continue, which enter the new forked session via `source="resume"` (verified against the client source: `createFork()` -> `context.resume(..., 'fork')` -> `processSessionStartHooks('resume')`; the SessionStart `source` enum is `startup|resume|clear|compact`). So a fork is now backed up the instant you enter it, in a live session -- not racing teardown. This is the trigger that was missing and the direct fix for the "forked session not searchable" report.
+- **`_should_run_backup(hook_event_name, source)`** in `hooks/scripts/backup-hook.py` -- the source-aware decision. Skips ONLY `SessionStart` with `source="compact"` (PreCompact already captured the pre-compaction transcript; backing up again would be redundant and contend for the lock at compaction time). Everything else runs: SessionStart startup/resume/clear, PreCompact, SessionEnd, and manual invocation.
+- **Per-event background-run log** at `~/.claude/csb-logs/backup-<event>.log` -- every fire records a `start background backup` or `skip` line so a background run is never silent.
+- **`tests/test_backup_hook.py`** (19 tests) -- the decision matrix (startup/resume/clear -> run, compact -> skip, PreCompact/SessionEnd/manual -> run), stdin parsing tolerance (valid / empty / garbage / non-dict / TTY guard), and `main()` spawn behavior with `subprocess.Popen` mocked (skips on compact, spawns on resume/SessionEnd/manual, stdin=DEVNULL, and never `.wait()`s).
+
+### Changed
+- **`hooks/scripts/backup-hook.py` now fires the backup in the background and returns immediately** (`subprocess.Popen`, no `.wait()`), replacing the blocking `subprocess.run(..., timeout=120)`. The hook no longer blocks the session: at SessionStart/PreCompact the session stays alive so the background backup completes; at SessionEnd it's best-effort (if teardown kills it, the next SessionStart reclaims the lock via the v0.3.6 logic and catches up). Reads the hook JSON from stdin (UTF-8, TTY-guarded, tolerant of empty/garbage) to get `hook_event_name` + `source`.
+- **`tests/test_hook.py`** updated for the new contract: the subprocess smoke test now feeds a `SessionStart/compact` payload (skip path -> clean exit, no real backup side effect), and the old "has a timeout" assertion is replaced by a "backgrounds via Popen, doesn't block on subprocess.run" assertion.
+
+### Deferred (noted, not built)
+- OS advisory lock in `lockfile.py` (the v0.3.6 PID-reuse reclaim + the new SessionStart catch-up already make backups reliable; advisory locking would only further prevent transient leaks).
+- Targeted `csb backup --session-id <id>` and an index/commit job split -- unnecessary now that full backups complete on the live-session triggers.
+- Fork-awareness / parent_session_id metadata (#15, #22) remains a separate epic; this release makes forks *get backed up*, not *modeled as forks*.
+
+### NO CHANGE (with rationale)
+- **`commands.py` `cmd_backup`** -- still a full vault scan + two git commits. The fix is *when/how* the backup is invoked (background, on more triggers), not *what* it does. "Get everything," not targeted.
+- **`lockfile.py`** -- v0.3.6 reclaim is the safety net for any SessionEnd backup the teardown still kills; unchanged.
+- **`run-hook.mjs`** -- still `spawnSync` to `backup-hook.py`, which now returns immediately after the background spawn, so the Node layer no longer blocks either.
+
+## [0.3.6] -- 2026-05-27 (prealpha)
+
+Fixes a silent, indefinite backup-freeze bug. The backup lock (`.csb-backup.lock`) only checked whether *some* process with the recorded PID was alive -- with no defense against PID reuse. When a backup died without releasing its lock (a computer restart mid-backup), the OS recycled its PID to another long-lived process, the lock looked permanently held, and **every subsequent backup silently skipped** -- freezing the session index so new sessions became invisible to `csb search`. Observed live: a backup's PID was reused by `WindowsTerminal.exe` after a restart and backups silently skipped for two days. 602/602 tests pass (was 589 at v0.3.5; +13 across the rewritten `test_lockfile.py`).
+
+### Fixed
+- **PID-reuse staleness in `lockfile.py`** -- the lock now records process *identity*, not just a number, and reclaims a stale lock when ANY of four signals fire: (1) the PID is not alive; (2) the PID is alive but its executable name differs from what was recorded (reuse by a different program); (3) the PID is alive but its start-time differs (reuse by the same program name); (4) the lock is older than `STALE_LOCK_AGE_SECONDS` (30 min) -- a portable backstop for hung backups and platforms where identity can't be read. The first three reclaim instantly; the age backstop guarantees eventual recovery everywhere.
+- **Backup-skip is no longer silent** -- a genuine concurrent run now prints `Another csb backup is running (PID N, started Nm ago). Skipping.`, and reclaiming a stale lock prints `csb: reclaimed stale backup lock (PID N, <reason>) -- a prior backup was interrupted`. The original failure was invisible; this makes both the benign and the recovered cases legible. Suppressed under `--quiet` (hook / cron contract preserved).
+
+### Changed
+- **Lock file format is now a JSON object** -- `{"pid", "acquired_at", "proc_name", "start_time", "host"}` instead of a bare PID line. A non-object / non-JSON lock (including the old bare-PID format) reads as corrupted and is safely reclaimed.
+- **`backup_lock(claude_dir, *, quiet=False)`** gained a `quiet` keyword so it owns the skip / reclaim messaging (it has the lock's identity + age); `cmd_backup` no longer prints its own skip line.
+- **Lock acquisition does a readback-verify** -- after writing our identity we re-read the lock and yield False if another run won the file, giving a single winner under the (low-contention) race between two backups reclaiming the same stale lock.
+
+### Added
+- **Best-effort, dependency-free process introspection** in `lockfile.py`: `_proc_name(pid)` (Windows `QueryFullProcessImageNameW`; Linux `/proc/<pid>/comm`) and `_proc_start_time(pid)` (Windows `GetProcessTimes`; Linux `ctime` of `/proc/<pid>`). Both return `None` on unsupported platforms or any failure, degrading to the age backstop. Windows ctypes calls use explicit `HANDLE` arg/return types for Win64 correctness.
+- **13 net-new lockfile tests** covering reuse-by-different-name, reuse-by-same-name-newer-start, genuine-live (must NOT reclaim), hung-under-threshold (skip) vs hung-over-threshold (reclaim), identity-unavailable age fallback, clock-skew negative-age guard, reclaim/skip/quiet messaging, readback-verify race loser, and release-only-when-owned.
+
+### NO CHANGE (with rationale)
+- **`scanner.py` / `metadata.py` / `index.py`** -- the indexing path was never broken; it simply never ran while the lock was wedged. No change needed once the lock self-heals.
+- **`search.py`** -- the search engine was never broken; the missing session was unindexed (invisible to `search()`'s session enumeration), not mis-searched.
+- **Hook scripts (`hooks/`)** -- they invoke `csb --quiet backup`, routing through the same `cmd_backup` lock; the fix applies to unattended runs (where silent-skip-forever was most damaging) with no hook change.
+
 ## [0.3.5] -- 2026-05-21 (prealpha)
 
 Directory-scope search: `csb search -d <path>` (and `-D` for folder-only) ranks every indexed session that touched files under PATH by SUM(strength) of those file-operations, then runs FTS5 MATCH for the user's pattern within each ranked session. The killer-use-case feature of the v0.3.x track -- "I'm in folder X, which past sessions actually worked on it, and what did they say about Y?" -- finally lands. New `--min-strength {1,2,3}` filter trims out low-signal rows (Grep probes, read-only). Two small ergonomic refinements ride along: matched query terms now render in bold green inside excerpt lines, and the `--all` / `--deleted` flag pair is unified into a single `--deleted {only,all}` argument. 571/571 tests pass (was 547 at v0.3.4; +24 net new).
@@ -390,7 +486,12 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...HEAD
+[0.3.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10
+[0.3.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...v0.3.9
+[0.3.8]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.7...v0.3.8
+[0.3.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.6...v0.3.7
+[0.3.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.2...v0.3.3

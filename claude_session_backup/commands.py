@@ -10,7 +10,21 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import load_config, resolve_paths, save_config, read_cleanup_period
+from .config import (
+    load_config,
+    resolve_paths,
+    save_config,
+    read_cleanup_period,
+    DEFAULT_CLEANUP_PERIOD_DAYS,
+    SETTINGS_NS,
+    CLAUDE_SETTINGS_KEYS,
+    is_settings_key,
+    settings_key_name,
+    get_settings_path,
+    read_claude_setting,
+    write_claude_setting,
+    validate_cleanup_period,
+)
 from .git_ops import (
     ensure_gitattributes,
     git_commit_noise,
@@ -26,6 +40,7 @@ from .index import (
     count_deleted_with_filter,
     get_active_session_ids,
     get_all_known_session_ids,
+    get_indexed_mtime,
     get_session,
     get_stats,
     init_schema,
@@ -103,12 +118,12 @@ def cmd_backup(args) -> int:
     claude_dir = config["claude_dir"]
     quiet = getattr(args, "quiet", False)
 
-    # Acquire lock (prevent concurrent cron runs)
-    with backup_lock(claude_dir) as acquired:
+    # Acquire lock (prevent concurrent cron runs). backup_lock now owns the
+    # skip / stale-reclaim messaging (it has the lock's identity + age), so
+    # we just honor the acquired flag here.
+    with backup_lock(claude_dir, quiet=quiet) as acquired:
         if not acquired:
-            if not quiet:
-                print("Another csb backup is already running. Skipping.", file=sys.stderr)
-            return 0  # Not an error -- just skip
+            return 0  # Not an error -- another instance is running
         return _cmd_backup_inner(args, config, claude_dir, quiet)
 
 
@@ -309,11 +324,16 @@ def cmd_status(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
     stats = get_stats(conn)
+
+    is_repo = is_git_repo(claude_dir)
+    # Per-session "un-backed-up" detection (transcripts newer than the index).
+    # Only meaningful inside a git repo (where backups commit); skip otherwise.
+    unbacked = find_unbacked_sessions(conn, claude_dir) if is_repo else []
     conn.close()
 
     print(f"Claude Session Backup Status")
     print(f"  Claude dir:    {claude_dir}")
-    print(f"  Git repo:      {'yes' if is_git_repo(claude_dir) else 'NO'}")
+    print(f"  Git repo:      {'yes' if is_repo else 'NO'}")
     print(f"  Total sessions: {stats['total_sessions']}")
     print(f"  Active:         {stats['active_sessions']}")
     print(f"  Deleted:        {stats['deleted_sessions']}")
@@ -328,7 +348,7 @@ def cmd_status(args) -> int:
             print(f"    Commit: {scan['git_commit'][:8]}")
 
     # Git status
-    if is_git_repo(claude_dir):
+    if is_repo:
         status = git_status(claude_dir)
         changed = len([l for l in status.split("\n") if l.strip()])
         if changed:
@@ -336,7 +356,106 @@ def cmd_status(args) -> int:
         else:
             print(f"  Working tree: clean")
 
+        # Per-session backup freshness. Counts the live session honestly (its
+        # transcript is mid-write) -> goes to 0 once all sessions close.
+        if not unbacked:
+            print(f"  Un-backed-up:   none")
+        else:
+            n = len(unbacked)
+            print(f"  Un-backed-up:   {n} session"
+                  f"{'s' if n != 1 else ''} (changed since last index -- run `csb backup`)")
+            try:
+                limit = int(config.get("status_unbacked_limit", 20))
+            except (TypeError, ValueError):
+                limit = 20
+            if limit < 0:
+                limit = n  # negative -> show all (matches display_top_folders)
+            for sf, recorded in unbacked[:limit]:
+                why = "never indexed" if recorded is None else "changed since last backup"
+                name = ""
+                if getattr(sf, "name_cache", None):
+                    try:
+                        name = (read_name_cache(sf.name_cache) or "").strip()
+                    except Exception:
+                        name = ""
+                label = f"{name}  " if name else ""
+                print(f"    {sf.session_id[:8]}  {label}({why})")
+            if n > limit:
+                print(f"    + {n - limit} more not shown")
+
     return 0
+
+
+# Exit code for `_check` when un-backed-up sessions are found. Distinct from
+# 1 (error) so callers (the SessionStart hook) can tell "gap" from "broke".
+CHECK_GAP_EXIT = 10
+# mtime slack (seconds) to absorb filesystem resolution / float jitter, so a
+# freshly-backed-up session isn't flagged as stale by a sub-second difference.
+_CHECK_MTIME_EPSILON = 1.0
+
+
+def find_unbacked_sessions(conn, claude_dir, exclude=None):
+    """Return [(SessionFile, recorded_mtime_or_None)] for sessions whose live
+    JSONL is newer than the mtime recorded at the last backup scan (or that
+    aren't in the index at all) -- i.e. sessions with un-backed-up changes.
+
+    The single source of truth for "what isn't backed up", shared by the
+    SessionStart hook's `_check` and (future) user-facing surfacing in
+    ``csb status`` / ``csb list``. ``exclude`` is a set of full session ids to
+    skip (e.g. the currently-active session, whose JSONL is mid-write).
+    """
+    exclude = set(exclude or [])
+    stale = []
+    for sf in scan_projects(claude_dir):
+        if sf.session_id in exclude:
+            continue
+        recorded = get_indexed_mtime(conn, sf.session_id)
+        if recorded is None or sf.jsonl_mtime > (recorded or 0) + _CHECK_MTIME_EPSILON:
+            stale.append((sf, recorded))
+    return stale
+
+
+def cmd_check(args) -> int:
+    """INTERNAL (`csb _check`): the SessionStart hook's gap detector. Reports
+    sessions with un-backed-up changes; the hook uses the exit code to decide
+    whether to warn + recover. Hidden from `csb --help`, but invokable by hand
+    for maintainers / post-crash triage. ``--exclude <session-id>`` (repeatable)
+    skips a session -- the hook excludes the currently-active one.
+
+    Exit codes:
+      0                -- clean: every session is backed up
+      CHECK_GAP_EXIT   -- one or more sessions have un-backed-up changes
+      1                -- error (not a git repo)
+    """
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    quiet = getattr(args, "quiet", False)
+    exclude = getattr(args, "exclude", None)
+
+    if not is_git_repo(claude_dir):
+        print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
+        return 1
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    stale = find_unbacked_sessions(conn, claude_dir, exclude)
+    conn.close()
+
+    if not stale:
+        if not quiet:
+            print("All sessions backed up.")
+        return 0
+
+    # Concise, user-facing summary (the hook puts this in a systemMessage).
+    n = len(stale)
+    print(f"csb: {n} session(s) with un-backed-up changes "
+          f"(likely an unclean shutdown -- run `csb backup` to capture now):")
+    for sf, recorded in stale[:5]:
+        why = "never indexed" if recorded is None else "changed since last backup"
+        print(f"  {sf.session_id[:8]}  ({why})")
+    if n > 5:
+        print(f"  ... and {n - 5} more")
+    return CHECK_GAP_EXIT
 
 
 def _resolve_session_or_exit(conn, query: str) -> tuple[str | None, int]:
@@ -937,34 +1056,186 @@ def cmd_rebuild_index(args) -> int:
 
 
 def cmd_config(args) -> int:
-    """View/edit configuration."""
-    config = load_config(getattr(args, "claude_dir", None))
+    """View/edit configuration.
 
-    if args.key is None:
-        # Show all config
+    A bare key addresses csb's own config (``session-backup-config.json``). A
+    key in the ``settings:`` namespace addresses Claude Code's ``settings.json``
+    -- chiefly ``settings:cleanupPeriodDays``, the session purge TTL. The two
+    files never collide: bare -> ours, ``settings:`` -> Claude Code's.
+    """
+    config = load_config(getattr(args, "claude_dir", None))
+    key = args.key
+
+    # Route settings:* keys to Claude Code's settings.json.
+    if key is not None and is_settings_key(key):
+        return _config_claude_setting(args, config, key)
+
+    if key is None:
+        # Dump csb config as JSON on stdout (scriptable); surface the
+        # settings: namespace on stderr so stdout stays pure JSON.
         print(json.dumps(config, indent=2))
+        _print_settings_keys_hint(config)
         return 0
 
+    # A bare key that names a known Claude Code setting is almost certainly a
+    # mistake -- nudge toward the namespaced form rather than a dead end.
+    if key in CLAUDE_SETTINGS_KEYS:
+        print(
+            f"'{key}' is a Claude Code setting (settings.json), not a csb "
+            f"config key. Address it with the settings: namespace:\n"
+            f"    csb config {SETTINGS_NS}{key}            # view\n"
+            f"    csb config {SETTINGS_NS}{key} <value>    # change",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.value is None:
-        # Show specific key
-        if args.key in config:
-            val = config[args.key]
+        # Show specific csb config key
+        if key in config:
+            val = config[key]
             print(json.dumps(val) if isinstance(val, (list, dict)) else str(val))
         else:
-            print(f"Unknown config key: {args.key}", file=sys.stderr)
+            print(f"Unknown config key: {key}", file=sys.stderr)
             return 1
         return 0
 
-    # Set value
+    # Set csb config value
     try:
         parsed = json.loads(args.value)
     except json.JSONDecodeError:
         parsed = args.value
 
-    config[args.key] = parsed
+    config[key] = parsed
     save_config(config, getattr(args, "claude_dir", None))
-    print(f"Set {args.key} = {parsed}")
+    print(f"Set {key} = {parsed}")
     return 0
+
+
+def _config_claude_setting(args, config, namespaced_key) -> int:
+    """Handle ``csb config settings:<key> [value]`` against Claude Code's
+    settings.json (read on GET, read-merge-write on SET)."""
+    bare = settings_key_name(namespaced_key)
+    claude_dir = config["claude_dir"]
+    settings_path = get_settings_path(claude_dir)
+
+    if bare not in CLAUDE_SETTINGS_KEYS:
+        known = ", ".join(SETTINGS_NS + k for k in CLAUDE_SETTINGS_KEYS)
+        print(
+            f"Unknown Claude Code setting: {namespaced_key}. "
+            f"csb config can read/write: {known}.\n"
+            f"(Other settings.json keys: edit {settings_path} directly.)",
+            file=sys.stderr,
+        )
+        return 1
+
+    meta = CLAUDE_SETTINGS_KEYS[bare]
+
+    # GET
+    if args.value is None:
+        value, present = read_claude_setting(claude_dir, bare)
+        if present:
+            print(f"{value}  ({settings_path})")
+        else:
+            print(f"{meta['default']}  (default; not set in {settings_path})")
+        if bare == "cleanupPeriodDays":
+            _print_cleanup_guidance(value if present else meta["default"])
+        return 0
+
+    # SET -- validation is key-specific.
+    if bare == "cleanupPeriodDays":
+        return _set_cleanup_period(args, claude_dir)
+
+    # No other writable keys yet (the registry is the allowlist).
+    print(f"Setting {namespaced_key} is not writable via csb.", file=sys.stderr)
+    return 1
+
+
+def _set_cleanup_period(args, claude_dir) -> int:
+    """Validate, guard, and write ``cleanupPeriodDays`` to settings.json."""
+    value, error = validate_cleanup_period(args.value)
+    if error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+
+    # Guard the destructive value. 0 makes Claude Code stop writing transcripts
+    # AND delete every existing one at next startup -- require explicit --force.
+    if value == 0 and not getattr(args, "force", False):
+        print(
+            "Refusing to set cleanupPeriodDays = 0 without --force.\n"
+            "  0 does NOT mean 'keep forever'. It disables session persistence: "
+            "Claude Code stops writing transcripts and DELETES all existing "
+            "ones at its next startup.\n"
+            "  To effectively never purge, set a large number instead, e.g.:\n"
+            f"      csb config {SETTINGS_NS}cleanupPeriodDays 36500\n"
+            "  If you really do want to disable persistence, re-run with --force.",
+            file=sys.stderr,
+        )
+        return 2
+
+    current = read_cleanup_period(claude_dir)
+    try:
+        path = write_claude_setting(claude_dir, "cleanupPeriodDays", value)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    print(f"Set cleanupPeriodDays = {value} in {path}")
+    if value == 0:
+        print(
+            "  WARNING: session persistence is now OFF. Claude Code will delete "
+            "existing transcripts at its next startup. Your csb git backups "
+            "remain recoverable via 'csb restore'.",
+            file=sys.stderr,
+        )
+    elif value < current:
+        print(
+            f"  Note: lowering the TTL from {current} to {value} days may purge "
+            f"sessions older than {value} days at Claude Code's next start. "
+            f"csb's git backups keep them recoverable ('csb restore').",
+            file=sys.stderr,
+        )
+    print("  Takes effect the next time Claude Code starts.", file=sys.stderr)
+    return 0
+
+
+def _print_cleanup_guidance(value) -> None:
+    """Explain what cleanupPeriodDays means + how to change it. Printed to
+    stderr so a GET's stdout stays a clean, parseable value."""
+    print(
+        f"  Sessions are purged {value} day(s) after last use "
+        f"(Claude Code default: {DEFAULT_CLEANUP_PERIOD_DAYS}).",
+        file=sys.stderr,
+    )
+    print(
+        f"  Change: csb config {SETTINGS_NS}cleanupPeriodDays <days>  (e.g. 365). "
+        f"To effectively never purge, use a large number (e.g. 36500).",
+        file=sys.stderr,
+    )
+    print(
+        "  Caution: 0 disables session persistence -- Claude Code deletes all "
+        "transcripts at next startup.",
+        file=sys.stderr,
+    )
+
+
+def _print_settings_keys_hint(config) -> None:
+    """On a bare ``csb config``, point at the settings: namespace (stderr, so
+    the JSON dump on stdout stays clean and pipeable)."""
+    claude_dir = config["claude_dir"]
+    print("", file=sys.stderr)
+    print(
+        "Claude Code settings (separate file; address with the settings: "
+        "namespace):",
+        file=sys.stderr,
+    )
+    for bare, meta in CLAUDE_SETTINGS_KEYS.items():
+        value, present = read_claude_setting(claude_dir, bare)
+        shown = value if present else meta["default"]
+        src = "" if present else " (default)"
+        print(
+            f"  {SETTINGS_NS}{bare} = {shown}{src}   # {meta['summary']}",
+            file=sys.stderr,
+        )
 
 
 def cmd_resume(args) -> int:
