@@ -212,6 +212,24 @@ def build_parser():
     p_resume = sub.add_parser("resume", help="Launch claude --resume with full UUID")
     _add_common_flags(p_resume)
     p_resume.add_argument("session_id", help="Session ID (prefix match supported)")
+    # Pruned-session handling (v0.3.14, #34): if the session has deleted_at
+    # set, Claude Code can't resume it (JSONL missing). These flags control
+    # whether we auto-restore from git before resuming. Default (no flag)
+    # is interactive: prompt on TTY, refuse with hint on non-TTY.
+    resume_pruned_group = p_resume.add_mutually_exclusive_group()
+    resume_pruned_group.add_argument(
+        "--restore-pruned",
+        action="store_true", dest="restore_pruned",
+        help="Auto-restore the session from git history before resuming, "
+             "without prompting. Required for non-TTY use (cron, scripts).",
+    )
+    resume_pruned_group.add_argument(
+        "--no-restore-pruned",
+        action="store_true", dest="no_restore_pruned",
+        help="Refuse to restore; exit with an error and a hint to run "
+             "`csb restore` separately. Useful for scripts that want to "
+             "detect pruned sessions instead of recovering them.",
+    )
 
     # scan
     p_scan = sub.add_parser(
