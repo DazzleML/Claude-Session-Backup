@@ -448,6 +448,9 @@ def _make_args_namespace(**kwargs):
         # v0.3.12: full-restore flags
         "jsonl_only": False,
         "force": False,
+        # v0.3.14 (#34): resume-pruned flags
+        "restore_pruned": False,
+        "no_restore_pruned": False,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -2680,3 +2683,274 @@ def test_cmd_restore_dry_run_reports_full_count(mock_claude_dir, tmp_path, capsy
     # And nothing should actually be written
     for rel in expected:
         assert not (mock_claude_dir / rel).exists(), "dry-run wrote: " + rel
+
+
+# ── cmd_resume on pruned UUID (v0.3.14, #34) ────────────────────────────
+
+def _setup_pruned_session_in_db(db_path, claude_dir, slug, uuid):
+    """Commit a full session to git, delete its files, mark deleted in DB.
+    Mirrors the lifecycle: session existed -> Claude Code purged -> DB
+    knows it's pruned but git has the bytes."""
+    expected = _setup_full_session(claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    _populate_db_with_session(db_path, slug, uuid, jsonl_path,
+                              deleted_at="2026-05-15T00:00:00Z")
+    return expected, jsonl_path
+
+
+def _make_resume_args(**kwargs):
+    """Namespace mimicking argparse for cmd_resume (mirrors CLI flags)."""
+    import argparse
+    defaults = {
+        "session_id": None,
+        "quiet": False,
+        "claude_dir": None,
+        "db": None,
+        "restore_pruned": False,
+        "no_restore_pruned": False,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_resume_pruned_with_no_restore_flag_exits_with_hint(
+    mock_claude_dir, tmp_path, capsys, monkeypatch
+):
+    """`csb resume <uuid> --no-restore-pruned` on a pruned session must
+    exit 1 with a clear hint to use `csb restore` instead. No prompt,
+    no restore."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-pruned-norestore"
+    uuid = "abcd1111-aaaa-bbbb-cccc-222222222222"
+    _setup_pruned_session_in_db(tmp_path / "fresh.db", mock_claude_dir, slug, uuid)
+    # Ensure we never accidentally launch a real claude subprocess
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: pytest.fail("should not invoke claude"))
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+        no_restore_pruned=True,
+    )
+    rc = cmd_resume(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    combined = (captured.out + captured.err).lower()
+    assert "pruned" in combined
+    assert "csb restore" in combined  # hint to the user
+
+
+def test_cmd_resume_pruned_non_tty_without_flag_exits_with_hint(
+    mock_claude_dir, tmp_path, capsys, monkeypatch
+):
+    """Non-TTY (cron/script) without --restore-pruned or --no-restore must
+    NOT hang on a prompt. Exit 1 with a hint to pass one of the flags."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-pruned-notty"
+    uuid = "abcd2222-aaaa-bbbb-cccc-333333333333"
+    _setup_pruned_session_in_db(tmp_path / "fresh.db", mock_claude_dir, slug, uuid)
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: pytest.fail("should not invoke claude"))
+    # Force non-TTY
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+    )
+    rc = cmd_resume(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    combined = (captured.out + captured.err).lower()
+    assert "non-interactive" in combined or "no tty" in combined
+    assert "--restore-pruned" in combined and "--no-restore-pruned" in combined
+
+
+def test_cmd_resume_pruned_with_restore_pruned_flag_restores_then_attempts_resume(
+    mock_claude_dir, tmp_path, capsys, monkeypatch
+):
+    """--restore-pruned auto-restores from git, then proceeds to launch
+    claude --resume. We surgically intercept ONLY `claude` invocations --
+    other subprocess.run calls (git operations) must pass through."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-pruned-yes"
+    uuid = "abcd3333-aaaa-bbbb-cccc-444444444444"
+    expected, jsonl_path = _setup_pruned_session_in_db(
+        tmp_path / "fresh.db", mock_claude_dir, slug, uuid
+    )
+    # Confirm baseline: files are NOT on disk before resume call
+    for rel in expected:
+        assert not (mock_claude_dir / rel).exists()
+
+    # Surgically intercept ONLY `claude` invocations -- other subprocess.run
+    # calls (git operations during restore) must pass through.
+    captured_runs = []
+    real_run = subprocess.run
+
+    class _MockResult:
+        returncode = 0
+
+    def _mock_run(*a, **kw):
+        cmd = a[0] if a else kw.get("args", [])
+        if cmd and cmd[0] == "claude":
+            captured_runs.append((a, kw))
+            return _MockResult()
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr("subprocess.run", _mock_run)
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+        restore_pruned=True,
+    )
+    rc = cmd_resume(args)
+    captured = capsys.readouterr()
+    assert rc == 0, "stderr: " + captured.err
+
+    # Files were restored
+    for rel, body in expected.items():
+        assert (mock_claude_dir / rel).exists(), "missing after restore: " + rel
+        assert (mock_claude_dir / rel).read_bytes() == body
+
+    # claude --resume was invoked
+    assert len(captured_runs) == 1
+    args_passed, _ = captured_runs[0]
+    cmd = args_passed[0]
+    assert cmd[0] == "claude"
+    assert cmd[1] == "--resume"
+    assert cmd[2] == uuid
+
+
+def test_cmd_resume_pruned_tty_prompt_yes(mock_claude_dir, tmp_path, capsys, monkeypatch):
+    """TTY + user types 'Y' (or empty) at the prompt -> restore + resume."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-pruned-prompt-y"
+    uuid = "abcd4444-aaaa-bbbb-cccc-555555555555"
+    expected, _ = _setup_pruned_session_in_db(tmp_path / "fresh.db", mock_claude_dir, slug, uuid)
+
+    # Force TTY + canned answer
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+
+    # Same selective mock as the --restore-pruned test: only catch `claude`
+    real_run = subprocess.run
+
+    class _MockResult:
+        returncode = 0
+
+    def _mock_run(*a, **kw):
+        cmd = a[0] if a else kw.get("args", [])
+        if cmd and cmd[0] == "claude":
+            return _MockResult()
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr("subprocess.run", _mock_run)
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+    )
+    rc = cmd_resume(args)
+    assert rc == 0
+    # Restore happened
+    for rel in expected:
+        assert (mock_claude_dir / rel).exists()
+
+
+def test_cmd_resume_pruned_tty_prompt_no_aborts_cleanly(
+    mock_claude_dir, tmp_path, capsys, monkeypatch
+):
+    """TTY + user types 'n' -> abort with rc=0 (cleanly aborted, not error)
+    and no restore + no resume invoked."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-pruned-prompt-n"
+    uuid = "abcd5555-aaaa-bbbb-cccc-666666666666"
+    expected, _ = _setup_pruned_session_in_db(tmp_path / "fresh.db", mock_claude_dir, slug, uuid)
+
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "n")
+    monkeypatch.setattr("subprocess.run", lambda *a, **kw: pytest.fail("should not invoke claude"))
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+    )
+    rc = cmd_resume(args)
+    assert rc == 0
+    # No restore happened
+    for rel in expected:
+        assert not (mock_claude_dir / rel).exists()
+
+
+def test_cmd_resume_alive_session_unchanged_regression(
+    mock_claude_dir, tmp_path, monkeypatch
+):
+    """Alive (non-pruned) session: cmd_resume should NOT prompt, NOT restore,
+    just launch claude --resume immediately. v0.3.13 behavior preserved."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-alive-resume"
+    uuid = "abcd6666-aaaa-bbbb-cccc-777777777777"
+    _make_session_jsonl(mock_claude_dir, slug, uuid)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    # NOT marked deleted
+    _populate_db_with_session(tmp_path / "fresh.db", slug, uuid, jsonl_path,
+                              deleted_at=None)
+
+    captured_runs = []
+    real_run = subprocess.run
+
+    class _MockResult:
+        returncode = 0
+
+    def _mock_run(*a, **kw):
+        cmd = a[0] if a else kw.get("args", [])
+        if cmd and cmd[0] == "claude":
+            captured_runs.append((a, kw))
+            return _MockResult()
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr("subprocess.run", _mock_run)
+    # Prompt MUST NOT fire for alive sessions
+    monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("alive session should not prompt"))
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+    )
+    rc = cmd_resume(args)
+    assert rc == 0
+    assert len(captured_runs) == 1
+
+
+# ── _restore_session helper (v0.3.14 extraction smoke test) ────────────
+
+def test_restore_session_helper_returns_structured_result(mock_claude_dir, tmp_path):
+    """Direct call to the extracted helper: confirms it can be invoked
+    independently of cmd_restore's CLI shell, with structured return."""
+    from claude_session_backup.commands import _restore_session, RestoreResult
+    slug = "C--code-helper-test"
+    uuid = "aaaabbbb-cccc-dddd-eeee-ffff00001111"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    commit = _git(mock_claude_dir, "log", "--all", "-1", "--diff-filter=D",
+                  "--pretty=format:%H", "--", jsonl_path).stdout.strip()
+    parent = _git(mock_claude_dir, "rev-parse", commit + "~1").stdout.strip()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir),
+        full_uuid=uuid,
+        jsonl_path=jsonl_path,
+        commit=parent,
+    )
+    assert isinstance(result, RestoreResult)
+    assert result.wrote == len(expected)
+    assert result.failed == []
+    assert result.commit_short == parent[:8]
+    # Files actually on disk byte-for-byte
+    for rel, body in expected.items():
+        assert (mock_claude_dir / rel).read_bytes() == body

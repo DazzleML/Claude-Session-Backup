@@ -236,6 +236,7 @@ If you're going to `claude --resume <uuid>` after restore, run restore FIRST. Th
 
 - `csb scan -d <path> --deleted --restore` -- bulk-restores every deleted session whose original folder was under `<path>`. Uses the same per-file overwrite policy as `csb restore`.
 - `csb update backfill-deleted` -- the metadata-side complement: doesn't restore files (that's `csb restore`); makes sure the DB knows about every UUID git has seen.
+- **`csb resume <pruned-uuid>`** (v0.3.14+) -- detects pruned sessions and offers to restore first. On TTY: prompts "Restore from git before resuming? [Y/n]". Non-TTY: requires `--restore-pruned` (auto-yes) or `--no-restore-pruned` (abort with hint to use `csb restore`). The two flags are mutually exclusive; default (no flag) is interactive. Calls the same `_restore_session` helper as `csb restore`, so the policy stays consistent (preserve-present default; `--force` still overrides for `csb restore` itself but `csb resume`'s auto-restore step does not pass `--force`).
 
 ## Schema versions
 

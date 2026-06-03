@@ -9,6 +9,28 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.14] -- 2026-06-03 (prealpha)
+
+`csb resume <uuid>` now handles pruned (deleted_at-set) sessions gracefully -- prompts to restore from git before resuming on TTY, honors `--restore-pruned` / `--no-restore` flags non-TTY. Plus a refactor extracting `_restore_session()` from `cmd_restore` so the resume path reuses the exact same file-level restore policy as `csb restore` (consolidation discipline from #34's AC #1 + #2). 808/808 tests pass (was 801; +7 new). Refs #34 (resume half complete; view half awaits #14).
+
+### Fixed
+- **`csb resume <pruned-uuid>` no longer fails with a Claude Code error.** Pre-v0.3.14 it would proceed to `claude --resume <uuid>` against a missing JSONL, leaving the user with an opaque "session not found" from Claude Code. Now csb detects the pruned state from the DB row's `deleted_at` and offers to restore first.
+
+### Added
+- **`csb resume --restore-pruned`** -- auto-restore from git before resuming, no prompt. Required for non-TTY use (cron, scripts).
+- **`csb resume --no-restore-pruned`** -- refuse to restore; exit 1 with a hint to run `csb restore` separately. For scripts that want to detect pruned sessions instead of recovering them. (Symmetric naming with `--restore-pruned` so the flag pair is obviously about the same decision.)
+- **TTY-interactive prompt on `csb resume <pruned-uuid>`** -- "Session 'X' is pruned. Restore from git before resuming? [Y/n]". Non-TTY without a flag is an error with a hint (no silent hang). The two explicit flags are mutually exclusive.
+- **`_restore_session(...)` helper + `RestoreResult` dataclass** in `commands.py` -- extracted from `cmd_restore`. Pure function that takes `(claude_dir, full_uuid, jsonl_path, commit, flags)` and returns a structured result (write_list, preserve_list, wrote, failed, commit_short). `cmd_restore` is now a thin wrapper that handles CLI parsing + output formatting; `cmd_resume` calls the same helper after the prompt; future `cmd_view` (#14) will too.
+- **7 new automated tests** covering: `--no-restore-pruned` exit-with-hint, non-TTY without flag exit-with-hint, `--restore-pruned` restores + invokes resume, TTY prompt Y-path, TTY prompt n-path (clean abort), alive-session regression (no prompt + immediate resume), and a direct-invocation smoke test for `_restore_session` returning a structured `RestoreResult`.
+
+### Changed
+- **`cmd_restore` is now a thin wrapper around `_restore_session`.** The slug-extraction, scope enumeration, per-file overwrite check, lock acquisition, and write loop all live in the shared helper. Output formatting + DB-or-git-fallback resolution remain in `cmd_restore` because they're CLI-shape-specific.
+
+### Notes
+- **The consolidation discipline (#34 AC #1+#2) is honored.** Before adding `cmd_resume`'s pruned-handling, the existing restore logic was extracted to a shared `_restore_session` helper so the policy stays consistent across callers. No duplicated write loops, no duplicated overwrite policy, no duplicated lock acquisition. When `cmd_view` lands (#14 + #34 phase B), it plugs into the same helper.
+- **`csb view <pruned-uuid>` is NOT addressed in this release.** That depends on #14 (the viewer launcher itself, which doesn't exist yet). #34 stays open until #14 + view's pruned path both land. The helper extraction here means that future work is "wire it up at one call site" instead of "build the whole policy again."
+- **No changes to `csb restore` semantics.** All v0.3.13 behavior preserved -- this is a pure refactor + new feature on `csb resume`.
+
 ## [0.3.13] -- 2026-06-03 (prealpha)
 
 `csb restore` correctness fix: three SESSION-HISTORY categories that v0.3.12 deferred as "EPHEMERAL (first cut)" are now restored by default. Whitebox investigation against `c:/code-ext/claude-code/` confirmed all three are read on session resume; missing them silently breaks user-visible features. Plus a refactor that makes the SESSION-HISTORY scope table-driven -- adding a new category is now one row instead of two places (pathspec + filter branch). Empirical re-test on a real 8788-message session restored **708 files** vs the v0.3.12 count of 105 -- the missing 603 were almost entirely `file-history/` snapshots. 801/801 tests pass (was 795; +6 new).
@@ -575,7 +597,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...HEAD
+[0.3.14]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...v0.3.11
