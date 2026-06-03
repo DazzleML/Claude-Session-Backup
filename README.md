@@ -102,6 +102,8 @@ csb config settings:cleanupPeriodDays 365     # Set the TTL (writes ~/.claude/se
 
 Use `csb search` to find old sessions by **what was discussed**, not just by folder or name. The query is a case-insensitive literal substring by default; `-E` switches to Python regex.
 
+Under the hood `csb search` consults per-project **FTS5** indexes (SQLite's built-in [full-text search engine](https://sqlite.org/fts5.html), the same one that powers many IDE/Mail search bars). Run `csb update build-fts5` once to build them; after that, searching tens of thousands of messages is sub-second because FTS5 is an inverted-index lookup, not a `LIKE '%word%'` linear scan. **What's indexed**: every USER prompt, AI/assistant response, and subagent (AGENT) sidechain transcript -- plus tool calls and outputs when the raw `<uuid>.jsonl` is the source (the `.convo*` / `.sesslog*` sources from [claude-session-logger](https://github.com/DazzleML/claude-session-logger) are USER/AI/AGENT-only by design). csb stores one FTS5 database per project (`~/.claude/csb-fts/<project>__<hash>_<user>.db`) so search stays fast even when individual projects accumulate years of history.
+
 ```bash
 # Find every session where you talked about OAuth callbacks
 csb search "oauth callback"

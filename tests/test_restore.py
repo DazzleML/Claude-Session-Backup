@@ -1994,33 +1994,151 @@ def test_git_ls_tree_for_uuid_includes_per_session_baks_subdir(mock_claude_dir):
 
 
 def test_git_ls_tree_for_uuid_excludes_ephemeral_paths(mock_claude_dir):
-    """Paths classified EPHEMERAL (debug/, telemetry/, file-history/, tasks/,
-    todos/, session-env/) MUST NOT appear in the result -- they're written
-    to git by csb backup but are not part of the SESSION-HISTORY restore set
-    per the v0.3.12 design (DWP 2026-06-03).
+    """Paths classified EPHEMERAL by v0.3.13 (whitebox-verified against
+    Claude Code source) MUST NOT appear in the result. The whitelist of
+    EPHEMERAL categories under ~/.claude/ is:
+
+      - debug/<uuid>.txt          -- only read with --debug-file
+      - telemetry/...<uuid>.json  -- retry queue, no resume read
+      - todos/<uuid>-agent-*.json -- legacy v1; resume reads from JSONL
+
+    Categories that USED TO BE deferred-EPHEMERAL in v0.3.12 but are now
+    SESSION-HISTORY in v0.3.13 (file-history, tasks, session-env) are
+    covered by their own dedicated inclusion tests below; this test
+    exists to ensure we never *accidentally* restore the categories that
+    are genuinely ephemeral.
     """
     uuid = "eeeeeeee-1111-2222-3333-444444444444"
     slug = "C--proj-noise"
     jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
     debug_rel = f"debug/{uuid}.txt"
     telem_rel = f"telemetry/1p_failed_events.{uuid}.abc.json"
-    fhist_rel = f"file-history/{uuid}/032ce4a81e82662a@v1"
-    tasks_rel = f"tasks/{uuid}/1.json"
     todos_rel = f"todos/{uuid}-agent-{uuid}.json"
-    env_rel = f"session-env/{uuid}"
     for rel, body in [
         (debug_rel, b"debug log\n"),
         (telem_rel, b'{"event":"x"}\n'),
-        (fhist_rel, b"snapshot bytes\n"),
-        (tasks_rel, b'{"task":1}\n'),
         (todos_rel, b"[]\n"),
-        (env_rel, b"PATH=/usr/bin\n"),
     ]:
         _commit_file(mock_claude_dir, rel, body, "add " + rel)
     commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
 
     paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
     assert paths == {jsonl_rel}, "ephemeral paths leaked: " + repr(paths)
+
+
+def test_git_ls_tree_for_uuid_includes_file_history(mock_claude_dir):
+    """v0.3.13: file-history/<uuid>/* is SESSION-HISTORY -- Claude Code's
+    /undo feature reads from it on resume (whitebox: fileHistory.ts:733-741).
+    Without these, /undo on a recovered session fails at restoreBackup().
+    """
+    uuid = "11ee11ee-1111-2222-3333-444444444444"
+    slug = "C--proj-fhist"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    fhist1 = f"file-history/{uuid}/032ce4a81e82662a@v1"
+    fhist2 = f"file-history/{uuid}/032ce4a81e82662a@v2"
+    fhist3 = f"file-history/{uuid}/aabbccdd11223344@v1"
+    for rel, body in [
+        (fhist1, b"snapshot v1\n"),
+        (fhist2, b"snapshot v2\n"),
+        (fhist3, b"snapshot other\n"),
+    ]:
+        _commit_file(mock_claude_dir, rel, body, "fhist " + rel)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, fhist1, fhist2, fhist3}
+
+
+def test_git_ls_tree_for_uuid_includes_tasks(mock_claude_dir):
+    """v0.3.13: tasks/<uuid>/* is SESSION-HISTORY (when task v2 enabled) --
+    Claude Code reads tasks directly from disk on resume in that mode
+    (whitebox: tasks.ts:221-227, sessionRestore.ts:55). Without these the
+    task list silently regenerates empty + ID counter resets.
+    """
+    uuid = "22ee22ee-1111-2222-3333-444444444444"
+    slug = "C--proj-tasks"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    task1 = f"tasks/{uuid}/1.json"
+    task2 = f"tasks/{uuid}/2.json"
+    hwm = f"tasks/{uuid}/.highwatermark"
+    for rel, body in [
+        (task1, b'{"task":1}\n'),
+        (task2, b'{"task":2}\n'),
+        (hwm, b"3"),
+    ]:
+        _commit_file(mock_claude_dir, rel, body, "tasks " + rel)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, task1, task2, hwm}
+
+
+def test_git_ls_tree_for_uuid_includes_session_env(mock_claude_dir):
+    """v0.3.13: session-env/<uuid>/* is SESSION-HISTORY -- read by Claude
+    Code's shell-execution path on every subshell to restore venv/conda
+    activation (whitebox: sessionEnvironment.ts:15-23). Without these the
+    resumed session loses its shell environment state.
+    """
+    uuid = "33ee33ee-1111-2222-3333-444444444444"
+    slug = "C--proj-senv"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    env1 = f"session-env/{uuid}/SessionStart-hook-1.sh"
+    env2 = f"session-env/{uuid}/SetupCwdChange-hook-2.sh"
+    for rel, body in [
+        (env1, b"export VENV=/path/to/venv\n"),
+        (env2, b"cd /new/cwd\n"),
+    ]:
+        _commit_file(mock_claude_dir, rel, body, "senv " + rel)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, env1, env2}
+
+
+def test_categorize_path_for_uuid_returns_correct_labels(mock_claude_dir):
+    """The categorize helper should return the correct ScopeSpec label for
+    each path category, and None for paths outside the SESSION-HISTORY scope.
+
+    Drives `csb restore`'s summary output AND the table-driven discovery
+    invariant: every path returned by git_ls_tree_for_uuid must categorize
+    to a non-None label (round-trip property).
+    """
+    from claude_session_backup.git_ops import categorize_path_for_uuid
+    uuid = "44ee44ee-1111-2222-3333-444444444444"
+    slug = "C--proj-cat"
+
+    in_scope = [
+        (f"projects/{slug}/{uuid}.jsonl", "main transcript"),
+        (f"projects/{slug}/{uuid}/subagents/agent-x.jsonl", "session subtree"),
+        (f"projects/{slug}/{uuid}/tool-results/x.txt", "session subtree"),
+        (f"projects/{slug}/{uuid}/remote-agents/x.meta.json", "session subtree"),
+        (f"session-states/{uuid}.json", "session-states (logger)"),
+        (f"session-states/{uuid}.name-cache", "session-states (logger)"),
+        (f"session-states/{uuid}.run", "session-states (logger)"),
+        (f"sesslogs/MY__name__{uuid}_Alice/.sesslog.log", "sesslogs (logger)"),
+        (f"file-history/{uuid}/abc@v1", "file-history (Claude Code /undo)"),
+        (f"tasks/{uuid}/1.json", "tasks (Claude Code task v2)"),
+        (f"session-env/{uuid}/SessionStart-hook-1.sh", "session-env (Claude Code shell env)"),
+    ]
+    for path, expected_label in in_scope:
+        actual = categorize_path_for_uuid(path, slug, uuid)
+        assert actual == expected_label, (
+            "category mismatch for " + path +
+            ": expected " + repr(expected_label) + " got " + repr(actual)
+        )
+
+    out_of_scope = [
+        f"debug/{uuid}.txt",
+        f"telemetry/1p_failed_events.{uuid}.abc.json",
+        f"todos/{uuid}-agent-{uuid}.json",
+        f"sesslogs/bak/MY__name__{uuid}_Alice/.log",
+        f"projects/other-slug/{uuid}.jsonl",  # wrong slug
+        f"projects/{slug}/different-uuid.jsonl",  # wrong uuid
+    ]
+    for path in out_of_scope:
+        assert categorize_path_for_uuid(path, slug, uuid) is None, (
+            "out-of-scope path miscategorized: " + path
+        )
 
 
 def test_git_ls_tree_for_uuid_does_not_match_other_uuid(mock_claude_dir):

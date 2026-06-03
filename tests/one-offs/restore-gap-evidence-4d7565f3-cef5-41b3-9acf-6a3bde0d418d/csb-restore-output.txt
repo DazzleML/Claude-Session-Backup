@@ -1,0 +1,6 @@
+Restored 105 files from commit 1dd6de62.
+Preserved 7 present files (kept on-disk content; use --force to overwrite from git).
+  main transcript: 1
+  subagents: 103
+  sesslogs (logger): 1
+Session should now be visible in Claude Code.
