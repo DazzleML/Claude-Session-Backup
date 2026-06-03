@@ -27,6 +27,8 @@ from .config import (
     validate_cleanup_period,
 )
 from .git_ops import (
+    SESSION_HISTORY_SCOPES,
+    categorize_path_for_uuid,
     ensure_gitattributes,
     git_commit_noise,
     git_commit_user,
@@ -895,7 +897,8 @@ def cmd_restore(args) -> int:
         print("(restored via git-history fallback -- DB had no row for this UUID)")
     if wrote > 1 and not getattr(args, "jsonl_only", False):
         # Category breakdown helps the user see what came back.
-        cats = _categorize_restored_paths(write_list, full_id or args.session_id)
+        resolved_uuid = full_id or args.session_id
+        cats = _categorize_restored_paths(write_list, slug, resolved_uuid)
         for label, count in cats:
             print(f"  {label}: {count}")
     print("Session should now be visible in Claude Code.")
@@ -917,37 +920,31 @@ def _extract_slug_from_jsonl_path(jsonl_path: str) -> str:
     return ""
 
 
-def _categorize_restored_paths(paths: list[str], uuid: str) -> list[tuple[str, int]]:
+def _categorize_restored_paths(
+    paths: list[str], slug: str, uuid: str,
+) -> list[tuple[str, int]]:
     """Group restored paths by category for the user-facing summary.
 
-    Returns ordered (label, count) pairs; only non-zero categories included.
+    Categorization is driven by ``git_ops.SESSION_HISTORY_SCOPES`` -- the
+    same table that drives discovery. Single source of truth means adding
+    a new restore category gets a label here automatically.
+
+    Order matches SESSION_HISTORY_SCOPES insertion order so the breakdown
+    output is stable and readable.
+
+    Returns ordered (label, count) pairs; only non-zero categories
+    included. Paths that don't match any scope are aggregated under
+    "other" (defensive -- shouldn't happen in normal restore flow).
     """
-    cats = {
-        "main transcript": 0,
-        "subagents": 0,
-        "tool-results": 0,
-        "remote-agents": 0,
-        "session-states (logger)": 0,
-        "sesslogs (logger)": 0,
-        "other": 0,
-    }
-    jsonl_tail = f"{uuid}.jsonl"
+    # Use a dict to preserve scope-table order, init counts to 0
+    cats: dict[str, int] = {spec.label: 0 for spec in SESSION_HISTORY_SCOPES}
+    cats["other"] = 0
     for p in paths:
-        if p.endswith(jsonl_tail) and "/" not in p.removeprefix("projects/").split("/", 1)[1].removeprefix(jsonl_tail).removesuffix(".jsonl"):
-            # heuristic: the top-level transcript -- count it as "main"
-            cats["main transcript"] += 1
-        elif "/subagents/" in p:
-            cats["subagents"] += 1
-        elif "/tool-results/" in p:
-            cats["tool-results"] += 1
-        elif "/remote-agents/" in p:
-            cats["remote-agents"] += 1
-        elif p.startswith("session-states/"):
-            cats["session-states (logger)"] += 1
-        elif p.startswith("sesslogs/"):
-            cats["sesslogs (logger)"] += 1
-        else:
+        label = categorize_path_for_uuid(p, slug, uuid)
+        if label is None:
             cats["other"] += 1
+        else:
+            cats[label] = cats.get(label, 0) + 1
     return [(k, v) for k, v in cats.items() if v > 0]
 
 

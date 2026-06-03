@@ -410,6 +410,121 @@ def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
     return sorted(paths)
 
 
+# ── SESSION-HISTORY scope table (the source of truth for "what to restore") ──
+#
+# Adding a new SESSION-HISTORY category? Add ONE row to SESSION_HISTORY_SCOPES.
+# That single row determines both DISCOVERY (which paths ls-tree returns) and
+# CATEGORIZATION (the human-friendly label in `csb restore`'s summary output).
+#
+# Each spec has:
+#   - label:       human-friendly category name (shown in restore summary)
+#   - pathspec_fmt: format string for the `git ls-tree --` pathspec (broad
+#                   directory scope; UUID/slug filtering happens in Python
+#                   because `git ls-tree` doesn't support `:(glob)` magic)
+#   - match_fmt:    Python-side predicate; tested against each ls-tree line
+#                   after path normalization. Determines if the line is keyed
+#                   to THIS uuid (vs. some sibling session's file in the same
+#                   broad pathspec scope).
+#
+# Whitebox-verified against `c:/code-ext/claude-code/`:
+#   - projects/<slug>/<uuid>{.jsonl,/...}  -- sessionStorage.ts (Claude Code)
+#   - session-states/<uuid>.*               -- session_state.py (claude-session-logger)
+#   - sesslogs/<dir-with-uuid>/...          -- reconciliation.py (logger)
+#   - file-history/<uuid>/...               -- fileHistory.ts (Claude Code; /undo)
+#   - tasks/<uuid>/...                      -- tasks.ts (Claude Code; task v2)
+#   - session-env/<uuid>/...                -- sessionEnvironment.ts (Claude Code; shell env)
+#
+# Intentionally NOT restored (whitebox-confirmed ephemeral / non-session-history):
+#   - debug/<uuid>.txt                      -- only read with --debug-file flag
+#   - todos/<uuid>-agent-*.json             -- legacy v1; resume reads from JSONL
+#   - telemetry/...<uuid>.*.json            -- retry queue, no resume read
+#   - sesslogs/bak/<dir>/...                -- user-managed folder, not logger
+#   - .session_cache.json under any project -- project-wide, not session-keyed
+
+
+from dataclasses import dataclass
+from typing import Callable
+
+
+@dataclass(frozen=True)
+class ScopeSpec:
+    """One SESSION-HISTORY category for the restore-discovery scope table."""
+    label: str
+    pathspec_fmt: str  # formatted with .format(slug=..., uuid=...)
+    match_fmt: Callable[[str, str, str], bool]  # (rel_path, slug, uuid) -> bool
+
+    def pathspec(self, slug: str, uuid: str) -> str:
+        return self.pathspec_fmt.format(slug=slug, uuid=uuid)
+
+    def matches(self, rel_path: str, slug: str, uuid: str) -> bool:
+        return self.match_fmt(rel_path, slug, uuid)
+
+
+def _matches_sesslog_dir(rel: str, slug: str, uuid: str) -> bool:
+    """sesslogs/<sanitized-name>__<uuid>_<user>/... -- match ONLY when the
+    FIRST component under sesslogs/ contains `__<uuid>_`. This deliberately
+    excludes `sesslogs/bak/` (user-managed; not logger). The logger's own
+    nested `<sesslog-dir>/baks/` is included naturally because it lives
+    under the matched first-component dir.
+    """
+    if not rel.startswith("sesslogs/"):
+        return False
+    parts = rel.split("/", 2)
+    return len(parts) >= 2 and f"__{uuid}_" in parts[1]
+
+
+SESSION_HISTORY_SCOPES: list[ScopeSpec] = [
+    ScopeSpec(
+        label="main transcript",
+        pathspec_fmt="projects/{slug}",
+        match_fmt=lambda rel, slug, uuid: rel == f"projects/{slug}/{uuid}.jsonl",
+    ),
+    ScopeSpec(
+        label="session subtree",
+        pathspec_fmt="projects/{slug}",
+        match_fmt=lambda rel, slug, uuid: rel.startswith(f"projects/{slug}/{uuid}/"),
+    ),
+    ScopeSpec(
+        label="session-states (logger)",
+        pathspec_fmt="session-states",
+        match_fmt=lambda rel, slug, uuid: rel.startswith(f"session-states/{uuid}."),
+    ),
+    ScopeSpec(
+        label="sesslogs (logger)",
+        pathspec_fmt="sesslogs",
+        match_fmt=_matches_sesslog_dir,
+    ),
+    ScopeSpec(
+        label="file-history (Claude Code /undo)",
+        pathspec_fmt="file-history",
+        match_fmt=lambda rel, slug, uuid: rel.startswith(f"file-history/{uuid}/"),
+    ),
+    ScopeSpec(
+        label="tasks (Claude Code task v2)",
+        pathspec_fmt="tasks",
+        match_fmt=lambda rel, slug, uuid: rel.startswith(f"tasks/{uuid}/"),
+    ),
+    ScopeSpec(
+        label="session-env (Claude Code shell env)",
+        pathspec_fmt="session-env",
+        match_fmt=lambda rel, slug, uuid: rel.startswith(f"session-env/{uuid}/"),
+    ),
+]
+
+
+def categorize_path_for_uuid(rel_path: str, slug: str, uuid: str) -> Optional[str]:
+    """Return the SESSION-HISTORY category label for a path keyed to ``uuid``,
+    or None if the path is not in any SESSION-HISTORY scope.
+
+    Used by `csb restore`'s summary output and by tests that need to verify
+    which category a particular path falls into.
+    """
+    for spec in SESSION_HISTORY_SCOPES:
+        if spec.matches(rel_path, slug, uuid):
+            return spec.label
+    return None
+
+
 def git_ls_tree_for_uuid(
     claude_dir: str,
     commit: str,
@@ -419,22 +534,31 @@ def git_ls_tree_for_uuid(
     """
     Enumerate every SESSION-HISTORY path keyed to ``uuid`` at ``commit``.
 
-    This is the discovery primitive that powers the v0.3.12+ full restore
-    (issues #32 + #33). It walks the git tree at a specific commit and
-    returns the paths that should be restored to reconstruct the session
-    as-it-was. Files outside this scope (debug/, telemetry/, file-history/,
-    tasks/, todos/, session-env/) are intentionally NOT returned -- they
-    are classified ephemeral per the 2026-06-03 design DWP.
+    This is the discovery primitive that powers the v0.3.12+ full restore.
+    It walks the git tree at a specific commit and returns the paths that
+    should be restored to reconstruct the session as-it-was. The
+    SESSION-HISTORY scope is defined by the table-driven ``SESSION_HISTORY_SCOPES``
+    above -- adding a new category is one row.
 
-    The four pathspecs we match:
+    Scope at the time of writing (whitebox-verified against `c:/code-ext/claude-code/`
+    and `c:/code/claude-projects/claude-session-logger/`):
 
-      1. ``projects/<slug>/<uuid>.jsonl``                       (main transcript)
-      2. ``projects/<slug>/<uuid>/**``                          (subagents/, tool-results/, remote-agents/, etc.)
-      3. ``session-states/<uuid>.*``                            (logger state files; only present if user has claude-session-logger)
-      4. ``sesslogs/*__<uuid>_*/**``                            (logger sesslog directory; same conditional)
+      - Main transcript:          ``projects/<slug>/<uuid>.jsonl``
+      - Session subtree:          ``projects/<slug>/<uuid>/...`` (subagents,
+                                  tool-results, remote-agents)
+      - Logger state files:       ``session-states/<uuid>.*``
+      - Logger sesslog dir:       ``sesslogs/<sanitized-name>__<uuid>_<user>/...``
+      - File-history (`/undo`):   ``file-history/<uuid>/...``
+      - Tasks (v2):               ``tasks/<uuid>/...``
+      - Session-env (shell env):  ``session-env/<uuid>/...``
 
-    For populations without the logger, (3) and (4) match zero files and
-    are silently absent from the result -- no error, no special-casing.
+    Explicitly excluded as EPHEMERAL or out-of-scope (whitebox-confirmed):
+    ``debug/<uuid>.txt``, ``todos/<uuid>-agent-*.json``, ``telemetry/...<uuid>.json``,
+    ``sesslogs/bak/`` (user-managed), and project-level ``.session_cache.json``.
+
+    For populations without claude-session-logger, the session-states and
+    sesslogs pathspecs match zero files and are silently absent from the
+    result -- no error, no special-casing.
 
     The discipline this enforces: we ASK GIT what's there, we never
     construct paths and assume their existence.
@@ -457,35 +581,21 @@ def git_ls_tree_for_uuid(
     if not uuid or not slug:
         return []
 
-    # `git ls-tree` does NOT support `:(glob)` pathspec magic (unlike
-    # `git log`), so we pass broad directory pathspecs and filter for
-    # UUID-keyed paths in Python. The three pathspecs scope the walk:
-    #
-    #   - projects/<slug>/    -- contains the JSONL + the UUID subtree
-    #   - session-states/     -- contains logger state files for many UUIDs
-    #   - sesslogs/           -- contains many sesslog dirs for many UUIDs
-    #
-    # The Python filter below keeps only paths keyed to this UUID. This
-    # naturally excludes the seven ephemeral categories (debug/,
-    # telemetry/, file-history/, tasks/, todos/, session-env/, and the
-    # project-level .session_cache.json) because they are not under
-    # any of the three scoped pathspecs.
+    # Collect unique pathspecs from the scope table (multiple specs may
+    # share a pathspec -- e.g. main transcript and session subtree both
+    # scope to projects/<slug>/). Deduplicate to keep the ls-tree command
+    # short and the output minimal.
+    pathspecs = sorted({spec.pathspec(slug, uuid) for spec in SESSION_HISTORY_SCOPES})
+
     result = run_git(
         claude_dir,
         "ls-tree", "-r", "--name-only", commit,
         "--",
-        f"projects/{slug}",
-        "session-states",
-        "sesslogs",
+        *pathspecs,
         check=False,
     )
     if result.returncode != 0:
         return []
-
-    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
-    jsonl_subtree_prefix = f"projects/{slug}/{uuid}/"
-    session_state_prefix = f"session-states/{uuid}."
-    sesslog_dir_match = f"__{uuid}_"
 
     paths = set()
     for line in result.stdout.splitlines():
@@ -497,30 +607,9 @@ def git_ls_tree_for_uuid(
         # so downstream operations (Path / git_show_file_bytes which
         # also uses -C claude_dir) interpret them correctly.
         rel = _to_claude_dir_relative(claude_dir, normalized)
-
-        if rel == jsonl_path:
+        # Match against the scope table -- if ANY spec matches, include.
+        if any(spec.matches(rel, slug, uuid) for spec in SESSION_HISTORY_SCOPES):
             paths.add(rel)
-        elif rel.startswith(jsonl_subtree_prefix):
-            paths.add(rel)
-        elif rel.startswith(session_state_prefix):
-            paths.add(rel)
-        elif rel.startswith("sesslogs/"):
-            # The logger writes its per-session dir DIRECTLY under
-            # sesslogs/ as `sesslogs/<sanitized-name>__<uuid>_<user>/...`
-            # (see claude-session-logger reconciliation.py:183-207). Only
-            # match when the FIRST component after sesslogs/ contains
-            # `__<uuid>_` -- nested intermediates like `sesslogs/bak/`
-            # are NOT logger-managed (verified 2026-06-03 against the
-            # logger source; `sesslogs/bak/` is a user-maintained folder
-            # outside csb-restore's scope).
-            #
-            # The logger DOES write `baks/` (plural) INSIDE the per-session
-            # sesslog dir for housekeeping recovery (file_io.py:408). Those
-            # are naturally included because they're under the matched
-            # first-component dir.
-            parts = rel.split("/", 2)
-            if len(parts) >= 2 and sesslog_dir_match in parts[1]:
-                paths.add(rel)
     return sorted(paths)
 
 

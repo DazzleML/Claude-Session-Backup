@@ -60,6 +60,8 @@ If `csb` crashes mid-rebuild (power loss, killed mid-write, etc.), the next invo
 
 ## `csb update build-fts5`
 
+> **What's FTS5?** SQLite's built-in **F**ull-**T**ext **S**earch engine, version 5 ([sqlite.org/fts5.html](https://sqlite.org/fts5.html)). Instead of `LIKE '%word%'` linear scans, FTS5 builds an inverted-index of every token in your session transcripts so `csb search "oauth callback"` is sub-second across tens of thousands of messages. It's the same engine that powers Apple Mail / iMessage / many IDEs' search. csb stores one FTS5 database per project (`~/.claude/csb-fts/<project>__<hash>_<user>.db`) so search remains scoped + fast even when individual projects grow large. **What gets indexed**: every USER prompt, AI/assistant response, and subagent (AGENT) sidechain -- plus tool calls and outputs when the raw `<uuid>.jsonl` is the source. (claude-session-logger's `.convo*` and `.sesslog*` sources are USER/AI/AGENT-only by design and exclude tool noise; FTS5 uses whichever source the per-session preference selects.)
+
 Build or refresh the per-project FTS5 content indexes that `csb search` consults. Each project (`~/.claude/projects/<slug>/`) gets its own `~/.claude/csb-fts/<project>__<hash>_<user>.db`. Idempotent: skips sessions whose JSONL `mtime` hasn't changed since the last indexer pass.
 
 ### Flags
@@ -161,29 +163,33 @@ If your terminal is narrower than 120 cols, expect the two-line layout even on s
 
 ### What gets restored by default
 
-The discovery uses `git ls-tree -r <commit> --` against four scoped pathspecs, then writes back every match. Categories:
+Discovery is **table-driven** by `git_ops.SESSION_HISTORY_SCOPES` -- the single source of truth for what counts as session-history. Each row defines a `git ls-tree` pathspec scope, a UUID-keying predicate, and a category label. Adding a new category = adding one row.
 
-| Source | Path pattern | Whose? |
-|---|---|---|
-| Main transcript | `projects/<slug>/<uuid>.jsonl` | Claude Code |
-| Subagent sidechain | `projects/<slug>/<uuid>/subagents/agent-*.{jsonl,meta.json}` | Claude Code |
-| Tool-result spillover | `projects/<slug>/<uuid>/tool-results/*.{txt,json}` | Claude Code |
-| Remote-agent metadata | `projects/<slug>/<uuid>/remote-agents/*.meta.json` | Claude Code (CCR) |
-| Logger state pointer | `session-states/<uuid>.{json,name-cache,source}` | claude-session-logger |
-| Logger sesslog dir | `sesslogs/<sanitized-name>__<uuid>_<user>/` (recursive, including the logger's own per-session `baks/`) | claude-session-logger |
+| Source | Path pattern | Whose? | Why restored (whitebox citation) |
+|---|---|---|---|
+| Main transcript | `projects/<slug>/<uuid>.jsonl` | Claude Code | The session itself |
+| Subagent sidechain | `projects/<slug>/<uuid>/subagents/agent-*.{jsonl,meta.json}` | Claude Code | Read on subagent resume to route to correct system prompt (`sessionStorage.ts:283-289`) |
+| Tool-result spillover | `projects/<slug>/<uuid>/tool-results/*.{txt,json}` | Claude Code | Referenced by `<persisted-output>` tag in transcript; re-applied on resume (`toolResultStorage.ts:104-117`) |
+| Remote-agent metadata | `projects/<slug>/<uuid>/remote-agents/*.meta.json` | Claude Code (CCR) | Read on resume to reconnect to still-running CCR tasks (`sessionStorage.ts:373-398`) |
+| Logger state pointer | `session-states/<uuid>.{json,name-cache,source,run,started,...}` | claude-session-logger | `/renameAI` and `/sessioninfo` read `.json` directly with no fallback (`rename_session.py:206`) |
+| Logger sesslog dir | `sesslogs/<sanitized-name>__<uuid>_<user>/` (recursive, including the logger's own per-session `baks/`) | claude-session-logger | The transcript-to-sesslog mapping for tool calls / shell / agent logs |
+| **File-history snapshots** (v0.3.13+) | `file-history/<uuid>/<content-hash>@v<N>` | Claude Code | `/undo` reads from here on resume; without these, `/undo` shows snapshots but rewind fails at `restoreBackup()` (`fileHistory.ts:733-741`) |
+| **Tasks v2 state** (v0.3.13+) | `tasks/<uuid>/{<N>.json,.highwatermark,.lock}` | Claude Code | Task-v2 reads tasks directly from disk on resume when `isTodoV2Enabled()` is true (`tasks.ts:221-227`); without these, task list silently regenerates empty + ID counter resets |
+| **Session-env hooks** (v0.3.13+) | `session-env/<uuid>/*-hook-{N}.sh` | Claude Code | Read by shell-execution path to restore venv/conda activation across subshells (`sessionEnvironment.ts:15-23`); without these, env state lost between commands |
 
 Users without `claude-session-logger` installed see no logger files attempted -- git enumeration handles both populations naturally; csb has no concept of "is the logger installed."
 
 ### What is NOT auto-restored
 
-Intentionally excluded:
+Intentionally excluded (whitebox-verified EPHEMERAL):
 
-- `debug/<uuid>.txt`, `telemetry/...<uuid>.json`, `session-env/<uuid>` -- pure runtime / telemetry. Claude Code regenerates as needed.
-- `file-history/<uuid>/`, `tasks/<uuid>/`, `todos/<uuid>-agent-*.json` -- runtime working set. Deferred to a follow-up if user friction surfaces.
-- `sesslogs/bak/` (singular, sibling of per-session sesslog dirs) -- user-managed manual backup folder, not written by claude-session-logger. csb stays out of user-managed structures.
+- `debug/<uuid>.txt` -- only read with `--debug-file` flag (`utils/debug.ts:232-234`); standard flows never read it.
+- `todos/<uuid>-agent-*.json` -- legacy v1 storage; current Claude Code extracts todos from the JSONL transcript on resume (`sessionRestore.ts:77-93`), so the file is effectively write-only.
+- `telemetry/...<uuid>.json` -- append-only retry queue for failed telemetry events; analytics gap if missing but no user-visible feature break.
+- `sesslogs/bak/` (singular, sibling of per-session sesslog dirs) -- user-managed manual backup folder, NOT written by claude-session-logger. csb stays out of user-managed structures. The logger DOES write `<sesslog-dir>/baks/` (plural, nested) for housekeeping; those ARE restored because they're under the matched per-session dir.
 - Project-level files like `projects/<slug>/.session_cache.json` -- not session-keyed.
 
-If you discover one of these is load-bearing in your workflow, file an issue -- the classification is conservative by default, not final.
+If you discover one of these is needed for your workflow, file an issue -- the classification is whitebox-evidence-based but not final.
 
 ### Overwrite policy (non-destructive default)
 

@@ -9,6 +9,29 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.13] -- 2026-06-03 (prealpha)
+
+`csb restore` correctness fix: three SESSION-HISTORY categories that v0.3.12 deferred as "EPHEMERAL (first cut)" are now restored by default. Whitebox investigation against `c:/code-ext/claude-code/` confirmed all three are read on session resume; missing them silently breaks user-visible features. Plus a refactor that makes the SESSION-HISTORY scope table-driven -- adding a new category is now one row instead of two places (pathspec + filter branch). Empirical re-test on a real 8788-message session restored **708 files** vs the v0.3.12 count of 105 -- the missing 603 were almost entirely `file-history/` snapshots. 801/801 tests pass (was 795; +6 new).
+
+### Fixed
+- **`csb restore <uuid>` now restores `file-history/<uuid>/`** -- Claude Code's `/undo` feature reads from here on resume (`fileHistory.ts:733-741`). Without it, the user sees `/undo` snapshots but rewind fails with "backup file not found." This was the largest gap by file count (~5-6x the rest combined for an active session).
+- **`csb restore <uuid>` now restores `tasks/<uuid>/`** -- Claude Code's task-v2 feature (`tasks.ts:221-227`, gated on `isTodoV2Enabled()`) reads tasks directly from disk on resume. Without it, the task list silently regenerates empty + the ID counter resets, risking duplicates if the user re-creates tasks. Non-issue in SDK mode where v2 is off, but on by default in interactive mode.
+- **`csb restore <uuid>` now restores `session-env/<uuid>/`** -- shell-environment scripts written by Setup/SessionStart/CwdChanged hooks (`sessionEnvironment.ts:15-23`). Read by Claude Code on every subshell invocation to restore venv/conda activation. Without it, subsequent shell commands in a resumed session run in the wrong environment.
+
+### Changed
+- **`git_ops.SESSION_HISTORY_SCOPES` is now the single source of truth** for what counts as session-history in a restore. Each row in the table defines both the `git ls-tree` pathspec scope AND the Python-side UUID-keying predicate AND the human-friendly category label. Adding a new category = adding one row; `git_ls_tree_for_uuid` and `categorize_path_for_uuid` and the `csb restore` summary all flow from the same table.
+- **`_categorize_restored_paths` in `commands.py` now delegates to `categorize_path_for_uuid` from `git_ops.py`** -- eliminates the duplicated string-matching that was the legacy categorization path. Order of categories in the restore summary now mirrors `SESSION_HISTORY_SCOPES` insertion order.
+
+### Added
+- **`ScopeSpec` dataclass + `SESSION_HISTORY_SCOPES` table** in `git_ops.py` -- the table-driven design that powers the consolidated discovery + categorization above. Whitebox provenance commented inline for each row.
+- **`categorize_path_for_uuid(rel_path, slug, uuid) -> Optional[str]`** in `git_ops.py` -- pure helper that returns the SESSION-HISTORY category label for a path keyed to a UUID, or None if out of scope. Used by `csb restore` for the summary breakdown and by tests for round-trip property verification.
+- **6 new automated tests** -- one each for the three new categories (file-history, tasks, session-env restored when in git), one round-trip test for the categorize helper covering all 7 in-scope labels + 6 out-of-scope cases, plus 2 from updating the prior "excludes ephemeral" test scope (which now correctly narrows to just debug/telemetry/todos -- the *whitebox-confirmed* ephemeral set).
+
+### Notes
+- **Ephemeral set narrowed by whitebox evidence.** v0.3.12 documented 7 categories as "deferred to follow-up if user friction surfaces." The whitebox pass moved 3 of those to SESSION-HISTORY (file-history, tasks, session-env) and confirmed the remaining 4 as genuinely EPHEMERAL: `debug/<uuid>.txt` (only read with `--debug-file`), `todos/<uuid>-agent-*.json` (legacy v1; resume reads from JSONL), `telemetry/...<uuid>.json` (retry queue), and `sesslogs/bak/` (user-managed, not logger).
+- **session-env may be empty for many sessions.** Only populated if Setup/SessionStart/CwdChanged hooks ran during the session. Sessions without these hooks get a 0-count for the category in the restore summary -- not a bug, just absence.
+- **No changes to overwrite policy or flags** -- `--jsonl-only` and `--force` semantics from v0.3.12 are unchanged. The preserve-present default still protects local content with newer logger writes from being clobbered.
+
 ## [0.3.12] -- 2026-06-03 (prealpha)
 
 `csb restore <uuid>` becomes a full session-history restore -- the JSONL plus every git-tracked sidecar keyed to the UUID (subagent transcripts, tool-result spillover, remote-agent metadata, claude-session-logger state files, claude-session-logger sesslog directories). The pre-v0.3.12 behavior (JSONL only) is preserved behind `--jsonl-only`. Empirical verification against a real 2837-message session restored 28 files (vs the 1 it would have returned before), byte-for-byte from git. 797/797 tests pass (was 771; +26 new). Closes #32 and #33. Refs #13 (advances ACs #5 and #6 from PARTIAL to DONE).
@@ -552,7 +575,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...HEAD
+[0.3.13]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10
