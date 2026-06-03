@@ -1,0 +1,2921 @@
+{
+  "manifest_version": 3,
+  "manifest_id": "pm-7dd5614344dd",
+  "parent_ids": [],
+  "lineage": {
+    "root_id": null,
+    "depth": 0,
+    "is_merge": false
+  },
+  "created_at": "2026-06-03T03:10:00.393884",
+  "updated_at": "2026-06-03T03:12:31.765340",
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "python_version": "3.12.0"
+  },
+  "host_info": {
+    "hostname": "PlzWork",
+    "fqdn": "PlzWork",
+    "ip_addresses": [
+      "::1",
+      "192.168.5.179"
+    ],
+    "mac_address": "D8:B3:2F:C4:B1:1E",
+    "mac_address_int": 238264112165150,
+    "machine_id": "a751c45c-8156-42a2-ba35-74f927a32458",
+    "is_container": false,
+    "is_vm": false
+  },
+  "operations": [
+    {
+      "id": 0,
+      "type": "MOVE",
+      "timestamp": "2026-06-03T03:10:00.516174",
+      "options": {
+        "path_style": "absolute",
+        "include_base": false,
+        "source_base": null,
+        "overwrite": false,
+        "preserve_attrs": true,
+        "verify": true,
+        "hash_algorithm": "SHA256",
+        "create_dazzlelinks": false,
+        "dazzlelink_dir": null,
+        "dazzlelink_mode": "info",
+        "dry_run": false,
+        "check_space": true,
+        "check_permissions": true,
+        "space_safety_margin": 0.05,
+        "ignore_space_warning": false,
+        "incorporate_identical": false,
+        "parent_manifest_id": null,
+        "on_conflict": null,
+        "force": false,
+        "create_link": null
+      },
+      "source_path": "C:\\Users\\Extreme\\.claude\\projects\\C--code-github-traffic-tracker\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.jsonl,C:\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json,C:\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.name-cache,C:\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.source,C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log,C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log,C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.tasks_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log,C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\transcript.jsonl,C:\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1,C:\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1,C:\\Users\\Extreme\\.claude\\debug\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.txt,C:\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.highwatermark,C:\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.lock,C:\\Users\\Extreme\\.claude\\todos\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70-agent-7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json,C:\\Users\\Extreme\\.claude\\telemetry\\1p_failed_events.7fb868dc-3dd0-437a-9cc8-28f23a43fc70.50bb9554-7ace-4d59-bd34-9f9765f928a5.json,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0209025c9946db07@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v10,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v11,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v12,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v13,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v14,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04a9315e9894a1ae@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04fdb4c0c6c27f39@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1a8666a39ac21fbc@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v10,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1dc2c49671ec510c@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\241d0edebd2f90a8@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\399bccf4ee679ecc@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v10,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v11,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v12,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v13,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v14,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\40035b277a1fbc1f@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v10,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v11,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v12,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v13,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\56a360a7055b206e@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5c99582a9a773817@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\676971d825c62a94@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\6ad21133459cd97b@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75e3493996f81407@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75f74747f1e7eb35@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\76fd6428e95723cc@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\783c74a364aba862@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7a78b2dae6027687@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\80163a20266edce6@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\85265ffe15670092@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\9fcca926924abb98@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\a86e0d3c9ad61361@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v10,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v11,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v12,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v13,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v14,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v15,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b30569ed622f6932@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b8f0089290d59050@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ba0b18cb2fb3f069@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v10,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v11,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v5,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v6,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v7,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v8,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v9,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\cc6b03f2a265d2e4@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dc9c5b5a7a6927db@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v4,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v1,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v2,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v3,C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\f5038a5185338c5d@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc",
+      "command_line": "preserve MOVE --abs --hash SHA256 --recursive --dst C:/tmp/csb-restore-test-7fb868dc --include C:/Users/Extreme/.claude/projects/C--code-github-traffic-tracker/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.jsonl --include C:/Users/Extreme/.claude/session-states/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json --include C:/Users/Extreme/.claude/session-states/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.name-cache --include C:/Users/Extreme/.claude/session-states/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.source --include C:/Users/Extreme/.claude/sesslogs/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme --include C:/Users/Extreme/.claude/sesslogs/bak/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme --include C:/Users/Extreme/.claude/debug/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.txt --include C:/Users/Extreme/.claude/session-env/7fb868dc-3dd0-437a-9cc8-28f23a43fc70 --include C:/Users/Extreme/.claude/tasks/7fb868dc-3dd0-437a-9cc8-28f23a43fc70 --include C:/Users/Extreme/.claude/todos/7fb868dc-3dd0-437a-9cc8-28f23a43fc70-agent-7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json --include C:/Users/Extreme/.claude/telemetry/1p_failed_events.7fb868dc-3dd0-437a-9cc8-28f23a43fc70.50bb9554-7ace-4d59-bd34-9f9765f928a5.json --include C:/Users/Extreme/.claude/file-history/7fb868dc-3dd0-437a-9cc8-28f23a43fc70"
+    },
+    {
+      "id": 1,
+      "type": "RESTORE",
+      "timestamp": "2026-06-03T03:12:31.495108",
+      "options": {
+        "overwrite": false,
+        "preserve_attrs": true,
+        "verify": true,
+        "hash_algorithm": "SHA256",
+        "dry_run": false,
+        "force": true,
+        "use_dazzlelinks": true,
+        "destination_override": null
+      },
+      "source_path": "C:\\tmp\\csb-restore-test-7fb868dc",
+      "command_line": "preserve RESTORE --src C:/tmp/csb-restore-test-7fb868dc --force"
+    }
+  ],
+  "files": {
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\projects\\C--code-github-traffic-tracker\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.jsonl": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\projects\\C--code-github-traffic-tracker\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.jsonl",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\projects\\C--code-github-traffic-tracker\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.jsonl",
+      "added_at": "2026-06-03T03:10:00.550713",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.550713",
+          "operation_id": 0
+        }
+      ],
+      "size": 14706999,
+      "hashes": {
+        "SHA256": "e4d310c30308c13a93a8717c8377d9a012be2272f93f4bd12c60b987b98e7e02"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json",
+      "added_at": "2026-06-03T03:10:00.568717",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.568717",
+          "operation_id": 0
+        }
+      ],
+      "size": 606,
+      "hashes": {
+        "SHA256": "81d6e785b75b8f32eb7730369e4f170eb46195171cba9f81fa3497588bba0f1e"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.name-cache": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.name-cache",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.name-cache",
+      "added_at": "2026-06-03T03:10:00.574248",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.574248",
+          "operation_id": 0
+        }
+      ],
+      "size": 48,
+      "hashes": {
+        "SHA256": "a491c364f0d546d5adecc00843924e090a7948de71a77dbb9eac349de5ee5630"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.source": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.source",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\session-states\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.source",
+      "added_at": "2026-06-03T03:10:00.575248",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.576249",
+          "operation_id": 0
+        }
+      ],
+      "size": 6,
+      "hashes": {
+        "SHA256": "a83a31320d921b888a48fa5edd0b4b5a29984de6e96bf7b8ac7d29ba06caf616"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log",
+      "added_at": "2026-06-03T03:10:00.578753",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.578753",
+          "operation_id": 0
+        }
+      ],
+      "size": 231969,
+      "hashes": {
+        "SHA256": "c2291cb093bb89c8d326cdfc7862b673719f803fc24b2d44af879ece21113d4e"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log",
+      "added_at": "2026-06-03T03:10:00.581927",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.581927",
+          "operation_id": 0
+        }
+      ],
+      "size": 231385,
+      "hashes": {
+        "SHA256": "82b6ccc65341b6520bbab32baf41e57d39852967e9a308e047db9b72e63829d7"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.tasks_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.tasks_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.tasks_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log",
+      "added_at": "2026-06-03T03:10:00.584927",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.584927",
+          "operation_id": 0
+        }
+      ],
+      "size": 6580,
+      "hashes": {
+        "SHA256": "d49137a00df150100ef7d15579d067f3ce84cc87d1ed7ee46620a361eb75e1ed"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\transcript.jsonl": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\transcript.jsonl",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\transcript.jsonl",
+      "added_at": "2026-06-03T03:10:00.597933",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.597933",
+          "operation_id": 0
+        }
+      ],
+      "size": 14706999,
+      "hashes": {
+        "SHA256": "e4d310c30308c13a93a8717c8377d9a012be2272f93f4bd12c60b987b98e7e02"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1",
+      "added_at": "2026-06-03T03:10:00.615366",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.615366",
+          "operation_id": 0
+        }
+      ],
+      "size": 177,
+      "hashes": {
+        "SHA256": "3a57cdb151bc58cc34c42dd8df58792d6ac282a7782e220cce836a9482acb3b3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\sesslogs\\bak\\GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme\\.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1",
+      "added_at": "2026-06-03T03:10:00.617365",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.617365",
+          "operation_id": 0
+        }
+      ],
+      "size": 336,
+      "hashes": {
+        "SHA256": "0aeddc897c016a352362816418c26553a6c1e154307611175915b0b3b1706cb6"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\debug\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.txt": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\debug\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.txt",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\debug\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70.txt",
+      "added_at": "2026-06-03T03:10:00.643833",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.643833",
+          "operation_id": 0
+        }
+      ],
+      "size": 27569602,
+      "hashes": {
+        "SHA256": "4295d81afcf570afbcfc9676fff315e82961d7a4adf25bd47b8070b47214038a"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.highwatermark": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.highwatermark",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.highwatermark",
+      "added_at": "2026-06-03T03:10:00.672741",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.672741",
+          "operation_id": 0
+        }
+      ],
+      "size": 2,
+      "hashes": {
+        "SHA256": "f5ca38f748a1d6eaf726b8a42fb575c3c71f1864a8143301782de13da2d9202b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.lock": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.lock",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\tasks\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\.lock",
+      "added_at": "2026-06-03T03:10:00.672741",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.672741",
+          "operation_id": 0
+        }
+      ],
+      "size": 0,
+      "hashes": {
+        "SHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\todos\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70-agent-7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\todos\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70-agent-7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\todos\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70-agent-7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json",
+      "added_at": "2026-06-03T03:10:00.680819",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.680819",
+          "operation_id": 0
+        }
+      ],
+      "size": 2,
+      "hashes": {
+        "SHA256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\telemetry\\1p_failed_events.7fb868dc-3dd0-437a-9cc8-28f23a43fc70.50bb9554-7ace-4d59-bd34-9f9765f928a5.json": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\telemetry\\1p_failed_events.7fb868dc-3dd0-437a-9cc8-28f23a43fc70.50bb9554-7ace-4d59-bd34-9f9765f928a5.json",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\telemetry\\1p_failed_events.7fb868dc-3dd0-437a-9cc8-28f23a43fc70.50bb9554-7ace-4d59-bd34-9f9765f928a5.json",
+      "added_at": "2026-06-03T03:10:00.686698",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.686698",
+          "operation_id": 0
+        }
+      ],
+      "size": 2751128,
+      "hashes": {
+        "SHA256": "4fe186f8edba8c39e2208ee64fb5524f979d1a02706bfa62c4b80ed0cb1536ff"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0209025c9946db07@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0209025c9946db07@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0209025c9946db07@v2",
+      "added_at": "2026-06-03T03:10:00.691701",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.691701",
+          "operation_id": 0
+        }
+      ],
+      "size": 3493,
+      "hashes": {
+        "SHA256": "99885520ee64dbacb6cc80576e07bf549bfe28cdd39e03e62ad39d0aa0521b55"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v1",
+      "added_at": "2026-06-03T03:10:00.693702",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.693702",
+          "operation_id": 0
+        }
+      ],
+      "size": 2747,
+      "hashes": {
+        "SHA256": "a3012f955c36cbf59a243eddfd26246a2f5a880f733db25a6dc68bf7b195e6dc"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v10": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v10",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v10",
+      "added_at": "2026-06-03T03:10:00.695700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.695700",
+          "operation_id": 0
+        }
+      ],
+      "size": 11256,
+      "hashes": {
+        "SHA256": "3e94722b63f47d02fa57284e9eedec4a8cb12708fbbcaf726b5d70c8103ecf8e"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v11": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v11",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v11",
+      "added_at": "2026-06-03T03:10:00.697121",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.697121",
+          "operation_id": 0
+        }
+      ],
+      "size": 12493,
+      "hashes": {
+        "SHA256": "267a6c89c1d41353e85e5d7f37d4c45a5a97f61438cd3fc9fb8ca799aaf7ecd0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v12": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v12",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v12",
+      "added_at": "2026-06-03T03:10:00.699165",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.699165",
+          "operation_id": 0
+        }
+      ],
+      "size": 12615,
+      "hashes": {
+        "SHA256": "7c2d220d1d67c9a78b69b83bab399893d45a3c459644950ab4822f454c02817c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v13": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v13",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v13",
+      "added_at": "2026-06-03T03:10:00.701165",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.701165",
+          "operation_id": 0
+        }
+      ],
+      "size": 13472,
+      "hashes": {
+        "SHA256": "43668f44c0b249ab8d0e3d838ebb093d1c1aaa0ad67f25712d3d2475437c5bb2"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v14": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v14",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v14",
+      "added_at": "2026-06-03T03:10:00.702165",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.702165",
+          "operation_id": 0
+        }
+      ],
+      "size": 13282,
+      "hashes": {
+        "SHA256": "ed25ed66e2ac05c8d1efede05057d0aafe6febae41cd1949b8875e9f8aa57f5e"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v2",
+      "added_at": "2026-06-03T03:10:00.703669",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.703669",
+          "operation_id": 0
+        }
+      ],
+      "size": 3939,
+      "hashes": {
+        "SHA256": "a957e23e8951f93775c06160e4a1451cb2a49c87eaeadd45c3d4ab2c923772c7"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v3",
+      "added_at": "2026-06-03T03:10:00.703669",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.703669",
+          "operation_id": 0
+        }
+      ],
+      "size": 4254,
+      "hashes": {
+        "SHA256": "2ea63e6950192dcdfdb914da069d763faf57aa98054f1ce8a8821055ac9c5d1c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v4",
+      "added_at": "2026-06-03T03:10:00.703669",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.703669",
+          "operation_id": 0
+        }
+      ],
+      "size": 6506,
+      "hashes": {
+        "SHA256": "b3508ce32183439fbaa9e01e02c09f0c499efe3930d4207e7d19c74775647181"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v5",
+      "added_at": "2026-06-03T03:10:00.703669",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.703669",
+          "operation_id": 0
+        }
+      ],
+      "size": 7615,
+      "hashes": {
+        "SHA256": "90dc0e8e366a55dc1b79d3d5ac7a8735faa3339930add2ceebaa3eb5e0f48622"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v6",
+      "added_at": "2026-06-03T03:10:00.703669",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.703669",
+          "operation_id": 0
+        }
+      ],
+      "size": 8191,
+      "hashes": {
+        "SHA256": "0d1bdc46bfe513a9ad0c565266762ab528c0877a214752b221db2dd2a3cee8d3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v7",
+      "added_at": "2026-06-03T03:10:00.712358",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.712358",
+          "operation_id": 0
+        }
+      ],
+      "size": 8836,
+      "hashes": {
+        "SHA256": "6f79bbf53fbb5f7d642cf45dce4a3d32353406e8a4991360a27d24d61667143c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v8",
+      "added_at": "2026-06-03T03:10:00.712358",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.712358",
+          "operation_id": 0
+        }
+      ],
+      "size": 9633,
+      "hashes": {
+        "SHA256": "0f1d883a47918a9c8495a46996901b8c858b56367b2a3446422e2d884b7f2ed0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\032ce4a81e82662a@v9",
+      "added_at": "2026-06-03T03:10:00.712358",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.712358",
+          "operation_id": 0
+        }
+      ],
+      "size": 10126,
+      "hashes": {
+        "SHA256": "cd6d8cb85f0b27dba8889189f2ae6315d59a9a65795f2c99a0e29a46e9dc1735"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04a9315e9894a1ae@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04a9315e9894a1ae@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04a9315e9894a1ae@v2",
+      "added_at": "2026-06-03T03:10:00.712358",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.712358",
+          "operation_id": 0
+        }
+      ],
+      "size": 856,
+      "hashes": {
+        "SHA256": "a4a74cac05d3c01eff1b458d25ab11039970c33195e8183121b9e9035fbdfbcc"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04fdb4c0c6c27f39@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04fdb4c0c6c27f39@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\04fdb4c0c6c27f39@v2",
+      "added_at": "2026-06-03T03:10:00.718824",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.718824",
+          "operation_id": 0
+        }
+      ],
+      "size": 791,
+      "hashes": {
+        "SHA256": "655f47d182e1b2dd89234426b44770ace85c028fa1ebaf2d824eabd1bb34e6e9"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v2",
+      "added_at": "2026-06-03T03:10:00.720828",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.720828",
+          "operation_id": 0
+        }
+      ],
+      "size": 3161,
+      "hashes": {
+        "SHA256": "cd9f086ee4c4376c439c596857489575c883c33b33a063dece9a2d4e00789057"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\0b5bd672d0f24768@v3",
+      "added_at": "2026-06-03T03:10:00.722832",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.722832",
+          "operation_id": 0
+        }
+      ],
+      "size": 3180,
+      "hashes": {
+        "SHA256": "429bf5ab1b5424e25a6fb1d789acaa1d92d78573b05cef771c49a25c254a56d3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1a8666a39ac21fbc@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1a8666a39ac21fbc@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1a8666a39ac21fbc@v2",
+      "added_at": "2026-06-03T03:10:00.724835",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.724835",
+          "operation_id": 0
+        }
+      ],
+      "size": 4047,
+      "hashes": {
+        "SHA256": "63de71b181f4b62d81964a3451c0390e2095be808e60b6b3928241b1f2b20230"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v1",
+      "added_at": "2026-06-03T03:10:00.726838",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.726838",
+          "operation_id": 0
+        }
+      ],
+      "size": 3155,
+      "hashes": {
+        "SHA256": "ec3b3fdd5924a7ed910cd750322c7469928b9706788f8f38df09292525b5d8d2"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1b10ea3e40a6bdb6@v2",
+      "added_at": "2026-06-03T03:10:00.728841",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.728841",
+          "operation_id": 0
+        }
+      ],
+      "size": 3170,
+      "hashes": {
+        "SHA256": "8534cbfdb57425ca54c35936dfbe3f2b7e2a611ec6286c035fafc6a3946a75b9"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v10": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v10",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v10",
+      "added_at": "2026-06-03T03:10:00.728841",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.728841",
+          "operation_id": 0
+        }
+      ],
+      "size": 21297,
+      "hashes": {
+        "SHA256": "6deef4df2fe8b80e8f1acf57eff87effa66a82c1c6d35840b7627d489406f4a0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v2",
+      "added_at": "2026-06-03T03:10:00.728841",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.728841",
+          "operation_id": 0
+        }
+      ],
+      "size": 5080,
+      "hashes": {
+        "SHA256": "9aec333f75960cc70670adb14f9985fb175e1e03b49469cd46f03d3804d67149"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v3",
+      "added_at": "2026-06-03T03:10:00.734903",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.734903",
+          "operation_id": 0
+        }
+      ],
+      "size": 7612,
+      "hashes": {
+        "SHA256": "dce1caffe78310d65d6f72ecced35e14d8847195cc392ac889bbd5a4d7974fe6"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v4",
+      "added_at": "2026-06-03T03:10:00.735271",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.735271",
+          "operation_id": 0
+        }
+      ],
+      "size": 10195,
+      "hashes": {
+        "SHA256": "e5a03617fedd29ae669b45c30363c3547775b1fd14f905e4d96ea1a2e6306925"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v5",
+      "added_at": "2026-06-03T03:10:00.737843",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.737843",
+          "operation_id": 0
+        }
+      ],
+      "size": 11171,
+      "hashes": {
+        "SHA256": "d282e7b45a20bc853337e8ef39bce5e73ee41c4b9151047cb3a6cc086ab7cede"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v6",
+      "added_at": "2026-06-03T03:10:00.737843",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.737843",
+          "operation_id": 0
+        }
+      ],
+      "size": 12439,
+      "hashes": {
+        "SHA256": "375d3acb6f2ae1d577c38b57dd133dff15821de627a1d8d3d64c52d94b2a33a6"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v7",
+      "added_at": "2026-06-03T03:10:00.737843",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.737843",
+          "operation_id": 0
+        }
+      ],
+      "size": 13393,
+      "hashes": {
+        "SHA256": "528c44d987d6c78bd0a9f94e63ed830e83e4a41a8a5002f9ca7a1521c59454ae"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v8",
+      "added_at": "2026-06-03T03:10:00.737843",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.737843",
+          "operation_id": 0
+        }
+      ],
+      "size": 16070,
+      "hashes": {
+        "SHA256": "f44b4b66eb1917934b35c27b8c6bfd5cebccbd80e76d82068b8d63c07961554d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1c70d68d278a8158@v9",
+      "added_at": "2026-06-03T03:10:00.744826",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.744826",
+          "operation_id": 0
+        }
+      ],
+      "size": 19544,
+      "hashes": {
+        "SHA256": "620d7f867453ed7bd83be4776aa06fa6ce908f83492069d8583ef807a8578cec"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1dc2c49671ec510c@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1dc2c49671ec510c@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\1dc2c49671ec510c@v2",
+      "added_at": "2026-06-03T03:10:00.746829",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.746829",
+          "operation_id": 0
+        }
+      ],
+      "size": 4178,
+      "hashes": {
+        "SHA256": "e1e3bd4cb41fb654881e7bc857780680e54014778aa6cf01ca26b330de275f2c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\241d0edebd2f90a8@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\241d0edebd2f90a8@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\241d0edebd2f90a8@v2",
+      "added_at": "2026-06-03T03:10:00.748831",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.748831",
+          "operation_id": 0
+        }
+      ],
+      "size": 804,
+      "hashes": {
+        "SHA256": "8614f9b654a9a52bfc769e30bef521cfc166b1e3df22b58caf76201c3dc68147"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\399bccf4ee679ecc@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\399bccf4ee679ecc@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\399bccf4ee679ecc@v2",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 3945,
+      "hashes": {
+        "SHA256": "f66d8787220447f913926492ca003b42e4af38558b7fc5d0c43bfa125e7b6f84"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v10": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v10",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v10",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 9733,
+      "hashes": {
+        "SHA256": "02afa59ab5b7e83fdfe69a159e8726fa10a8b7e5263bf4154595a012dae25320"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v11": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v11",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v11",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 9854,
+      "hashes": {
+        "SHA256": "dca164cbb800b71b5d5626b3d44293e72d104cf5016fbbe89bc9a566213d6fce"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v12": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v12",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v12",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 10082,
+      "hashes": {
+        "SHA256": "608c036b07c76ac8889285aa7c6f3bc87a4a29e661972dd6f80b9a074dd21fc5"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v13": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v13",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v13",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 10090,
+      "hashes": {
+        "SHA256": "420051f9f7b694f185727a66e043d80f6a4c5ad880bbe284d0dcefdbf44c774b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v14": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v14",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v14",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 11867,
+      "hashes": {
+        "SHA256": "1df047fb7df32ece8531a8133a22fede8d067c91725234c62bb59a572b91eb87"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v2",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 5235,
+      "hashes": {
+        "SHA256": "f865f43cc4b53cad089d60d192808610edcbe3ebdf87833e9e1980fed24534d8"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v3",
+      "added_at": "2026-06-03T03:10:00.750575",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.750575",
+          "operation_id": 0
+        }
+      ],
+      "size": 6669,
+      "hashes": {
+        "SHA256": "686acbceff5e4df3ef3091edd91ae48bc7093dc3e423b9c29918cd1e2f5b39a4"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v4",
+      "added_at": "2026-06-03T03:10:00.766613",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.766613",
+          "operation_id": 0
+        }
+      ],
+      "size": 7463,
+      "hashes": {
+        "SHA256": "8e1f202f03dad0fca5dcffd57d0b2772c70b184b075c8b6cd0e9eb165c77fa1e"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v5",
+      "added_at": "2026-06-03T03:10:00.766613",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.766613",
+          "operation_id": 0
+        }
+      ],
+      "size": 7966,
+      "hashes": {
+        "SHA256": "1ef85e9a84beba051a4d9cc0ddf949dd8f1d96381adbeb63c50ca13f666bdef6"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v6",
+      "added_at": "2026-06-03T03:10:00.766613",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.766613",
+          "operation_id": 0
+        }
+      ],
+      "size": 8151,
+      "hashes": {
+        "SHA256": "53a9c66a85a734c262f71bd759e5b89835a6671d1bc617a888bea26af02b574f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v7",
+      "added_at": "2026-06-03T03:10:00.766613",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.766613",
+          "operation_id": 0
+        }
+      ],
+      "size": 8785,
+      "hashes": {
+        "SHA256": "b15e92e2aeb8b34c9530c286e34fc57c68fc3d2ee2dce29a31e30090956adfd3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v8",
+      "added_at": "2026-06-03T03:10:00.766613",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.766613",
+          "operation_id": 0
+        }
+      ],
+      "size": 9475,
+      "hashes": {
+        "SHA256": "ce6a5570f4ad0ec1c0366a22f15b564e7296b4e57d39db0badbd0e36eed50408"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3d344fb490cf0534@v9",
+      "added_at": "2026-06-03T03:10:00.766613",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.766613",
+          "operation_id": 0
+        }
+      ],
+      "size": 9519,
+      "hashes": {
+        "SHA256": "b8d304d1a0598b25576a049385f168609cd9a852922937b692a794c23824e204"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v1",
+      "added_at": "2026-06-03T03:10:00.777641",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.777641",
+          "operation_id": 0
+        }
+      ],
+      "size": 80234,
+      "hashes": {
+        "SHA256": "1ed94d975d2a0a2b8a2be4d5a61e9351d5139499ffed24f7db2cce155d34e39e"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3eb63b0106b2d408@v2",
+      "added_at": "2026-06-03T03:10:00.780647",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.780647",
+          "operation_id": 0
+        }
+      ],
+      "size": 80244,
+      "hashes": {
+        "SHA256": "0b0cb0f779b852d80635f80029e883b97706437bd2443da572c56272501feb6c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v1",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 6835,
+      "hashes": {
+        "SHA256": "9f0972febfa1927571f0405446ef3e4085de9c911e40c9cce3379e1559fd9d4d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v2",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 6818,
+      "hashes": {
+        "SHA256": "0900d823cec72d6ae698f113dec1cea591cafbd14d797c7b2205687f7683c750"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3ec0a1a4e2608a2b@v3",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 6835,
+      "hashes": {
+        "SHA256": "9f0972febfa1927571f0405446ef3e4085de9c911e40c9cce3379e1559fd9d4d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v2",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 4313,
+      "hashes": {
+        "SHA256": "e101849f7dcf13df7843013795a70c5eebadae97f89abc6327b5faea19de36f6"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\3f80f7b444a079eb@v3",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 4335,
+      "hashes": {
+        "SHA256": "fbf84a787e59104c462e4d34cd52986447e54553a955c79898cd9c78f5914b7f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\40035b277a1fbc1f@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\40035b277a1fbc1f@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\40035b277a1fbc1f@v2",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 1480,
+      "hashes": {
+        "SHA256": "5f876c9f246ae191b57b0e7af5d5d37b4bb2ab65ed5a3aa34111deeaf167d07f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v2",
+      "added_at": "2026-06-03T03:10:00.782150",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.782150",
+          "operation_id": 0
+        }
+      ],
+      "size": 13985,
+      "hashes": {
+        "SHA256": "fd79e2fb64bff7b3660b731e2bb37714712c36ee57978205a499901dde4bc713"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v3",
+      "added_at": "2026-06-03T03:10:00.797395",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.797395",
+          "operation_id": 0
+        }
+      ],
+      "size": 15253,
+      "hashes": {
+        "SHA256": "fb09d6f92c9dd773f5e413aa6b347bd35e0dc3f7638361eb9fc0f0c9b7519d6a"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\43303a82e862fdca@v4",
+      "added_at": "2026-06-03T03:10:00.799519",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.799519",
+          "operation_id": 0
+        }
+      ],
+      "size": 15460,
+      "hashes": {
+        "SHA256": "bd0c79cf21a676a4257478298f919173667d9386a75581d7c0f618189d6c788c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v1",
+      "added_at": "2026-06-03T03:10:00.801519",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.801519",
+          "operation_id": 0
+        }
+      ],
+      "size": 3318,
+      "hashes": {
+        "SHA256": "a1cd6a0fbd2584c0c7d1a6ce3ef4d3fb46b397f7745e81e9794415dbd4634e36"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v2",
+      "added_at": "2026-06-03T03:10:00.802519",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.802519",
+          "operation_id": 0
+        }
+      ],
+      "size": 3946,
+      "hashes": {
+        "SHA256": "f03e30ce0a4cead9c60cc4356254af980fcf1dfd18ef814cd055282e45b07f1c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v3",
+      "added_at": "2026-06-03T03:10:00.804519",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.804519",
+          "operation_id": 0
+        }
+      ],
+      "size": 4561,
+      "hashes": {
+        "SHA256": "01c7ec93c71e3878a31bf987645010ae8be5bb5041bdbe4307dd14505ec9bd1b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v4",
+      "added_at": "2026-06-03T03:10:00.806520",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.806520",
+          "operation_id": 0
+        }
+      ],
+      "size": 5179,
+      "hashes": {
+        "SHA256": "f36c6829a9f2d7a202abbb9a5d0de67af4d76d512a03f26c501578583856414a"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v5",
+      "added_at": "2026-06-03T03:10:00.807520",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.807520",
+          "operation_id": 0
+        }
+      ],
+      "size": 6455,
+      "hashes": {
+        "SHA256": "d2ac33a9dac2d0fd9871729fe2f15bb33e1a528b2243f0c60ff9a5fb53e602bd"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v6",
+      "added_at": "2026-06-03T03:10:00.810521",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.810521",
+          "operation_id": 0
+        }
+      ],
+      "size": 7829,
+      "hashes": {
+        "SHA256": "3eeae07bbffb344c5f15ebf8c2e884d7009a540db589a083a063feb614cdcbbc"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4355d08f02543a66@v7",
+      "added_at": "2026-06-03T03:10:00.811520",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.811520",
+          "operation_id": 0
+        }
+      ],
+      "size": 8393,
+      "hashes": {
+        "SHA256": "00894f4f1b57280c94cb75375f4e8a88d1cf48c18d377a8a4c63ffca24edda18"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v1",
+      "added_at": "2026-06-03T03:10:00.813520",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.813520",
+          "operation_id": 0
+        }
+      ],
+      "size": 3017,
+      "hashes": {
+        "SHA256": "edf5963cd8494ad7428b4cb1e74fc4d7439991e1c6a6d92209137330fd89b45f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v10": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v10",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v10",
+      "added_at": "2026-06-03T03:10:00.815522",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.815522",
+          "operation_id": 0
+        }
+      ],
+      "size": 13373,
+      "hashes": {
+        "SHA256": "4ce8a33c99b176a65e2dc35ce1b81432d6cdceffd3ed13a5597c97c4fde985bd"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v11": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v11",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v11",
+      "added_at": "2026-06-03T03:10:00.817522",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.817522",
+          "operation_id": 0
+        }
+      ],
+      "size": 13501,
+      "hashes": {
+        "SHA256": "1a767cafa983f9c18e076668c489ac6ebaa1654bd42c5e9a04ee38527b2676e5"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v12": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v12",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v12",
+      "added_at": "2026-06-03T03:10:00.819523",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.819523",
+          "operation_id": 0
+        }
+      ],
+      "size": 14504,
+      "hashes": {
+        "SHA256": "79787ae4ffb5381956a08d3e905c777433ec7c43e63c9060e6b64a35d7bb79f0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v13": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v13",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v13",
+      "added_at": "2026-06-03T03:10:00.821522",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.821522",
+          "operation_id": 0
+        }
+      ],
+      "size": 14295,
+      "hashes": {
+        "SHA256": "c202c5dd8d3d4a507b40857df5b1d8e01a863a9f01086bed3ac68537a2c6ae42"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v2",
+      "added_at": "2026-06-03T03:10:00.822523",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.822523",
+          "operation_id": 0
+        }
+      ],
+      "size": 4184,
+      "hashes": {
+        "SHA256": "942c2163c499537348bb9a7c96386208cd32823a6ce9d573d5d5d5d69bea16a3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v3",
+      "added_at": "2026-06-03T03:10:00.824522",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.824522",
+          "operation_id": 0
+        }
+      ],
+      "size": 5937,
+      "hashes": {
+        "SHA256": "5ad26136317fa2ce76d4eb5cd6a3ea30f8eb72a5d55ebc7a7e4b52e4e1b20201"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v4",
+      "added_at": "2026-06-03T03:10:00.826523",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.826523",
+          "operation_id": 0
+        }
+      ],
+      "size": 6613,
+      "hashes": {
+        "SHA256": "c79945f3fef2b966378b0029a72f1d4c8c6f232870271501b4fc285b6ea1e82b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v5",
+      "added_at": "2026-06-03T03:10:00.827523",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.827523",
+          "operation_id": 0
+        }
+      ],
+      "size": 7281,
+      "hashes": {
+        "SHA256": "d2337bf8698b6f11c52e659003c6fd00f358fbc6bb64279d58d3049c6aad73c7"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v6",
+      "added_at": "2026-06-03T03:10:00.830121",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.830121",
+          "operation_id": 0
+        }
+      ],
+      "size": 7525,
+      "hashes": {
+        "SHA256": "2bf108a94e3025e661be899bfaf481d2eaf6000c11fed2431ac348d6ae7b71e4"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v7",
+      "added_at": "2026-06-03T03:10:00.832121",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.832121",
+          "operation_id": 0
+        }
+      ],
+      "size": 8743,
+      "hashes": {
+        "SHA256": "5a542bdfcffd0b84ecdfccceba23080fb1eea376b5ae120dc604faa8d0205ce7"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v8",
+      "added_at": "2026-06-03T03:10:00.833122",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.833122",
+          "operation_id": 0
+        }
+      ],
+      "size": 10868,
+      "hashes": {
+        "SHA256": "d74b2f8839d8172f4822bc290658b428cf260c91ac31c578b3d21e797ccd93d3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\499dca8f446c1359@v9",
+      "added_at": "2026-06-03T03:10:00.835629",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.835629",
+          "operation_id": 0
+        }
+      ],
+      "size": 13252,
+      "hashes": {
+        "SHA256": "71f3fcc1ab57cd81d7a6c546c22342140409c52f79b9d33e038efaf40c76f067"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v2",
+      "added_at": "2026-06-03T03:10:00.837628",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.837628",
+          "operation_id": 0
+        }
+      ],
+      "size": 20689,
+      "hashes": {
+        "SHA256": "fea82f8afad9079f524b24402152be97166ac1b297b137ea37071dab37a46467"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v3",
+      "added_at": "2026-06-03T03:10:00.839628",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.839628",
+          "operation_id": 0
+        }
+      ],
+      "size": 21136,
+      "hashes": {
+        "SHA256": "85e5800947e448a3ba916fa996e4affc88b924f732b8cdd679edbf3042acbf97"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\4d2adde6b1a6574c@v4",
+      "added_at": "2026-06-03T03:10:00.841629",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.841629",
+          "operation_id": 0
+        }
+      ],
+      "size": 26380,
+      "hashes": {
+        "SHA256": "19c87df1c9e1dd523db0d79534edbed214e9531da1ef80dd4fd69d58597f46cb"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v1",
+      "added_at": "2026-06-03T03:10:00.843630",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.843630",
+          "operation_id": 0
+        }
+      ],
+      "size": 2495,
+      "hashes": {
+        "SHA256": "ce2242d40fbdfc7293c4b5e70632c1386859157192a140a155b87738d8bdee3c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v2",
+      "added_at": "2026-06-03T03:10:00.845133",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.845133",
+          "operation_id": 0
+        }
+      ],
+      "size": 2797,
+      "hashes": {
+        "SHA256": "e75825505c266f8cdd2ef508e0b3eeb546a65e89524d3ebe3d87166bddfe6922"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v3",
+      "added_at": "2026-06-03T03:10:00.847138",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.847138",
+          "operation_id": 0
+        }
+      ],
+      "size": 2904,
+      "hashes": {
+        "SHA256": "d89fa15252827a6767d38b6cb770009a3f3905154d7fb6fd42b0438466153e5b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v4",
+      "added_at": "2026-06-03T03:10:00.849137",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.849137",
+          "operation_id": 0
+        }
+      ],
+      "size": 3206,
+      "hashes": {
+        "SHA256": "61876bb671f8b3624b2f5dc4c3b79acea1c99e17c02ffed045679ddfbebd78c7"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v5",
+      "added_at": "2026-06-03T03:10:00.850137",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.850137",
+          "operation_id": 0
+        }
+      ],
+      "size": 3442,
+      "hashes": {
+        "SHA256": "f275aae6fc4fde0e8f300a184af40ebbc5ecaaa992c8cc01bb7a7e43b8a90d67"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5269046c27cd9895@v6",
+      "added_at": "2026-06-03T03:10:00.852138",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.852138",
+          "operation_id": 0
+        }
+      ],
+      "size": 3659,
+      "hashes": {
+        "SHA256": "1b9b5aee72a13a56e69367ac0fe931f2a0cdaee0e845d33fdd07846d7b8adcbe"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\56a360a7055b206e@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\56a360a7055b206e@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\56a360a7055b206e@v2",
+      "added_at": "2026-06-03T03:10:00.854138",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.854138",
+          "operation_id": 0
+        }
+      ],
+      "size": 2254,
+      "hashes": {
+        "SHA256": "2bd5c8b313e45813bc9f4b2dae1ca2e7b1bb5a0d3e5f95e16303db6e49b72da4"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5c99582a9a773817@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5c99582a9a773817@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\5c99582a9a773817@v2",
+      "added_at": "2026-06-03T03:10:00.855137",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.855137",
+          "operation_id": 0
+        }
+      ],
+      "size": 3527,
+      "hashes": {
+        "SHA256": "1ab90b56c2fba3782c834757769554ceabd4c507f82f7ad7aba5642e1634e8ac"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v1",
+      "added_at": "2026-06-03T03:10:00.857139",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.857139",
+          "operation_id": 0
+        }
+      ],
+      "size": 2177,
+      "hashes": {
+        "SHA256": "20dbc7c23ee3d81197e704758121aa02fdbe30f8b10ea99189b03afa6d390ead"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v2",
+      "added_at": "2026-06-03T03:10:00.858137",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.858137",
+          "operation_id": 0
+        }
+      ],
+      "size": 2384,
+      "hashes": {
+        "SHA256": "03b82aaa67365537864c2dfc2043e84eed87dd15f382cf225ca2fb8c682e6a29"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v3",
+      "added_at": "2026-06-03T03:10:00.860138",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.860138",
+          "operation_id": 0
+        }
+      ],
+      "size": 2387,
+      "hashes": {
+        "SHA256": "6ab23ad74452bbd9b31b7ce6b9249be7cd31b1196db311d846d684dcae526649"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\64b4e59a0e436b90@v4",
+      "added_at": "2026-06-03T03:10:00.861645",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.861645",
+          "operation_id": 0
+        }
+      ],
+      "size": 2838,
+      "hashes": {
+        "SHA256": "c8fc89f79f941125d029752d3c98a23a35a857a0e697e770c6019c88019e9434"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\676971d825c62a94@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\676971d825c62a94@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\676971d825c62a94@v2",
+      "added_at": "2026-06-03T03:10:00.863689",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.863689",
+          "operation_id": 0
+        }
+      ],
+      "size": 10196,
+      "hashes": {
+        "SHA256": "7561c7abc3ebd48314d910e362f2a3f4082455c064a284c5cb5fa10208985b45"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\6ad21133459cd97b@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\6ad21133459cd97b@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\6ad21133459cd97b@v2",
+      "added_at": "2026-06-03T03:10:00.864688",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.864688",
+          "operation_id": 0
+        }
+      ],
+      "size": 15491,
+      "hashes": {
+        "SHA256": "df7b6952c678e81943d1e4856109400d8bb5c14ed4381c69ebd92cabac8d633a"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75e3493996f81407@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75e3493996f81407@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75e3493996f81407@v2",
+      "added_at": "2026-06-03T03:10:00.866693",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.866693",
+          "operation_id": 0
+        }
+      ],
+      "size": 4584,
+      "hashes": {
+        "SHA256": "682129f27962257162cd89a26cb6dcae331b1d13d75691ea0641afb72cb5a067"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75f74747f1e7eb35@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75f74747f1e7eb35@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\75f74747f1e7eb35@v2",
+      "added_at": "2026-06-03T03:10:00.868692",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.868692",
+          "operation_id": 0
+        }
+      ],
+      "size": 4154,
+      "hashes": {
+        "SHA256": "bb4c9a7dd84962b88fc7191e94b6c4e012b9e2a6031f371a67e863f038ca4e91"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\76fd6428e95723cc@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\76fd6428e95723cc@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\76fd6428e95723cc@v2",
+      "added_at": "2026-06-03T03:10:00.870693",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.870693",
+          "operation_id": 0
+        }
+      ],
+      "size": 5620,
+      "hashes": {
+        "SHA256": "be4a513fef71b98f3675db1a0c54dae06c718336b9c618b36772e5fcd3f32324"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\783c74a364aba862@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\783c74a364aba862@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\783c74a364aba862@v2",
+      "added_at": "2026-06-03T03:10:00.871692",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.871692",
+          "operation_id": 0
+        }
+      ],
+      "size": 6351,
+      "hashes": {
+        "SHA256": "93baef5adbfccdb4c85fddb8e0788d7499120139b98fe597776f4824f4bb2a42"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7a78b2dae6027687@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7a78b2dae6027687@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7a78b2dae6027687@v2",
+      "added_at": "2026-06-03T03:10:00.873691",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.873691",
+          "operation_id": 0
+        }
+      ],
+      "size": 2331,
+      "hashes": {
+        "SHA256": "ae66ebaee0453bf635ef3b392c14c70f906ef764bc944a962b61c59a722234ba"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v2",
+      "added_at": "2026-06-03T03:10:00.875692",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.875692",
+          "operation_id": 0
+        }
+      ],
+      "size": 7622,
+      "hashes": {
+        "SHA256": "83cea264b2681a21fb1d9e5e740de954730f9e5b4afa314b3c3fa4649fccb87f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\7b41e372d904cf46@v3",
+      "added_at": "2026-06-03T03:10:00.877694",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.877694",
+          "operation_id": 0
+        }
+      ],
+      "size": 7862,
+      "hashes": {
+        "SHA256": "d5b65f6e6f1c9e1eb9d67bba3ad5c9cd8be948a085b00876fe55a2fc39131779"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\80163a20266edce6@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\80163a20266edce6@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\80163a20266edce6@v2",
+      "added_at": "2026-06-03T03:10:00.878693",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.878693",
+          "operation_id": 0
+        }
+      ],
+      "size": 53,
+      "hashes": {
+        "SHA256": "eaee07eece98cd0f88050c19e4c0b2302bff44924a918b65dc3ddf858c6c11eb"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v1",
+      "added_at": "2026-06-03T03:10:00.884200",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.884200",
+          "operation_id": 0
+        }
+      ],
+      "size": 121911,
+      "hashes": {
+        "SHA256": "b89de083d3f079e716c18d28f2512d9d81da3bc39ad5ee6475030cb39ca72abf"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v2",
+      "added_at": "2026-06-03T03:10:00.889199",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.889199",
+          "operation_id": 0
+        }
+      ],
+      "size": 122265,
+      "hashes": {
+        "SHA256": "4e3d2dd7078594927f3e9a04d1966d228ef72ea3a4fbb947eabef64e85e00889"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v3",
+      "added_at": "2026-06-03T03:10:00.895346",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.895346",
+          "operation_id": 0
+        }
+      ],
+      "size": 121974,
+      "hashes": {
+        "SHA256": "e60c049035a9fb04b8d95b4bba40661beb920c9c084fd59f13369534c0e270ad"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\8379dfa53bea1e43@v4",
+      "added_at": "2026-06-03T03:10:00.900372",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.900372",
+          "operation_id": 0
+        }
+      ],
+      "size": 124440,
+      "hashes": {
+        "SHA256": "a967d94f417a2b37505d87c63e542bc7e447a3dedab886cc45a5b42b504b9958"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\85265ffe15670092@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\85265ffe15670092@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\85265ffe15670092@v2",
+      "added_at": "2026-06-03T03:10:00.901372",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.901372",
+          "operation_id": 0
+        }
+      ],
+      "size": 293,
+      "hashes": {
+        "SHA256": "888c67ae34bc7868f439d06d5198e02e5d6065904fa883d41bf24fc4fd7d4e41"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v1",
+      "added_at": "2026-06-03T03:10:00.903370",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.903370",
+          "operation_id": 0
+        }
+      ],
+      "size": 1639,
+      "hashes": {
+        "SHA256": "9035ccd3b0d0e9a1a3283941ffa72750dd9ba3fda5ade384c6bce9e6677968de"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v2",
+      "added_at": "2026-06-03T03:10:00.905370",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.905370",
+          "operation_id": 0
+        }
+      ],
+      "size": 2077,
+      "hashes": {
+        "SHA256": "042293a290c3eddbd90c5b59764207ad9885377dd46c784f91ce9e1b64d26abb"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v3",
+      "added_at": "2026-06-03T03:10:00.906871",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.906871",
+          "operation_id": 0
+        }
+      ],
+      "size": 2711,
+      "hashes": {
+        "SHA256": "4384585b7111d2976e251d195bf278fedba3afaf706b075129b6beff4a04cb84"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\92c83fce1c328bbf@v4",
+      "added_at": "2026-06-03T03:10:00.907874",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.907874",
+          "operation_id": 0
+        }
+      ],
+      "size": 2995,
+      "hashes": {
+        "SHA256": "82cd4f15b56b29c130320829189fa54b4521c493f9365d158c9e4d78aea9ef39"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v1",
+      "added_at": "2026-06-03T03:10:00.910874",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.910874",
+          "operation_id": 0
+        }
+      ],
+      "size": 38767,
+      "hashes": {
+        "SHA256": "d9059037911659a5cfd5f62e31672c987cc3922fb1c7733733896e7f0c91cb5f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v2",
+      "added_at": "2026-06-03T03:10:00.912876",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.912876",
+          "operation_id": 0
+        }
+      ],
+      "size": 40515,
+      "hashes": {
+        "SHA256": "4e6112c53e7c859bf41aa053ae9d075892100f1b1c09194ea5ee300424c9556f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\988a96fd085233db@v3",
+      "added_at": "2026-06-03T03:10:00.914876",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.914876",
+          "operation_id": 0
+        }
+      ],
+      "size": 54854,
+      "hashes": {
+        "SHA256": "4f6b3369d6f2e8e77f6d1bdc4c821b31879461900590dfd4fd7aade4fab5bb51"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v2",
+      "added_at": "2026-06-03T03:10:00.917875",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.917875",
+          "operation_id": 0
+        }
+      ],
+      "size": 18350,
+      "hashes": {
+        "SHA256": "34b9cca5c49862e93f5f45458a0ea2b9632e12938048d4ecd9893a85a018fafd"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\99fa594428728be3@v3",
+      "added_at": "2026-06-03T03:10:00.919081",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.919081",
+          "operation_id": 0
+        }
+      ],
+      "size": 21994,
+      "hashes": {
+        "SHA256": "2263901c6ed429754bcbe5a1876b094e3840278d7e4af60e90dc5f675bb19a60"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\9fcca926924abb98@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\9fcca926924abb98@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\9fcca926924abb98@v2",
+      "added_at": "2026-06-03T03:10:00.921086",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.921086",
+          "operation_id": 0
+        }
+      ],
+      "size": 19095,
+      "hashes": {
+        "SHA256": "b7e272e0ba21bb2dd360f189666d56748ad3a27eca14cb180448a4582ec749f3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\a86e0d3c9ad61361@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\a86e0d3c9ad61361@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\a86e0d3c9ad61361@v2",
+      "added_at": "2026-06-03T03:10:00.922589",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.922589",
+          "operation_id": 0
+        }
+      ],
+      "size": 567,
+      "hashes": {
+        "SHA256": "a69f9cf3ecb2f77814654106efb7d5d792292c9b11a8a4f04b5e1d050fc20342"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v1",
+      "added_at": "2026-06-03T03:10:00.925700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.925700",
+          "operation_id": 0
+        }
+      ],
+      "size": 6490,
+      "hashes": {
+        "SHA256": "f040e85f55dddf0981d315eae3e611a79f5f17c46b4bb0d99556bcb5f3b9ad56"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v2",
+      "added_at": "2026-06-03T03:10:00.927698",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.927698",
+          "operation_id": 0
+        }
+      ],
+      "size": 6502,
+      "hashes": {
+        "SHA256": "34742a7f8db8eea296b4fb494ce0b662a659e2292839cf1c00bcc2f7a7a96ed9"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\aa57b9c498041ecc@v3",
+      "added_at": "2026-06-03T03:10:00.929697",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.929697",
+          "operation_id": 0
+        }
+      ],
+      "size": 6324,
+      "hashes": {
+        "SHA256": "37bee998517b3b29b28c03ee75b589720fd4a1ef84f954491a8520ba701fc5a9"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v10": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v10",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v10",
+      "added_at": "2026-06-03T03:10:00.931696",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.931696",
+          "operation_id": 0
+        }
+      ],
+      "size": 13918,
+      "hashes": {
+        "SHA256": "f5eb448b519328fbbae1a13e2f749f38f7a94d95b29484e332d175a95d21f021"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v11": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v11",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v11",
+      "added_at": "2026-06-03T03:10:00.933696",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.933696",
+          "operation_id": 0
+        }
+      ],
+      "size": 14638,
+      "hashes": {
+        "SHA256": "9ad68e984dfc14f68d5e04bb19c355f5e5e8a5b25df8d63b6dd11870d64cb131"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v12": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v12",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v12",
+      "added_at": "2026-06-03T03:10:00.935698",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.935698",
+          "operation_id": 0
+        }
+      ],
+      "size": 14697,
+      "hashes": {
+        "SHA256": "dd638edcf41d84f80eeb9f4f4088ffe57021f50d6013ad82d253a5c36ca5fc82"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v13": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v13",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v13",
+      "added_at": "2026-06-03T03:10:00.937696",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.937696",
+          "operation_id": 0
+        }
+      ],
+      "size": 14894,
+      "hashes": {
+        "SHA256": "579caf910d374937e6c80b68d8ee529f41d77922b242931589811fd47f40c2ef"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v14": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v14",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v14",
+      "added_at": "2026-06-03T03:10:00.938697",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.938697",
+          "operation_id": 0
+        }
+      ],
+      "size": 14902,
+      "hashes": {
+        "SHA256": "f7b0ffcb19cde4f65beac541ed696be008f7f034fbbbdc145e35e952af5ee183"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v15": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v15",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v15",
+      "added_at": "2026-06-03T03:10:00.940702",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.940702",
+          "operation_id": 0
+        }
+      ],
+      "size": 16567,
+      "hashes": {
+        "SHA256": "34231d10d136a8bf710f59c3dd1fdbbbc3d33ddfec5800b1d4444eb854a47a97"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v2",
+      "added_at": "2026-06-03T03:10:00.942700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.942700",
+          "operation_id": 0
+        }
+      ],
+      "size": 6963,
+      "hashes": {
+        "SHA256": "35eaba4f37fa23b5aa0417ef3c197cb949f42dbd7170e0e6c2fae9f675d8e9dc"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v3",
+      "added_at": "2026-06-03T03:10:00.944700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.944700",
+          "operation_id": 0
+        }
+      ],
+      "size": 8831,
+      "hashes": {
+        "SHA256": "5126288831c33dc07b108b602962e254845cbde0ac8f908ab53a986984be2c44"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v4",
+      "added_at": "2026-06-03T03:10:00.945700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.945700",
+          "operation_id": 0
+        }
+      ],
+      "size": 10983,
+      "hashes": {
+        "SHA256": "b03ece9a898832336e9c07f89c8c4c9738e4e214684d28401c62f21b2cf73c6f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v5",
+      "added_at": "2026-06-03T03:10:00.947700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.947700",
+          "operation_id": 0
+        }
+      ],
+      "size": 11267,
+      "hashes": {
+        "SHA256": "67e93a7637dea10b6e521c4e79351223755a9380a29939394d0ea3466e8bc27b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v6",
+      "added_at": "2026-06-03T03:10:00.949700",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.949700",
+          "operation_id": 0
+        }
+      ],
+      "size": 11522,
+      "hashes": {
+        "SHA256": "1c9465eab48ef1094ac281198fd8d6c803bff35599db81d90df02bce100f8125"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v7",
+      "added_at": "2026-06-03T03:10:00.951701",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.951701",
+          "operation_id": 0
+        }
+      ],
+      "size": 12394,
+      "hashes": {
+        "SHA256": "244c8627deb2b72aa829dc12d1f2f7b8738cf8b0b56c7e04c448a56ae1d8800d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v8",
+      "added_at": "2026-06-03T03:10:00.953703",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.953703",
+          "operation_id": 0
+        }
+      ],
+      "size": 13639,
+      "hashes": {
+        "SHA256": "afe4c86f73940d19cc4d768a316dbd50b94b08f0312689d670d78d4706a6af25"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ac64133486e2fc08@v9",
+      "added_at": "2026-06-03T03:10:00.955891",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.955891",
+          "operation_id": 0
+        }
+      ],
+      "size": 13672,
+      "hashes": {
+        "SHA256": "ccfd6f94bda5d7248e7e372d358892f4734cf3775545d3bcbce83aa4566000ba"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b30569ed622f6932@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b30569ed622f6932@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b30569ed622f6932@v2",
+      "added_at": "2026-06-03T03:10:00.957888",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.957888",
+          "operation_id": 0
+        }
+      ],
+      "size": 5799,
+      "hashes": {
+        "SHA256": "2d7c0e523a2fdd8cebddaca9fa124f09ada82db8fb25d51832555cf654b4b34c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v1",
+      "added_at": "2026-06-03T03:10:00.958887",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.958887",
+          "operation_id": 0
+        }
+      ],
+      "size": 5348,
+      "hashes": {
+        "SHA256": "a3379f0c74ddd8fb09961ca989c2c91f19ada6864b72f6c42633420ff9b7d60b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60a4ff735a7e82d@v2",
+      "added_at": "2026-06-03T03:10:00.960888",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.960888",
+          "operation_id": 0
+        }
+      ],
+      "size": 6401,
+      "hashes": {
+        "SHA256": "3cad7d9f70ccf4ad8ed3e047978064a986f2fd1b5fc099c9b548da48491b15e2"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v1",
+      "added_at": "2026-06-03T03:10:00.962888",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.962888",
+          "operation_id": 0
+        }
+      ],
+      "size": 2588,
+      "hashes": {
+        "SHA256": "f4e8185f1d79a79604b9be71e8690b122422290f41c53720f64357a1e3267570"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v2",
+      "added_at": "2026-06-03T03:10:00.963887",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.963887",
+          "operation_id": 0
+        }
+      ],
+      "size": 2802,
+      "hashes": {
+        "SHA256": "3402e09464dbc5adee53f21a7776aeba3d6149641372beaadabd1fc4d01935e0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v3",
+      "added_at": "2026-06-03T03:10:00.965891",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.965891",
+          "operation_id": 0
+        }
+      ],
+      "size": 4403,
+      "hashes": {
+        "SHA256": "199d494e7684c4e7830075538757d113db1bdae7b572bad1031c5c4c0e5050d0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v4",
+      "added_at": "2026-06-03T03:10:00.967892",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.967892",
+          "operation_id": 0
+        }
+      ],
+      "size": 4516,
+      "hashes": {
+        "SHA256": "d09f693c0d2d66257d9ca92804b180aaf2a2d999ab049d6a4733cb65fbbc0749"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v5",
+      "added_at": "2026-06-03T03:10:00.968891",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.968891",
+          "operation_id": 0
+        }
+      ],
+      "size": 4942,
+      "hashes": {
+        "SHA256": "6de0f055fa67e5a077381400fda9de05eeac0af85710191c111dc8940793791a"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v6",
+      "added_at": "2026-06-03T03:10:00.970894",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.970894",
+          "operation_id": 0
+        }
+      ],
+      "size": 5010,
+      "hashes": {
+        "SHA256": "1cb8b9b841f19f7efea1e7ed407f14d2ca419d01fc9c74ac6869feaa74ad32a2"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v7",
+      "added_at": "2026-06-03T03:10:00.972895",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.972895",
+          "operation_id": 0
+        }
+      ],
+      "size": 6001,
+      "hashes": {
+        "SHA256": "bee1ef56cb830a11882fde86c1330fe5ef101e9e06d3514d23b6ec03324704e8"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v8",
+      "added_at": "2026-06-03T03:10:00.974891",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.974891",
+          "operation_id": 0
+        }
+      ],
+      "size": 6368,
+      "hashes": {
+        "SHA256": "f8d7158c78edcfe45cec82872f7642577398a4d2886002943cdd57653dea13f4"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b60ca42db87d0c43@v9",
+      "added_at": "2026-06-03T03:10:00.976892",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.976892",
+          "operation_id": 0
+        }
+      ],
+      "size": 6364,
+      "hashes": {
+        "SHA256": "39e678b31e9245abeedf8cc0a336b3321bde6cf7fe28e63c6d80abf353bbd61b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b8f0089290d59050@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b8f0089290d59050@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\b8f0089290d59050@v2",
+      "added_at": "2026-06-03T03:10:00.978892",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.978892",
+          "operation_id": 0
+        }
+      ],
+      "size": 6206,
+      "hashes": {
+        "SHA256": "2155f352ab1eff4283377bdfe0f31ab8b0de8c674214c718bba949d3d5928144"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ba0b18cb2fb3f069@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ba0b18cb2fb3f069@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ba0b18cb2fb3f069@v2",
+      "added_at": "2026-06-03T03:10:00.979891",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.979891",
+          "operation_id": 0
+        }
+      ],
+      "size": 285,
+      "hashes": {
+        "SHA256": "dc8cf78ed6b095ad67356a4054a31920482365f7af0a564ef88d7ac7440b81d4"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v10": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v10",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v10",
+      "added_at": "2026-06-03T03:10:00.981959",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.982960",
+          "operation_id": 0
+        }
+      ],
+      "size": 33729,
+      "hashes": {
+        "SHA256": "a4e67a0ea7f9d57f980c11df2d8d9662d83b0a562098e6bd05b620b5ac39af1d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v11": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v11",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v11",
+      "added_at": "2026-06-03T03:10:00.984961",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.984961",
+          "operation_id": 0
+        }
+      ],
+      "size": 35680,
+      "hashes": {
+        "SHA256": "88d91d3d4fc02db27ff2ea4ad4cc1eda788eedd5708dfdf99eb4725bba8c4aa3"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v2",
+      "added_at": "2026-06-03T03:10:00.987080",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.987080",
+          "operation_id": 0
+        }
+      ],
+      "size": 7977,
+      "hashes": {
+        "SHA256": "4ea4d6457e4d74e030037c17b9d95bd5941d0d82420f45a02de2c3f00efdb58b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v3",
+      "added_at": "2026-06-03T03:10:00.989078",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.989078",
+          "operation_id": 0
+        }
+      ],
+      "size": 10852,
+      "hashes": {
+        "SHA256": "3b7a621973632d71fa892650b14c5316d934164786e3ed2c63cb2655f5395823"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v4",
+      "added_at": "2026-06-03T03:10:00.991079",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.991079",
+          "operation_id": 0
+        }
+      ],
+      "size": 13351,
+      "hashes": {
+        "SHA256": "a2112d239f04a906632cfdadbe37e340f2bcfc538a6fc1e838c4c5eba71504cc"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v5": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v5",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v5",
+      "added_at": "2026-06-03T03:10:00.993079",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.993079",
+          "operation_id": 0
+        }
+      ],
+      "size": 17527,
+      "hashes": {
+        "SHA256": "c4b47077fd9a98e472b60de13f384f55b0938429947a02d53a5b4630729ea027"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v6": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v6",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v6",
+      "added_at": "2026-06-03T03:10:00.994079",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.994079",
+          "operation_id": 0
+        }
+      ],
+      "size": 19623,
+      "hashes": {
+        "SHA256": "ba78af3905db7328b8511db26f488a1e98faa7273eb91417510f6151cd9b509c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v7": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v7",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v7",
+      "added_at": "2026-06-03T03:10:00.996078",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.996078",
+          "operation_id": 0
+        }
+      ],
+      "size": 21751,
+      "hashes": {
+        "SHA256": "fa8cf3ec92e0650e0f47f63960611ac556c2f4dd58c7e05856c032dfb623e39f"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v8": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v8",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v8",
+      "added_at": "2026-06-03T03:10:00.998077",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:00.998077",
+          "operation_id": 0
+        }
+      ],
+      "size": 24628,
+      "hashes": {
+        "SHA256": "606ccbc741cc739b2898a1a831172f2aba444331dab4ee836f5698267d30df41"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v9": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v9",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c26c69de8929578e@v9",
+      "added_at": "2026-06-03T03:10:01.000077",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.000077",
+          "operation_id": 0
+        }
+      ],
+      "size": 30182,
+      "hashes": {
+        "SHA256": "bc21e055e2b1a9cbddef92dd6574b1c1a1688fb77736213d45e7b85f886488cf"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v1",
+      "added_at": "2026-06-03T03:10:01.002079",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.002079",
+          "operation_id": 0
+        }
+      ],
+      "size": 2438,
+      "hashes": {
+        "SHA256": "3f6205161b9ae8ab9a1dc91f3be6947a027a8e6c685c0e180787af26e8ea835c"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\c8e7c2d4081b36ba@v2",
+      "added_at": "2026-06-03T03:10:01.004082",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.004082",
+          "operation_id": 0
+        }
+      ],
+      "size": 2432,
+      "hashes": {
+        "SHA256": "bf60459c7084a598132b75fd4e9f813729840d069e3afd92b2cfbe55aac205b1"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\cc6b03f2a265d2e4@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\cc6b03f2a265d2e4@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\cc6b03f2a265d2e4@v2",
+      "added_at": "2026-06-03T03:10:01.006081",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.006081",
+          "operation_id": 0
+        }
+      ],
+      "size": 24412,
+      "hashes": {
+        "SHA256": "62653b682d2edd163d2d1f14db4385c2affe2120782a2e6671116b7173507d5d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dc9c5b5a7a6927db@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dc9c5b5a7a6927db@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dc9c5b5a7a6927db@v2",
+      "added_at": "2026-06-03T03:10:01.008081",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.008081",
+          "operation_id": 0
+        }
+      ],
+      "size": 11915,
+      "hashes": {
+        "SHA256": "0e141ee19b4b834c4fe0cd6320b5e7e028ca896729525c9c2e64bd1447579516"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v1",
+      "added_at": "2026-06-03T03:10:01.009081",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.009081",
+          "operation_id": 0
+        }
+      ],
+      "size": 6446,
+      "hashes": {
+        "SHA256": "bb977cf9fd57398774cbeb9352778aa2d6c44ed68dbb9ec46d02ca958919650b"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v2",
+      "added_at": "2026-06-03T03:10:01.011083",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.011083",
+          "operation_id": 0
+        }
+      ],
+      "size": 7822,
+      "hashes": {
+        "SHA256": "38e7bcfbb2a09a562aa2d9ee8508a7385df3515821c5fd26ec56747cdf432a94"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v3",
+      "added_at": "2026-06-03T03:10:01.013081",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.013081",
+          "operation_id": 0
+        }
+      ],
+      "size": 7825,
+      "hashes": {
+        "SHA256": "e6a69993b40c0bc8583f2c1088a3014b0ca16e01bc216cd9b2037d9a968425cc"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v4": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v4",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\deea29b6829fd185@v4",
+      "added_at": "2026-06-03T03:10:01.015080",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.015080",
+          "operation_id": 0
+        }
+      ],
+      "size": 7639,
+      "hashes": {
+        "SHA256": "8ee3b2cfccb92f5aac430917c22b434b699fae0aff4b9744ee6b064b218007b7"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v1",
+      "added_at": "2026-06-03T03:10:01.017168",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.017168",
+          "operation_id": 0
+        }
+      ],
+      "size": 5399,
+      "hashes": {
+        "SHA256": "9550a305b54190b75adea7419d6de3e5384cea006b831c4eb0a6ee60269e9c85"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\dfa9dffbb559870c@v2",
+      "added_at": "2026-06-03T03:10:01.019223",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.019223",
+          "operation_id": 0
+        }
+      ],
+      "size": 5630,
+      "hashes": {
+        "SHA256": "8b43c3eda0759fbd854e46469eea03f89809faef09feeb6a3123714345f3690a"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v1": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v1",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v1",
+      "added_at": "2026-06-03T03:10:01.021223",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.021223",
+          "operation_id": 0
+        }
+      ],
+      "size": 7266,
+      "hashes": {
+        "SHA256": "50939e2c128f1a62cfe403a867f33ec9d55d85c71252ece3c5ee4a483b454dd0"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v2",
+      "added_at": "2026-06-03T03:10:01.022222",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.022222",
+          "operation_id": 0
+        }
+      ],
+      "size": 7272,
+      "hashes": {
+        "SHA256": "f2be5b85c4a746e5b8c49c07c810e3abfc08c363ef1b9c49276221603ea8c25d"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v3": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v3",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\ed8d8745eccd550e@v3",
+      "added_at": "2026-06-03T03:10:01.024222",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.024222",
+          "operation_id": 0
+        }
+      ],
+      "size": 7105,
+      "hashes": {
+        "SHA256": "c57913eca1f3f621f94411e212a658c001b0fedf34cce6911daeb621aefb5dcd"
+      }
+    },
+    "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\f5038a5185338c5d@v2": {
+      "source_path": "C:\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\f5038a5185338c5d@v2",
+      "destination_path": "C:\\tmp\\csb-restore-test-7fb868dc\\C\\Users\\Extreme\\.claude\\file-history\\7fb868dc-3dd0-437a-9cc8-28f23a43fc70\\f5038a5185338c5d@v2",
+      "added_at": "2026-06-03T03:10:01.026222",
+      "history": [
+        {
+          "timestamp": "2026-06-03T03:10:01.026222",
+          "operation_id": 0
+        }
+      ],
+      "size": 42630,
+      "hashes": {
+        "SHA256": "0c07ae253dcf4b6e194bb19860621f4e8d0be6c98e9a6ec65b2fcaa47f8fc088"
+      }
+    }
+  },
+  "metadata": {},
+  "extensions": {}
+}

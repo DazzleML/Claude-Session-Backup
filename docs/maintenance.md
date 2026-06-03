@@ -155,11 +155,81 @@ When the combined `id: ... | val: ... | restore: ...` line fits the console widt
 
 If your terminal is narrower than 120 cols, expect the two-line layout even on short rows. If wider, expect the compact one-line for everything that fits.
 
-## Related: `csb restore` and the recovery story
+## `csb restore` and the recovery story
 
-- `csb restore <uuid>` recovers a single JSONL byte-exact from git history. See README's Recovery section.
-- `csb scan -d <path> --deleted --restore` bulk-restores every deleted session whose original folder was under `<path>`.
-- `csb update backfill-deleted` is the metadata-side complement: it doesn't restore JSONLs (that's still `csb restore`), it makes sure the DB knows about every UUID git has seen.
+`csb restore <uuid>` recovers a deleted session as completely as git lets it -- not just the main transcript, but every sidecar git has for that UUID. This is the v0.3.12+ behavior; the v0.3.11 behavior (JSONL only) is preserved behind `--jsonl-only`.
+
+### What gets restored by default
+
+The discovery uses `git ls-tree -r <commit> --` against four scoped pathspecs, then writes back every match. Categories:
+
+| Source | Path pattern | Whose? |
+|---|---|---|
+| Main transcript | `projects/<slug>/<uuid>.jsonl` | Claude Code |
+| Subagent sidechain | `projects/<slug>/<uuid>/subagents/agent-*.{jsonl,meta.json}` | Claude Code |
+| Tool-result spillover | `projects/<slug>/<uuid>/tool-results/*.{txt,json}` | Claude Code |
+| Remote-agent metadata | `projects/<slug>/<uuid>/remote-agents/*.meta.json` | Claude Code (CCR) |
+| Logger state pointer | `session-states/<uuid>.{json,name-cache,source}` | claude-session-logger |
+| Logger sesslog dir | `sesslogs/<sanitized-name>__<uuid>_<user>/` (recursive, including the logger's own per-session `baks/`) | claude-session-logger |
+
+Users without `claude-session-logger` installed see no logger files attempted -- git enumeration handles both populations naturally; csb has no concept of "is the logger installed."
+
+### What is NOT auto-restored
+
+Intentionally excluded:
+
+- `debug/<uuid>.txt`, `telemetry/...<uuid>.json`, `session-env/<uuid>` -- pure runtime / telemetry. Claude Code regenerates as needed.
+- `file-history/<uuid>/`, `tasks/<uuid>/`, `todos/<uuid>-agent-*.json` -- runtime working set. Deferred to a follow-up if user friction surfaces.
+- `sesslogs/bak/` (singular, sibling of per-session sesslog dirs) -- user-managed manual backup folder, not written by claude-session-logger. csb stays out of user-managed structures.
+- Project-level files like `projects/<slug>/.session_cache.json` -- not session-keyed.
+
+If you discover one of these is load-bearing in your workflow, file an issue -- the classification is conservative by default, not final.
+
+### Overwrite policy (non-destructive default)
+
+Per-file:
+
+| File state on disk | Default | `--force` |
+|---|---|---|
+| Missing | restore from git | restore from git |
+| Present (bytes match git) | skip (silent) | skip (already correct) |
+| Present (bytes differ from git) | **PRESERVE on-disk** | overwrite with git bytes |
+
+The preserve-present default means re-running `csb restore` is naturally idempotent (safe to call twice; nothing changes) and local-newer logger content (e.g. sesslog appends that landed after the last `csb backup`) is never clobbered. The summary output reports the restore count and the preserve count so the operation is transparent:
+
+```
+Restored 8 files from commit ed3bdf7f.
+Preserved 20 present files (kept on-disk content; use --force to overwrite from git).
+  main transcript: 1
+  session-states (logger): 3
+  sesslogs (logger): 4
+Session should now be visible in Claude Code.
+```
+
+If everything is already present (idempotent re-run), the output is explicit:
+
+```
+Nothing to restore: all 28 expected files are already on disk. Use --force to overwrite from git history if you need to revert local changes.
+```
+
+### Flags
+
+- `--jsonl-only` -- pre-v0.3.12 behavior. Restores only `projects/<slug>/<uuid>.jsonl`. Useful for piping to a viewer.
+- `--force` -- overwrite present files from git. Default behavior preserves on-disk content. Use when local files are stale or corrupted and git is authoritative.
+- `--dry-run` -- show what would be restored AND what would be preserved without writing anything.
+
+### Concurrency
+
+`csb restore` acquires `backup_lock` for the duration of the multi-file write. A concurrent `csb backup` cannot snapshot a half-restored state. The same lock is used by `csb update *` so all maintenance / recovery operations are mutually exclusive.
+
+### Restore-then-resume ordering
+
+If you're going to `claude --resume <uuid>` after restore, run restore FIRST. The logger's `reconcile_session_directory` finds the restored sesslog dir by GUID-in-dirname scan; if the dir is missing when resume fires, the logger creates a fresh empty one at the same path and appends new tool calls there. Restoring the old dir AFTER that point leaves you with two parallel dirs and no automatic merge. Ordering: restore -> resume.
+
+### Related verbs
+
+- `csb scan -d <path> --deleted --restore` -- bulk-restores every deleted session whose original folder was under `<path>`. Uses the same per-file overwrite policy as `csb restore`.
+- `csb update backfill-deleted` -- the metadata-side complement: doesn't restore files (that's `csb restore`); makes sure the DB knows about every UUID git has seen.
 
 ## Schema versions
 

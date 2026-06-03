@@ -32,6 +32,7 @@ from .git_ops import (
     git_commit_user,
     git_find_deleted_file,
     git_find_jsonl_by_uuid,
+    git_ls_tree_for_uuid,
     git_restore_file,
     git_status,
     is_git_repo,
@@ -761,53 +762,193 @@ def cmd_restore(args) -> int:
             return 1
         jsonl_path = candidates[0]
 
-    # Check if file already exists -- only meaningful when we know the
-    # session is "deleted" (DB row says so) or when bytes on disk differ
-    # from git. For the fallback path (no DB row), if the file exists on
-    # disk, the user almost certainly doesn't want us to overwrite it.
-    full_path = Path(claude_dir) / jsonl_path
-    if full_path.exists():
-        if session is None:
-            print(f"Session file already exists on disk: {full_path}", file=sys.stderr)
-            print(
-                "No DB row exists for this session, but the JSONL is present. "
-                "Refusing to overwrite without explicit need.",
-                file=sys.stderr,
-            )
-            return 1
-        if not session.get("deleted_at"):
-            print(f"Session file already exists: {full_path}")
-            print("This session doesn't appear to be deleted.")
-            return 1
-
-    # Find the commit to restore from.
+    # Find the commit to restore from. We use the parent of the deletion
+    # commit, so the JSONL (and every sidecar that lived alongside it)
+    # is present in that tree.
     commit = git_find_deleted_file(claude_dir, jsonl_path)
     if not commit:
         print(f"Could not find '{jsonl_path}' in git history.", file=sys.stderr)
         print("The file may never have been committed to git.", file=sys.stderr)
         return 1
 
-    if args.dry_run:
-        print(f"Would restore: {jsonl_path}")
-        print(f"From commit:   {commit[:8]}")
-        print(f"To:            {full_path}")
-        if session is None:
-            print(f"Source:        git history (no DB row -- fallback mode)")
-        return 0
-
-    # Restore the file
-    success = git_restore_file(claude_dir, commit, jsonl_path, str(full_path))
-    if success:
-        print(f"Restored: {jsonl_path}")
-        print(f"From commit: {commit[:8]}")
-        if session is None:
-            print(f"(restored via git-history fallback -- DB had no row for this UUID)")
-        print(f"Session should now be visible in Claude Code.")
-    else:
-        print(f"Failed to restore '{jsonl_path}' from commit {commit[:8]}", file=sys.stderr)
+    # Extract the slug from `projects/<slug>/<uuid>.jsonl` so we can scope
+    # the SESSION-HISTORY enumeration. Slug collision is already handled
+    # upstream (the resolver returns a single jsonl_path); we trust it.
+    slug = _extract_slug_from_jsonl_path(jsonl_path)
+    if not slug:
+        print(
+            f"Could not derive project slug from jsonl_path {jsonl_path!r}; "
+            f"expected 'projects/<slug>/<uuid>.jsonl' shape.",
+            file=sys.stderr,
+        )
         return 1
 
+    # Discovery: enumerate every SESSION-HISTORY path at this commit.
+    # The git ls-tree walk handles both populations naturally:
+    # - users with claude-session-logger get session-states/ + sesslogs/ paths
+    # - users without get just the Claude Code paths
+    # The git enumeration is authoritative; we never construct paths and
+    # assume existence.
+    if getattr(args, "jsonl_only", False):
+        # Pre-v0.3.12 behavior: restore the transcript only.
+        paths_to_restore = [jsonl_path]
+    else:
+        # uuid here is the resolved full session_id (or args.session_id in
+        # the fallback path where we required a full UUID earlier).
+        resolved_uuid = full_id or args.session_id
+        paths_to_restore = git_ls_tree_for_uuid(
+            claude_dir, commit, slug, resolved_uuid
+        )
+        if not paths_to_restore:
+            # Should be impossible: we found the JSONL above, so at least
+            # that path must be in the tree. Defensive fallback.
+            paths_to_restore = [jsonl_path]
+        elif jsonl_path not in paths_to_restore:
+            # Belt-and-braces: include the JSONL even if discovery skipped it
+            paths_to_restore.append(jsonl_path)
+        paths_to_restore = sorted(set(paths_to_restore))
+
+    # Per-file overwrite policy (v0.3.12):
+    #   - File missing on disk  -> restore from git (the whole point)
+    #   - File present on disk  -> PRESERVE (skip) by default; --force opts
+    #     into overwriting from git.
+    #
+    # This is non-destructive: re-running restore is naturally idempotent
+    # (present files stay), and we never clobber local content that may
+    # have more recent writes than git (e.g. logger sesslog files that
+    # were appended-to after the last csb backup).
+    is_force = getattr(args, "force", False)
+    write_list = []
+    preserve_list = []
+    for p in paths_to_restore:
+        if (Path(claude_dir) / p).exists():
+            if is_force:
+                write_list.append(p)
+            else:
+                preserve_list.append(p)
+        else:
+            write_list.append(p)
+
+    if args.dry_run:
+        nw = len(write_list)
+        np_ = len(preserve_list)
+        wplural = "s" if nw != 1 else ""
+        pplural = "s" if np_ != 1 else ""
+        print(f"Would restore {nw} file{wplural} from commit {commit[:8]}:")
+        for p in write_list:
+            print(f"  {p}")
+        if preserve_list:
+            print(f"Would preserve {np_} present file{pplural} (use --force to overwrite from git):")
+            for p in preserve_list:
+                print(f"  {p}")
+        if session is None:
+            print("Source: git history (no DB row -- fallback mode)")
+        return 0
+
+    # Real restore: acquire backup_lock for the whole multi-file write so
+    # a concurrent `csb backup` doesn't snapshot a half-restored state.
+    quiet = getattr(args, "quiet", False)
+    with backup_lock(claude_dir, quiet=quiet) as acquired:
+        if not acquired:
+            return 1
+        wrote = 0
+        failed = []
+        for p in write_list:
+            full = Path(claude_dir) / p
+            if git_restore_file(claude_dir, commit, p, str(full)):
+                wrote += 1
+            else:
+                failed.append(p)
+
+    nw = len(write_list)
+    np_ = len(preserve_list)
+    wplural = "s" if nw != 1 else ""
+    pplural = "s" if np_ != 1 else ""
+    if failed:
+        print(
+            f"Restored {wrote}/{nw} file{wplural} from commit {commit[:8]}; "
+            f"{len(failed)} failure{'s' if len(failed) != 1 else ''}:",
+            file=sys.stderr,
+        )
+        for p in failed:
+            print(f"  {p}", file=sys.stderr)
+        return 1
+
+    if wrote > 0:
+        print(f"Restored {wrote} file{wplural} from commit {commit[:8]}.")
+    elif preserve_list:
+        print(
+            f"Nothing to restore: all {np_} expected file{pplural} are "
+            f"already on disk. Use --force to overwrite from git history "
+            f"if you need to revert local changes."
+        )
+    else:
+        # Should be unreachable -- we found the JSONL in git, so write_list
+        # or preserve_list must have had it.
+        print(f"Nothing to restore for commit {commit[:8]}.")
+    if preserve_list and wrote > 0:
+        print(
+            f"Preserved {np_} present file{pplural} (kept on-disk content; "
+            f"use --force to overwrite from git)."
+        )
+    if session is None:
+        print("(restored via git-history fallback -- DB had no row for this UUID)")
+    if wrote > 1 and not getattr(args, "jsonl_only", False):
+        # Category breakdown helps the user see what came back.
+        cats = _categorize_restored_paths(write_list, full_id or args.session_id)
+        for label, count in cats:
+            print(f"  {label}: {count}")
+    print("Session should now be visible in Claude Code.")
     return 0
+
+
+def _extract_slug_from_jsonl_path(jsonl_path: str) -> str:
+    """Pull <slug> out of `projects/<slug>/<uuid>.jsonl`.
+
+    Accepts both forward and back slashes (DB rows may store either).
+    Returns "" when the path doesn't match the expected shape.
+    """
+    if not jsonl_path:
+        return ""
+    norm = jsonl_path.replace("\\", "/")
+    parts = norm.split("/")
+    if len(parts) >= 3 and parts[0] == "projects":
+        return parts[1]
+    return ""
+
+
+def _categorize_restored_paths(paths: list[str], uuid: str) -> list[tuple[str, int]]:
+    """Group restored paths by category for the user-facing summary.
+
+    Returns ordered (label, count) pairs; only non-zero categories included.
+    """
+    cats = {
+        "main transcript": 0,
+        "subagents": 0,
+        "tool-results": 0,
+        "remote-agents": 0,
+        "session-states (logger)": 0,
+        "sesslogs (logger)": 0,
+        "other": 0,
+    }
+    jsonl_tail = f"{uuid}.jsonl"
+    for p in paths:
+        if p.endswith(jsonl_tail) and "/" not in p.removeprefix("projects/").split("/", 1)[1].removeprefix(jsonl_tail).removesuffix(".jsonl"):
+            # heuristic: the top-level transcript -- count it as "main"
+            cats["main transcript"] += 1
+        elif "/subagents/" in p:
+            cats["subagents"] += 1
+        elif "/tool-results/" in p:
+            cats["tool-results"] += 1
+        elif "/remote-agents/" in p:
+            cats["remote-agents"] += 1
+        elif p.startswith("session-states/"):
+            cats["session-states (logger)"] += 1
+        elif p.startswith("sesslogs/"):
+            cats["sesslogs (logger)"] += 1
+        else:
+            cats["other"] += 1
+    return [(k, v) for k, v in cats.items() if v > 0]
 
 
 def _looks_like_full_uuid(s: str) -> bool:

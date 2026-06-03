@@ -20,22 +20,34 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 
 ## Quick Start
 
+Three commands install everything -- the CLI plus the Claude Code plugin that fires backups automatically on PreCompact and SessionEnd:
+
 ```bash
-# 1. Install the CLI
+# 1. Install the csb CLI
 pip install claude-session-backup
 
-# 2. (recommended) Install the Claude Code plugin so pre-compact backups fire
-#    automatically. Full commands in the "Claude Code Plugin" section below.
+# 2. Add the DazzleML marketplace (one-time)
+claude plugin marketplace add "DazzleML/Claude-Session-Backup"
 
-# 3. Scan all sessions and build the index (no git commits)
+# 3. Install the plugin -- registers the PreCompact + SessionEnd hooks
+claude plugin install claude-session-backup@dazzle-claude-session-backup
+```
+
+Then verify it works:
+
+```bash
+# Build the index from existing sessions (no git commits yet)
 csb backup --no-commit
 
-# 4. See your session timeline
+# See your session timeline
 csb list
 
-# 5. Full backup with git commits (noise + user, separate commits, unsigned)
+# Full backup with git commits (separate noise + user commits, unsigned)
 csb backup
 ```
+
+> [!TIP]
+> **Pair with [claude-session-logger](https://github.com/DazzleML/claude-session-logger/)** for the full story. csb preserves Claude Code's session transcripts (`projects/<slug>/<uuid>.jsonl`). The logger captures the *richer* per-session data alongside them -- tool calls, shell commands, agent dispatches -- written to `~/.claude/sesslogs/`. csb backs up those logger files too (it backs up everything under `~/.claude/` via the noise commits), and `csb restore` brings the whole footprint back together: transcript + subagents + tool-results + logger state + sesslogs. The two projects are independent (csb works fine without the logger) but they're designed to complement each other.
 
 ## Features
 

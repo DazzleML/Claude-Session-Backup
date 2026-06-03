@@ -29,6 +29,7 @@ from claude_session_backup.git_ops import (
     ensure_gitattributes,
     git_find_deleted_file,
     git_find_jsonl_by_uuid,
+    git_ls_tree_for_uuid,
     git_restore_file,
     git_show_file,
     git_show_file_bytes,
@@ -444,6 +445,9 @@ def _make_args_namespace(**kwargs):
         "quiet": False,
         "claude_dir": None,
         "db": None,
+        # v0.3.12: full-restore flags
+        "jsonl_only": False,
+        "force": False,
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
@@ -467,6 +471,12 @@ def test_cmd_restore_falls_back_to_git_when_db_row_missing(mock_claude_dir, tmp_
     expected = git_show_file_bytes(str(mock_claude_dir), "HEAD", rel)
     assert expected is not None
     src.unlink()
+    # v0.3.12: full-restore also walks session-states/<uuid>.* -- the
+    # conftest fixture commits these, so they're conflicts unless removed.
+    # Test intent is the JSONL fallback only; delete the sidecars so we
+    # observe a clean restore.
+    for sidecar in (mock_claude_dir / "session-states").glob(f"{uuid}.*"):
+        sidecar.unlink()
 
     # Build a brand-new (empty) DB -- simulates post-rebuild-index state
     fresh_db = tmp_path / "fresh.db"
@@ -546,6 +556,10 @@ def test_cmd_restore_dry_run_against_fallback_path(mock_claude_dir, tmp_path, ca
     assert src.exists()
     src.unlink()
     assert not src.exists()
+    # v0.3.12 full-restore also discovers session-states/ sidecars; remove
+    # them so the dry-run shows what'd be restored without a conflict.
+    for sidecar in (mock_claude_dir / "session-states").glob(f"{uuid}.*"):
+        sidecar.unlink()
 
     fresh_db = tmp_path / "fresh.db"
     conn = open_db(str(fresh_db))
@@ -569,9 +583,12 @@ def test_cmd_restore_dry_run_against_fallback_path(mock_claude_dir, tmp_path, ca
     assert not src.exists(), "dry-run must NOT write the file"
 
 
-def test_cmd_restore_fallback_refuses_to_overwrite_existing_file(mock_claude_dir, tmp_path, capsys):
-    """When the file IS on disk but the DB has no row, the fallback must NOT
-    overwrite -- the user might have edited it / it may not be deleted at all."""
+def test_cmd_restore_fallback_preserves_existing_file(mock_claude_dir, tmp_path, capsys):
+    """When the file IS on disk and we're in fallback mode (no DB row),
+    v0.3.12 PRESERVES the on-disk content rather than refusing. The fallback
+    is identical to the normal path: missing files restored, present files
+    preserved. rc=0 with a clear preserve-count message.
+    """
     from claude_session_backup.commands import cmd_restore
     from claude_session_backup.index import open_db, init_schema
 
@@ -593,10 +610,12 @@ def test_cmd_restore_fallback_refuses_to_overwrite_existing_file(mock_claude_dir
     rc = cmd_restore(args)
     captured = capsys.readouterr()
 
-    assert rc == 1
-    assert "already exists" in captured.err.lower()
-    assert "refusing to overwrite" in captured.err.lower()
+    assert rc == 0, "fallback with all present should succeed (no-op); stderr=" + captured.err
+    # The on-disk content must be byte-untouched.
     assert src.read_bytes() == original_content, "file must not have been touched"
+    # Output should indicate preservation (no overwrite).
+    combined = (captured.out + captured.err).lower()
+    assert "already on disk" in combined or "preserved" in combined or "nothing to restore" in combined
 
 
 def test_cmd_restore_with_db_row_unchanged_regression(mock_claude_dir, tmp_path, capsys):
@@ -1857,3 +1876,689 @@ def test_byte_pure_restore_works_on_posix(mock_claude_dir):
     src.unlink()
     assert git_restore_file(str(mock_claude_dir), commit, "projects/test/posix.jsonl", str(src))
     assert src.read_bytes() == content
+
+
+# ── git_ls_tree_for_uuid (#32 + #33 full-restore discovery) ─────────────
+
+def test_git_ls_tree_for_uuid_returns_jsonl_only_when_nothing_else_committed(mock_claude_dir):
+    """Minimal session: only the top-level JSONL was committed.
+
+    Result must contain the JSONL only -- no false positives from sibling
+    files in unrelated directories.
+    """
+    uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+    slug = "C--proj-minimal"
+    rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid)
+    assert paths == [rel]
+
+
+def test_git_ls_tree_for_uuid_includes_subagents_and_tool_results(mock_claude_dir):
+    """Full session subtree: subagents/, tool-results/, remote-agents/ all present."""
+    uuid = "bbbbbbbb-1111-2222-3333-444444444444"
+    slug = "C--proj-full"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    sub_rel = f"projects/{slug}/{uuid}/subagents/agent-abc123.jsonl"
+    sub_meta_rel = f"projects/{slug}/{uuid}/subagents/agent-abc123.meta.json"
+    tool_rel = f"projects/{slug}/{uuid}/tool-results/bx9k2.txt"
+    remote_rel = f"projects/{slug}/{uuid}/remote-agents/remote-agent-tk1.meta.json"
+    _commit_file(mock_claude_dir, sub_rel, b'{"a":1}\n', "subagent")
+    _commit_file(mock_claude_dir, sub_meta_rel, b'{"agentType":"explore"}\n', "submeta")
+    _commit_file(mock_claude_dir, tool_rel, b'big tool output\n', "toolres")
+    _commit_file(mock_claude_dir, remote_rel, b'{"sessionId":"abc"}\n', "remote")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, sub_rel, sub_meta_rel, tool_rel, remote_rel}
+
+
+def test_git_ls_tree_for_uuid_includes_session_states(mock_claude_dir):
+    """Logger state files (session-states/<uuid>.*) must be discovered."""
+    uuid = "cccccccc-1111-2222-3333-444444444444"
+    slug = "C--proj-logger"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    state_rel = f"session-states/{uuid}.json"
+    cache_rel = f"session-states/{uuid}.name-cache"
+    src_rel = f"session-states/{uuid}.source"
+    _commit_file(mock_claude_dir, state_rel, b'{"session_id":"c"}\n', "state")
+    _commit_file(mock_claude_dir, cache_rel, b"name-here", "namecache")
+    _commit_file(mock_claude_dir, src_rel, b"x", "source")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, state_rel, cache_rel, src_rel}
+
+
+def test_git_ls_tree_for_uuid_includes_sesslogs_dir(mock_claude_dir):
+    """Sesslog directory at sesslogs/<sanitized-name>__<uuid>_<user>/ must be discovered (recursive)."""
+    uuid = "dddddddd-1111-2222-3333-444444444444"
+    slug = "C--proj-sesslog"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    log1_rel = f"sesslogs/MY-PROJECT__some-name__{uuid}_Alice/.sesslog_bash.log"
+    log2_rel = f"sesslogs/MY-PROJECT__some-name__{uuid}_Alice/.shell_bash.log"
+    overflow_rel = f"sesslogs/MY-PROJECT__some-name__{uuid}_Alice/.sesslog_bash.log.overflow.1"
+    _commit_file(mock_claude_dir, log1_rel, b"log line 1\n", "log1")
+    _commit_file(mock_claude_dir, log2_rel, b"shell line 1\n", "log2")
+    _commit_file(mock_claude_dir, overflow_rel, b"overflow\n", "overflow")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, log1_rel, log2_rel, overflow_rel}
+
+
+def test_git_ls_tree_for_uuid_excludes_sesslogs_bak_subdir(mock_claude_dir):
+    """`sesslogs/bak/` (singular, as a sibling of per-session sesslog dirs)
+    is NOT logger-managed -- verified 2026-06-03 against the claude-session-logger
+    source. It's a user-maintained folder, outside csb-restore's scope.
+
+    The logger DOES write `baks/` (plural) INSIDE per-session sesslog dirs
+    for housekeeping. Those ARE in scope -- see the companion
+    test_git_ls_tree_for_uuid_includes_per_session_baks_subdir test.
+    """
+    uuid = "ddbbddbb-1111-2222-3333-444444444444"
+    slug = "C--proj-bak"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    main_log_rel = f"sesslogs/MY-PROJ__main__{uuid}_Alice/.sesslog_bash.log"
+    # User-managed bak/: parts[1] = "bak", UUID is in parts[2]. MUST NOT match.
+    user_bak_log_rel = f"sesslogs/bak/MY-PROJ__main__{uuid}_Alice/.sesslog_bash.log.overflow.1"
+    _commit_file(mock_claude_dir, main_log_rel, b"main\n", "main")
+    _commit_file(mock_claude_dir, user_bak_log_rel, b"user-bak\n", "user-bak")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, main_log_rel}, (
+        "sesslogs/bak/ should be excluded as a user-maintained folder: " + repr(paths)
+    )
+
+
+def test_git_ls_tree_for_uuid_includes_per_session_baks_subdir(mock_claude_dir):
+    """Logger DOES write `<sesslog-dir>/baks/` (plural) for housekeeping
+    recovery (file_io.py:408). Those nested files MUST be matched -- they're
+    inside the per-session sesslog dir whose name contains the UUID."""
+    uuid = "ccddccdd-1111-2222-3333-444444444444"
+    slug = "C--proj-perbaks"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    main_log_rel = f"sesslogs/MY-PROJ__main__{uuid}_Alice/.sesslog_bash.log"
+    # Logger-managed baks/ inside per-session dir
+    nested_bak_rel = f"sesslogs/MY-PROJ__main__{uuid}_Alice/baks/old-name__abc.log"
+    _commit_file(mock_claude_dir, main_log_rel, b"main\n", "main")
+    _commit_file(mock_claude_dir, nested_bak_rel, b"old\n", "nested-bak")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel, main_log_rel, nested_bak_rel}, (
+        "Per-session baks/ must be matched (it's under the UUID-keyed dir): " + repr(paths)
+    )
+
+
+def test_git_ls_tree_for_uuid_excludes_ephemeral_paths(mock_claude_dir):
+    """Paths classified EPHEMERAL (debug/, telemetry/, file-history/, tasks/,
+    todos/, session-env/) MUST NOT appear in the result -- they're written
+    to git by csb backup but are not part of the SESSION-HISTORY restore set
+    per the v0.3.12 design (DWP 2026-06-03).
+    """
+    uuid = "eeeeeeee-1111-2222-3333-444444444444"
+    slug = "C--proj-noise"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    debug_rel = f"debug/{uuid}.txt"
+    telem_rel = f"telemetry/1p_failed_events.{uuid}.abc.json"
+    fhist_rel = f"file-history/{uuid}/032ce4a81e82662a@v1"
+    tasks_rel = f"tasks/{uuid}/1.json"
+    todos_rel = f"todos/{uuid}-agent-{uuid}.json"
+    env_rel = f"session-env/{uuid}"
+    for rel, body in [
+        (debug_rel, b"debug log\n"),
+        (telem_rel, b'{"event":"x"}\n'),
+        (fhist_rel, b"snapshot bytes\n"),
+        (tasks_rel, b'{"task":1}\n'),
+        (todos_rel, b"[]\n"),
+        (env_rel, b"PATH=/usr/bin\n"),
+    ]:
+        _commit_file(mock_claude_dir, rel, body, "add " + rel)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert paths == {jsonl_rel}, "ephemeral paths leaked: " + repr(paths)
+
+
+def test_git_ls_tree_for_uuid_does_not_match_other_uuid(mock_claude_dir):
+    """A second session committed under the same slug must not bleed into the
+    first session's results."""
+    uuid_a = "ffffffff-1111-2222-3333-444444444444"
+    uuid_b = "ffffffff-9999-8888-7777-666666666666"
+    slug = "C--proj-shared"
+    rel_a = _make_session_jsonl(mock_claude_dir, slug, uuid_a)
+    rel_b = _make_session_jsonl(mock_claude_dir, slug, uuid_b,
+                                content=b'{"b":1}\n', message="add b")
+    sub_b_rel = "projects/" + slug + "/" + uuid_b + "/subagents/agent-zzz.jsonl"
+    _commit_file(mock_claude_dir, sub_b_rel, b'{"agent":"b"}\n', "sub b")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths_a = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid_a))
+    paths_b = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid_b))
+    assert paths_a == {rel_a}
+    assert paths_b == {rel_b, sub_b_rel}
+
+
+def test_git_ls_tree_for_uuid_full_isolation_across_all_pathspec_scopes(mock_claude_dir):
+    """Strong adversarial isolation: at a single commit, set up files for
+    THREE UUIDs across all four SESSION-HISTORY categories (jsonl + subtree,
+    session-states, sesslogs) AND two slugs. Then verify that requesting
+    each UUID returns ONLY that UUID's files -- no leakage from siblings.
+
+    This is the load-bearing safety test for "csb restore won't bring back
+    unrelated files just because they're in the same commit."
+    """
+    target = "aaaaaaaa-1234-5678-9abc-deffacedface"
+    other1 = "bbbbbbbb-1234-5678-9abc-deffacedface"
+    other2 = "cccccccc-1234-5678-9abc-deffacedface"
+    slug_target = "C--proj-target"
+    slug_other = "C--proj-other"
+
+    # TARGET: everything we want restored
+    target_jsonl = f"projects/{slug_target}/{target}.jsonl"
+    target_sub = f"projects/{slug_target}/{target}/subagents/agent-tgt.jsonl"
+    target_tool = f"projects/{slug_target}/{target}/tool-results/btgt.txt"
+    target_state = f"session-states/{target}.json"
+    target_cache = f"session-states/{target}.name-cache"
+    target_sesslog = f"sesslogs/PROJ__name__{target}_Alice/.sesslog_bash.log"
+
+    # OTHER1: same slug as target, different UUID, full footprint
+    other1_jsonl = f"projects/{slug_target}/{other1}.jsonl"
+    other1_sub = f"projects/{slug_target}/{other1}/subagents/agent-other1.jsonl"
+    other1_state = f"session-states/{other1}.json"
+    other1_sesslog = f"sesslogs/PROJ__name__{other1}_Bob/.sesslog_bash.log"
+
+    # OTHER2: different slug, different UUID, full footprint
+    other2_jsonl = f"projects/{slug_other}/{other2}.jsonl"
+    other2_sub = f"projects/{slug_other}/{other2}/subagents/agent-other2.jsonl"
+    other2_state = f"session-states/{other2}.json"
+    other2_cache = f"session-states/{other2}.name-cache"
+    other2_sesslog = f"sesslogs/OTHERPROJ__name__{other2}_Carol/.sesslog_bash.log"
+
+    all_files = [
+        # TARGET
+        (target_jsonl, b'{"target-jsonl":true}\n'),
+        (target_sub, b'{"target-sub":true}\n'),
+        (target_tool, b"target tool result\n"),
+        (target_state, b'{"session_id":"target"}\n'),
+        (target_cache, b"target-name"),
+        (target_sesslog, b"target log\n"),
+        # OTHER1
+        (other1_jsonl, b'{"other1":true}\n'),
+        (other1_sub, b'{"other1-sub":true}\n'),
+        (other1_state, b'{"session_id":"other1"}\n'),
+        (other1_sesslog, b"other1 log\n"),
+        # OTHER2
+        (other2_jsonl, b'{"other2":true}\n'),
+        (other2_sub, b'{"other2-sub":true}\n'),
+        (other2_state, b'{"session_id":"other2"}\n'),
+        (other2_cache, b"other2-name"),
+        (other2_sesslog, b"other2 log\n"),
+    ]
+    for rel, body in all_files:
+        _commit_file(mock_claude_dir, rel, body, "add " + rel)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    # Resolve TARGET -- must get exactly its 6 files, nothing else
+    target_paths = set(git_ls_tree_for_uuid(
+        str(mock_claude_dir), commit, slug_target, target
+    ))
+    expected_target = {
+        target_jsonl, target_sub, target_tool,
+        target_state, target_cache, target_sesslog,
+    }
+    assert target_paths == expected_target, (
+        "TARGET leak/miss: extra=" + repr(target_paths - expected_target) +
+        " missing=" + repr(expected_target - target_paths)
+    )
+
+    # Resolve OTHER1 -- must get exactly its 4 files, nothing from target/other2
+    other1_paths = set(git_ls_tree_for_uuid(
+        str(mock_claude_dir), commit, slug_target, other1
+    ))
+    expected_other1 = {other1_jsonl, other1_sub, other1_state, other1_sesslog}
+    assert other1_paths == expected_other1
+
+    # Resolve OTHER2 -- must get exactly its 5 files, in its own slug only
+    other2_paths = set(git_ls_tree_for_uuid(
+        str(mock_claude_dir), commit, slug_other, other2
+    ))
+    expected_other2 = {
+        other2_jsonl, other2_sub, other2_state, other2_cache, other2_sesslog
+    }
+    assert other2_paths == expected_other2
+
+    # Cross-check: NO file is in more than one result set (zero overlap)
+    assert not (target_paths & other1_paths), "target and other1 overlap"
+    assert not (target_paths & other2_paths), "target and other2 overlap"
+    assert not (other1_paths & other2_paths), "other1 and other2 overlap"
+
+
+def test_git_ls_tree_for_uuid_does_not_match_uuid_inside_filename(mock_claude_dir):
+    """Adversarial: a file whose NAME contains the UUID-as-substring but whose
+    PATH structure doesn't fit any SESSION-HISTORY pattern MUST NOT be matched.
+
+    Examples: a debug log named after the UUID, a backup with the UUID in
+    the suffix, a foreign tool's file that happens to embed the UUID.
+    """
+    uuid = "deadbeef-1234-5678-9abc-deffacedface"
+    slug = "C--proj-adv"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+
+    # Adversarial paths that contain the UUID as substring but are NOT
+    # SESSION-HISTORY:
+    foreign = [
+        # UUID as substring in a different session-states key (should not match)
+        # session_state_prefix = "session-states/<uuid>." -- the trailing dot
+        # matters; an "<uuid>_backup.json" entry must NOT match.
+        f"session-states/{uuid}_backup.json",
+        # UUID in a file at a deeper-than-expected projects/ depth
+        f"projects/{slug}/sub/{uuid}.jsonl",  # 3-component path under slug, not 2
+        # UUID in a sesslog filename but the parent dir name doesn't contain it
+        f"sesslogs/unrelated-dir/some-{uuid}-suffix.log",
+        # UUID in a totally unrelated top-level (debug-like; we don't scope this)
+        # not testable here -- debug/ isn't in any pathspec so it can't even be seen
+    ]
+    for rel in foreign:
+        _commit_file(mock_claude_dir, rel, b"adversarial\n", "add " + rel)
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    # The jsonl is legitimate -- it's the only thing that should match.
+    assert paths == {jsonl_rel}, (
+        "adversarial UUID-substring paths leaked into results: " +
+        repr(paths - {jsonl_rel})
+    )
+
+
+def test_git_ls_tree_for_uuid_returns_state_at_specified_commit(mock_claude_dir):
+    """Specifying an earlier commit returns that commit's tree, not HEAD's.
+    Validates the recover-from-deletion use case."""
+    uuid = "abababab-1111-2222-3333-444444444444"
+    slug = "C--proj-time"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    sub_rel = "projects/" + slug + "/" + uuid + "/subagents/agent-time.jsonl"
+    _commit_file(mock_claude_dir, sub_rel, b'{"agent":"t"}\n', "add sub")
+    pre_delete_commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    (mock_claude_dir / jsonl_rel).unlink()
+    (mock_claude_dir / sub_rel).unlink()
+    _git(mock_claude_dir, "add", "-A")
+    _git(mock_claude_dir, "commit", "--no-gpg-sign", "-m", "delete session")
+    head_commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+
+    paths_at_head = git_ls_tree_for_uuid(str(mock_claude_dir), head_commit, slug, uuid)
+    assert paths_at_head == []
+
+    paths_at_pre = set(git_ls_tree_for_uuid(
+        str(mock_claude_dir), pre_delete_commit, slug, uuid
+    ))
+    assert paths_at_pre == {jsonl_rel, sub_rel}
+
+
+def test_git_ls_tree_for_uuid_unknown_commit_returns_empty(mock_claude_dir):
+    """A bogus commit-ish must return empty list, not raise."""
+    uuid = "bcbcbcbc-1111-2222-3333-444444444444"
+    slug = "C--proj-bogus"
+    _make_session_jsonl(mock_claude_dir, slug, uuid)
+    paths = git_ls_tree_for_uuid(str(mock_claude_dir), "deadbeef" * 5, slug, uuid)
+    assert paths == []
+
+
+def test_git_ls_tree_for_uuid_empty_uuid_returns_empty(mock_claude_dir):
+    assert git_ls_tree_for_uuid(str(mock_claude_dir), "HEAD", "C--proj", "") == []
+
+
+def test_git_ls_tree_for_uuid_empty_slug_returns_empty(mock_claude_dir):
+    """Empty slug means we can't construct the projects/<slug>/ pathspec safely."""
+    uuid = "cdcdcdcd-1111-2222-3333-444444444444"
+    _make_session_jsonl(mock_claude_dir, "some-slug", uuid)
+    assert git_ls_tree_for_uuid(str(mock_claude_dir), "HEAD", "", uuid) == []
+
+
+# ── cmd_restore full-restore (v0.3.12 -- #32 + #33) ─────────────────────
+
+def _setup_full_session(claude_dir, slug, uuid, with_logger=True):
+    """Commit a session with subagents, tool-results, and optionally logger files.
+    Then delete from disk to simulate a purged session. Returns dict of relative
+    paths -> expected bytes."""
+    paths = {
+        f"projects/{slug}/{uuid}.jsonl": b'{"transcript":true}\n',
+        f"projects/{slug}/{uuid}/subagents/agent-fa1.jsonl": b'{"agent":"fa1"}\n',
+        f"projects/{slug}/{uuid}/subagents/agent-fa1.meta.json": b'{"agentType":"explore"}\n',
+        f"projects/{slug}/{uuid}/tool-results/bzx9.txt": b"large tool output\n",
+    }
+    if with_logger:
+        paths.update({
+            f"session-states/{uuid}.json": b'{"session_id":"x"}\n',
+            f"session-states/{uuid}.name-cache": b"session-name",
+            f"sesslogs/PROJ__session-name__" + uuid + "_Alice/.sesslog_bash.log": b"tool call 1\n",
+            f"sesslogs/PROJ__session-name__" + uuid + "_Alice/.shell_bash.log": b"$ ls\n",
+        })
+    for rel, body in paths.items():
+        _commit_file(claude_dir, rel, body, "add " + rel)
+    # Now delete all the files to simulate purge (commit the deletion too)
+    for rel in paths:
+        full = claude_dir / rel
+        if full.exists():
+            full.unlink()
+    _git(claude_dir, "add", "-A")
+    _git(claude_dir, "commit", "--no-gpg-sign", "-m", "purge session")
+    return paths
+
+
+def _populate_db_with_session(db_path, slug, uuid, jsonl_path, deleted_at="2026-03-24T00:00:00Z"):
+    """Seed the SQLite DB with a session row marked deleted."""
+    from claude_session_backup.index import open_db, init_schema, upsert_session, mark_deleted
+    from claude_session_backup.metadata import SessionMetadata
+    conn = open_db(str(db_path))
+    init_schema(conn)
+    meta = SessionMetadata(
+        session_id=uuid,
+        session_name="session-name",
+        project=slug,
+        start_folder="C:\\code\\test",
+        started_at="2026-03-23T10:00:00Z",
+        last_active_at="2026-03-23T10:30:00Z",
+        message_count=10,
+        tool_call_count=2,
+        claude_version="2.1.81",
+        folder_usage={"C:\\code\\test": 5},
+    )
+    upsert_session(conn, meta, jsonl_path, 100, "2026-03-23T10:30:00Z")
+    if deleted_at:
+        mark_deleted(conn, uuid, deleted_at)
+    conn.close()
+
+
+def test_cmd_restore_default_restores_full_session_subtree(mock_claude_dir, tmp_path, capsys):
+    """Default restore brings back EVERYTHING in the SESSION-HISTORY scope:
+    the JSONL, subagents/, tool-results/, session-states/, sesslogs/."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-fullsess"
+    uuid = "11111111-aaaa-bbbb-cccc-222222222222"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=True)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+    assert rc == 0, "stderr: " + captured.err
+
+    # Every file we committed should now be back on disk byte-for-byte
+    for rel, body in expected.items():
+        full = mock_claude_dir / rel
+        assert full.exists(), "missing after restore: " + rel + "\nstdout: " + captured.out
+        assert full.read_bytes() == body, "bytes mismatch: " + rel
+
+
+def test_cmd_restore_jsonl_only_preserves_v0311_behavior(mock_claude_dir, tmp_path):
+    """--jsonl-only restores only the main transcript, leaving sidecars in git."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-jsonlonly"
+    uuid = "22222222-aaaa-bbbb-cccc-333333333333"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=True)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+        jsonl_only=True,
+    )
+    rc = cmd_restore(args)
+    assert rc == 0
+
+    # ONLY the jsonl should be back
+    assert (mock_claude_dir / jsonl_path).exists()
+    for rel in expected:
+        if rel == jsonl_path:
+            continue
+        assert not (mock_claude_dir / rel).exists(), "should not be restored under --jsonl-only: " + rel
+
+
+def test_cmd_restore_no_logger_files_silently_no_op_for_those(mock_claude_dir, tmp_path):
+    """When the session was committed WITHOUT logger files, restore brings
+    back the Claude Code subtree only. No error, no warning, just absence."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-nologgger"
+    uuid = "33333333-aaaa-bbbb-cccc-444444444444"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    assert rc == 0
+
+    for rel in expected:
+        assert (mock_claude_dir / rel).exists(), "missing: " + rel
+    # No logger files were committed; none restored
+    assert not (mock_claude_dir / f"session-states/{uuid}.json").exists()
+    assert not list((mock_claude_dir / "sesslogs").glob("*" + uuid + "*")) if (mock_claude_dir / "sesslogs").exists() else True
+
+
+def test_cmd_restore_preserves_present_files_restores_missing(mock_claude_dir, tmp_path, capsys):
+    """v0.3.12 policy: default restore is 'preserve present, restore missing'.
+
+    If some files exist on disk (alive or partially-recovered session) and
+    some are missing, restore brings back only the missing ones and leaves
+    the present ones byte-untouched -- even if their content differs from
+    git. This is the safe default: never clobber what's on disk.
+    """
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-partial"
+    uuid = "44444444-aaaa-bbbb-cccc-555555555555"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=True)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    # Simulate: the JSONL is back (e.g. from a prior restore), and one
+    # sesslog file has NEWER content than git (logger kept writing after
+    # the git snapshot). The session-states + subagents + other files
+    # are still missing on disk.
+    (mock_claude_dir / jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    (mock_claude_dir / jsonl_path).write_bytes(b'{"local-newer":true}\n')
+    sesslog_path = f"sesslogs/PROJ__session-name__{uuid}_Alice/.sesslog_bash.log"
+    (mock_claude_dir / sesslog_path).parent.mkdir(parents=True, exist_ok=True)
+    (mock_claude_dir / sesslog_path).write_bytes(b"tool call 1\nNEWER LINE the logger wrote after git snapshot\n")
+
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+
+    assert rc == 0, "restore should succeed (preserves present, restores missing); stderr=" + captured.err
+    # JSONL present + different from git: PRESERVED. Local "newer" content kept.
+    assert (mock_claude_dir / jsonl_path).read_bytes() == b'{"local-newer":true}\n', (
+        "present file MUST NOT be overwritten by default"
+    )
+    # Sesslog present + has more data than git: PRESERVED.
+    assert b"NEWER LINE" in (mock_claude_dir / sesslog_path).read_bytes(), (
+        "local sesslog with more content MUST be preserved"
+    )
+    # All previously-missing files: restored byte-for-byte from git.
+    for rel, body in expected.items():
+        if rel in (jsonl_path, sesslog_path):
+            continue
+        assert (mock_claude_dir / rel).exists(), "missing file not restored: " + rel
+        assert (mock_claude_dir / rel).read_bytes() == body, "bytes mismatch on restored: " + rel
+
+
+def test_cmd_restore_force_overwrites_even_when_local_differs(mock_claude_dir, tmp_path):
+    """--force explicitly opts into clobbering present files with git bytes.
+    Use case: local file is corrupted / stale and user wants git's version."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-forcediff"
+    uuid = "44ff44ff-aaaa-bbbb-cccc-555555555555"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    (mock_claude_dir / jsonl_path).parent.mkdir(parents=True, exist_ok=True)
+    (mock_claude_dir / jsonl_path).write_bytes(b'{"stale-or-corrupt":true}\n')
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+        force=True,
+    )
+    rc = cmd_restore(args)
+    assert rc == 0
+    assert (mock_claude_dir / jsonl_path).read_bytes() == expected[jsonl_path], (
+        "--force MUST overwrite local with git bytes"
+    )
+
+
+def test_cmd_restore_force_overwrites_existing_files(mock_claude_dir, tmp_path):
+    """--force allows restore to proceed even when files exist on disk."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-force"
+    uuid = "55555555-aaaa-bbbb-cccc-666666666666"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    (mock_claude_dir / jsonl_path).write_bytes(b'{"stale":true}\n')
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path, deleted_at=None)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+        force=True,
+    )
+    rc = cmd_restore(args)
+    assert rc == 0
+    # The stale file should be overwritten with the git blob bytes
+    assert (mock_claude_dir / jsonl_path).read_bytes() == expected[jsonl_path]
+
+
+def test_cmd_restore_idempotent_on_deleted_session(mock_claude_dir, tmp_path):
+    """Re-running restore on an already-restored deleted session is fine:
+    we write the same bytes; no conflict (because session is deleted)."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-idemp"
+    uuid = "66666666-aaaa-bbbb-cccc-777777777777"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc1 = cmd_restore(args)
+    rc2 = cmd_restore(args)
+    assert rc1 == 0 and rc2 == 0
+    for rel, body in expected.items():
+        assert (mock_claude_dir / rel).read_bytes() == body
+
+
+def test_cmd_restore_idempotent_no_op_touches_no_files(mock_claude_dir, tmp_path):
+    """Strong 'no sneaky writes' assertion: when everything is present, the
+    no-op restore must not touch ANY file's mtime, size, or bytes.
+
+    Implementation strategy: do the restore, then pin every restored file's
+    mtime to a specific past timestamp (2026-01-01). Run restore again
+    (should be no-op). Verify every mtime is still pinned -- i.e. no write
+    happened. Robust against filesystem timestamp resolution since we use
+    an explicit past time well outside any subsecond fuzz window.
+    """
+    import os
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-no-sneaky-writes"
+    uuid = "deadbeef-1111-2222-3333-444444444444"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=True)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    # First call: restores everything
+    assert cmd_restore(args) == 0
+
+    # Pin every restored file's mtime to a known past timestamp
+    pinned_atime = 1735689600  # 2025-01-01T00:00:00 UTC
+    pinned_mtime = 1767225600  # 2026-01-01T00:00:00 UTC
+    restored_paths = list(expected.keys())
+    for rel in restored_paths:
+        full = mock_claude_dir / rel
+        assert full.exists(), "expected restored: " + rel
+        os.utime(full, (pinned_atime, pinned_mtime))
+
+    # Snapshot byte content + size + mtime BEFORE the second restore
+    before = {}
+    for rel in restored_paths:
+        full = mock_claude_dir / rel
+        st = full.stat()
+        before[rel] = (st.st_mtime, st.st_size, full.read_bytes())
+
+    # Second call: must be a no-op
+    assert cmd_restore(args) == 0
+
+    # Snapshot AFTER and assert nothing moved
+    for rel in restored_paths:
+        full = mock_claude_dir / rel
+        st = full.stat()
+        b_mtime, b_size, b_bytes = before[rel]
+        assert st.st_mtime == b_mtime, (
+            "mtime CHANGED on no-op restore: " + rel +
+            " before=" + str(b_mtime) + " after=" + str(st.st_mtime)
+        )
+        assert st.st_size == b_size, "size changed on no-op restore: " + rel
+        assert full.read_bytes() == b_bytes, "bytes changed on no-op restore: " + rel
+
+
+def test_cmd_restore_dry_run_reports_full_count(mock_claude_dir, tmp_path, capsys):
+    """--dry-run on full restore enumerates every path it would write,
+    not just the JSONL."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-dryrun"
+    uuid = "77777777-aaaa-bbbb-cccc-888888888888"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=True)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)
+
+    args = _make_args_namespace(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+        dry_run=True,
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+    assert rc == 0
+    # Every expected path should be mentioned in the dry-run output
+    for rel in expected:
+        assert rel in captured.out, "dry-run output missing path: " + rel + "\nGot:\n" + captured.out
+    # And nothing should actually be written
+    for rel in expected:
+        assert not (mock_claude_dir / rel).exists(), "dry-run wrote: " + rel

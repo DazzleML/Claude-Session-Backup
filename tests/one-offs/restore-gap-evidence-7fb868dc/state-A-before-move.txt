@@ -1,0 +1,17 @@
+/c/Users/Extreme/.claude/debug/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.txt
+/c/Users/Extreme/.claude/file-history/7fb868dc-3dd0-437a-9cc8-28f23a43fc70
+/c/Users/Extreme/.claude/projects/C--code-github-traffic-tracker/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.jsonl
+/c/Users/Extreme/.claude/session-env/7fb868dc-3dd0-437a-9cc8-28f23a43fc70
+/c/Users/Extreme/.claude/session-states/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json
+/c/Users/Extreme/.claude/session-states/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.name-cache
+/c/Users/Extreme/.claude/session-states/7fb868dc-3dd0-437a-9cc8-28f23a43fc70.source
+/c/Users/Extreme/.claude/sesslogs/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme
+/c/Users/Extreme/.claude/sesslogs/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme/.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log
+/c/Users/Extreme/.claude/sesslogs/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme/.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log
+/c/Users/Extreme/.claude/sesslogs/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme/.tasks_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log
+/c/Users/Extreme/.claude/sesslogs/bak/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme
+/c/Users/Extreme/.claude/sesslogs/bak/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme/.sesslog_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1
+/c/Users/Extreme/.claude/sesslogs/bak/GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme/.shell_bash.exe__GITHUB-TRAFFIC-TRACKER__helper-doc-reader-oracle__7fb868dc-3dd0-437a-9cc8-28f23a43fc70_Extreme.log.overflow.1
+/c/Users/Extreme/.claude/tasks/7fb868dc-3dd0-437a-9cc8-28f23a43fc70
+/c/Users/Extreme/.claude/telemetry/1p_failed_events.7fb868dc-3dd0-437a-9cc8-28f23a43fc70.50bb9554-7ace-4d59-bd34-9f9765f928a5.json
+/c/Users/Extreme/.claude/todos/7fb868dc-3dd0-437a-9cc8-28f23a43fc70-agent-7fb868dc-3dd0-437a-9cc8-28f23a43fc70.json

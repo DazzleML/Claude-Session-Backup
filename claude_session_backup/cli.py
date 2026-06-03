@@ -195,6 +195,18 @@ def build_parser():
     _add_common_flags(p_restore)
     p_restore.add_argument("session_id", help="Session ID to restore")
     p_restore.add_argument("--dry-run", action="store_true", help="Show what would be restored")
+    p_restore.add_argument(
+        "--jsonl-only", action="store_true",
+        help="Restore only the main JSONL transcript (pre-v0.3.12 behavior). "
+             "Default is to also restore subagents/, tool-results/, session-states/, "
+             "and sesslogs/ when present in git.",
+    )
+    p_restore.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing on-disk files. By default, restore refuses if any "
+             "target file already exists for an alive (non-deleted) session, to avoid "
+             "clobbering a live session in progress.",
+    )
 
     # resume
     p_resume = sub.add_parser("resume", help="Launch claude --resume with full UUID")

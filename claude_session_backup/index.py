@@ -393,10 +393,14 @@ def list_sessions(conn: sqlite3.Connection, limit: int = 20,
             conditions.append("s.deleted_at IS NULL")
 
     if filter_keyword:
-        # Match against session metadata fields OR any folder_usage path
+        # Match against session metadata fields OR any folder_usage path.
+        # session_id is included so UUID prefixes/suffixes (head or tail)
+        # work as filters: e.g. `csb list 7fb868dc --deleted` finds the
+        # session whose UUID starts with that.
         pattern = f"%{filter_keyword}%"
         conditions.append("""(
-            s.session_name LIKE ? COLLATE NOCASE
+            s.session_id LIKE ? COLLATE NOCASE
+            OR s.session_name LIKE ? COLLATE NOCASE
             OR s.project LIKE ? COLLATE NOCASE
             OR s.start_folder LIKE ? COLLATE NOCASE
             OR s.session_id IN (
@@ -404,7 +408,7 @@ def list_sessions(conn: sqlite3.Connection, limit: int = 20,
                 WHERE fu.folder_path LIKE ? COLLATE NOCASE
             )
         )""")
-        params.extend([pattern, pattern, pattern, pattern])
+        params.extend([pattern, pattern, pattern, pattern, pattern])
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     params.append(limit)
@@ -617,7 +621,8 @@ def find_sessions_by_term(
         SELECT DISTINCT s.* FROM sessions s
         WHERE {del_clause}
           AND (
-            s.session_name LIKE ? ESCAPE '|' COLLATE NOCASE
+            s.session_id LIKE ? ESCAPE '|' COLLATE NOCASE
+            OR s.session_name LIKE ? ESCAPE '|' COLLATE NOCASE
             OR s.project LIKE ? ESCAPE '|' COLLATE NOCASE
             OR s.start_folder LIKE ? ESCAPE '|' COLLATE NOCASE
             OR EXISTS (
@@ -630,7 +635,10 @@ def find_sessions_by_term(
         ORDER BY s.last_active_at DESC
         LIMIT ?
     """
-    params = [pattern, pattern, pattern] + rnk_params + [pattern, limit]
+    # 4 leading patterns: session_id, session_name, project, start_folder.
+    # Then rnk_params (the top-N gate) for the folder_usage subquery, plus
+    # one more pattern for folder_path, plus limit.
+    params = [pattern, pattern, pattern, pattern] + rnk_params + [pattern, limit]
     rows = conn.execute(query, params).fetchall()
 
     results = []

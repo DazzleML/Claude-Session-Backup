@@ -9,6 +9,30 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.12] -- 2026-06-03 (prealpha)
+
+`csb restore <uuid>` becomes a full session-history restore -- the JSONL plus every git-tracked sidecar keyed to the UUID (subagent transcripts, tool-result spillover, remote-agent metadata, claude-session-logger state files, claude-session-logger sesslog directories). The pre-v0.3.12 behavior (JSONL only) is preserved behind `--jsonl-only`. Empirical verification against a real 2837-message session restored 28 files (vs the 1 it would have returned before), byte-for-byte from git. 797/797 tests pass (was 771; +26 new). Closes #32 and #33. Refs #13 (advances ACs #5 and #6 from PARTIAL to DONE).
+
+### Changed
+- **`csb restore <uuid>` default is now full session-history restore.** It enumerates `projects/<slug>/<uuid>/*`, `session-states/<uuid>.*`, and `sesslogs/<dir-containing-uuid>/*` at the commit-before-deletion, then writes back every git-tracked path. Users without `claude-session-logger` see no logger files attempted (git enumeration handles both populations naturally). The overwrite policy is non-destructive by default: present files are PRESERVED (the on-disk version is treated as authoritative; local logger writes that landed after the last `csb backup` are kept). Use `--force` to opt into overwriting present files from git.
+- **`csb list <uuid-prefix>` and `csb scan <uuid-prefix>` now match against `session_id`**, not just name/project/folders. Previously, passing a UUID prefix (e.g. `csb list 7fb868dc --deleted`) returned "No sessions found" because the SQL filter omitted `session_id`. Both forward (head) and reverse (tail) UUID matches work since the search is substring-based.
+
+### Added
+- **`--jsonl-only` flag on `csb restore`** -- preserves the pre-v0.3.12 behavior of restoring only the top-level `projects/<slug>/<uuid>.jsonl` transcript. Useful for piping to a viewer or for scripts that explicitly only want the transcript.
+- **`--force` flag on `csb restore`** -- overwrites present files from git. Default behavior preserves on-disk content; `--force` is the explicit opt-in for "git is authoritative, my disk is stale."
+- **`git_ls_tree_for_uuid(claude_dir, commit, slug, uuid)`** in `git_ops.py` -- the discovery primitive that powers full restore. Enumerates every SESSION-HISTORY path keyed to the UUID at a specific commit. Pathspecs cover `projects/<slug>/<uuid>.jsonl`, `projects/<slug>/<uuid>/**`, `session-states/<uuid>.*`, and `sesslogs/<uuid-dir>/**`. The seven ephemeral categories (`debug/`, `telemetry/`, `file-history/`, `tasks/`, `todos/`, `session-env/`, user-managed `sesslogs/bak/`) are naturally excluded -- they're not under the pathspec scope.
+- **Per-file overwrite policy in `cmd_restore`** -- missing files always restored; present files preserved unless `--force`. Summary output reports the restore count, the preserve count, and a category breakdown (main transcript / subagents / tool-results / remote-agents / session-states / sesslogs). Re-running is naturally idempotent.
+- **`backup_lock` acquired for the duration of restore** -- prevents a concurrent `csb backup` from snapshotting a half-restored state.
+- **`tests/checklists/v0.3.12__Phase__full-restore.md`** -- hand-runnable verification checklist with the empirical 7fb868dc loop as a worked example. Documents the `preserve` tool's MOVE/RESTORE roundtrip for safe destructive testing.
+- **26 new automated tests** in `tests/test_restore.py` and `tests/test_index.py`. 12 cover `git_ls_tree_for_uuid` (jsonl-only path, subagents subtree, session-states, sesslogs, per-session-baks/, ephemeral exclusion, sibling-UUID isolation, slug isolation, commit-specificity, error cases, plus two strong adversarial isolation tests across all four pathspec scopes + UUID-as-substring-in-filename rejection). 8 cover the cmd_restore policy (full default restore, --jsonl-only, no-logger silent no-op, preserve-present + restore-missing, --force overwrites, idempotent re-run, dry-run reports full count, plus a zero-write idempotency assertion that pins mtimes and confirms a no-op restore touches zero files). 2 cover the UUID-prefix filter fix in `list_sessions` and `find_sessions_by_term`. Plus a sesslogs/bak/ exclusion test and 3 pre-existing tests adapted to the new multi-file world.
+- **Empirical evidence fixtures** at `tests/one-offs/restore-gap-evidence-7fb868dc/` -- SHA256 manifest of all 189 files comprising a real session's footprint, state-A/state-C captures, and a README with the reproduction recipe. Useful for future restore-completeness work and as a reference for "what does a full session footprint look like."
+
+### Notes
+- **Restore is logger-agnostic, logger-friendly.** csb has no concept of "is the logger installed"; it just enumerates whatever git has at the commit. Users with the logger get session-states + sesslogs restored. Users without get just the Claude Code paths. Same code path, both populations.
+- **`/renameAI` and `/sessioninfo` work post-restore now.** The pre-v0.3.12 restore left `session-states/<uuid>.json` behind, which `rename_session.py:206` reads directly with no fallback. The full restore brings it back, so renames on a recovered session work as expected.
+- **Sesslog append-safety.** When a session is `claude --resume`'d after restore, the logger's `reconcile_session_directory` (claude-session-logger `reconciliation.py:28-39`) finds the restored dir by GUID-in-dirname scan and appends cleanly. No fresh-dir-with-different-name problem.
+- **`sesslogs/bak/`** (singular, sibling of per-session sesslog dirs) is verified user-managed (not written by claude-session-logger; see commit message for the source-grep evidence) and is intentionally NOT auto-restored. The logger DOES write `<sesslog-dir>/baks/` (plural) for housekeeping recovery; those are nested under the per-session sesslog dir and ARE restored.
+
 ## [0.3.11] -- 2026-06-03 (prealpha)
 
 The restore-shoring-up arc lands on this branch. v0.3.11 closes a confirmed data-loss bug in `csb rebuild-index`, introduces a `csb update` umbrella for maintenance verbs, adds git-history backfill of culled-session metadata with auto-repair for past-rebuild casualties, and ships display polish around the deleted-session story. 771/771 tests pass (was 729 at the post-merge baseline; +42 new). See `docs/maintenance.md` for the user-facing reference.
@@ -528,7 +552,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...HEAD
+[0.3.12]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...v0.3.12
 [0.3.11]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...v0.3.9

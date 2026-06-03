@@ -28,7 +28,9 @@
       "Bash(python scripts/gh_issue_full.py 3 --full)",
       "Bash(python *)",
       "Bash(git check-ignore *)",
-      "Skill(prepcommit)"
+      "Skill(prepcommit)",
+      "Bash(csb search *)",
+      "Bash(csb show *)"
     ]
   }
 }

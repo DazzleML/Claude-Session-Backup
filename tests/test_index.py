@@ -86,6 +86,56 @@ def test_list_deleted_only(mock_db):
     assert deleted[0]["session_id"] == "id2"
 
 
+def test_list_sessions_filter_matches_session_id_prefix(mock_db):
+    """
+    `csb list <uuid-prefix> --deleted` must find the matching session.
+
+    Regression: the filter_keyword SQL searched session_name, project,
+    start_folder, and folder_usage paths but NOT session_id, so passing a
+    UUID prefix as a filter returned zero matches even when the UUID was
+    a perfectly valid identifier.
+    """
+    meta = _make_meta(
+        session_id="7fb868dc-3dd0-437a-9cc8-28f23a43fc70",
+        name="unrelated-name",
+        project="some-other-project",
+    )
+    upsert_session(mock_db, meta, "p.jsonl", 100, "t1")
+    mark_deleted(mock_db, meta.session_id, "2026-03-24T00:00:00Z")
+
+    # Filter by UUID prefix should find the deleted session.
+    results = list_sessions(
+        mock_db, show_deleted=True, filter_keyword="7fb868dc"
+    )
+    assert len(results) == 1
+    assert results[0]["session_id"] == meta.session_id
+
+    # Same query against active list returns nothing (session is deleted).
+    active = list_sessions(
+        mock_db, show_deleted=False, filter_keyword="7fb868dc"
+    )
+    assert len(active) == 0
+
+    # show_all sees both populations.
+    all_rows = list_sessions(
+        mock_db, show_all=True, filter_keyword="7fb868dc"
+    )
+    assert len(all_rows) == 1
+
+
+def test_list_sessions_filter_matches_session_id_suffix(mock_db):
+    """UUID suffix (tail) should match too -- substring search."""
+    meta = _make_meta(
+        session_id="7fb868dc-3dd0-437a-9cc8-28f23a43fc70",
+        name="unrelated",
+    )
+    upsert_session(mock_db, meta, "p.jsonl", 100, "t1")
+
+    results = list_sessions(mock_db, filter_keyword="28f23a43fc70")
+    assert len(results) == 1
+    assert results[0]["session_id"] == meta.session_id
+
+
 # ── Sort tests ───────────────────────────────────────────────────────
 
 
@@ -681,6 +731,35 @@ def test_find_by_term_case_insensitive(mock_db):
     assert len(results_lower) == 1
     assert len(results_upper) == 1
     assert len(results_mixed) == 1
+
+
+def test_find_by_term_matches_session_id_prefix(mock_db):
+    """
+    `csb scan <uuid-prefix>` (and the underlying find_sessions_by_term)
+    must match against session_id, not just name/project/folders.
+
+    Same regression as test_list_sessions_filter_matches_session_id_prefix
+    but against the scan code path.
+    """
+    upsert_session(
+        mock_db,
+        _make_meta_with_folders(
+            "7fb868dc-3dd0-437a-9cc8-28f23a43fc70",
+            "unrelated-name",
+            "C:\\code\\elsewhere",
+            {},
+        ),
+        "p.jsonl", 100, "t1",
+    )
+
+    results = find_sessions_by_term(mock_db, "7fb868dc")
+    ids = {r["session_id"] for r in results}
+    assert ids == {"7fb868dc-3dd0-437a-9cc8-28f23a43fc70"}
+
+    # Suffix match too
+    results = find_sessions_by_term(mock_db, "28f23a43fc70")
+    ids = {r["session_id"] for r in results}
+    assert ids == {"7fb868dc-3dd0-437a-9cc8-28f23a43fc70"}
 
 
 def test_find_by_term_excludes_deleted(mock_db):

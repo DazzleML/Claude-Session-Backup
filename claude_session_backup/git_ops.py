@@ -410,6 +410,120 @@ def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
     return sorted(paths)
 
 
+def git_ls_tree_for_uuid(
+    claude_dir: str,
+    commit: str,
+    slug: str,
+    uuid: str,
+) -> list[str]:
+    """
+    Enumerate every SESSION-HISTORY path keyed to ``uuid`` at ``commit``.
+
+    This is the discovery primitive that powers the v0.3.12+ full restore
+    (issues #32 + #33). It walks the git tree at a specific commit and
+    returns the paths that should be restored to reconstruct the session
+    as-it-was. Files outside this scope (debug/, telemetry/, file-history/,
+    tasks/, todos/, session-env/) are intentionally NOT returned -- they
+    are classified ephemeral per the 2026-06-03 design DWP.
+
+    The four pathspecs we match:
+
+      1. ``projects/<slug>/<uuid>.jsonl``                       (main transcript)
+      2. ``projects/<slug>/<uuid>/**``                          (subagents/, tool-results/, remote-agents/, etc.)
+      3. ``session-states/<uuid>.*``                            (logger state files; only present if user has claude-session-logger)
+      4. ``sesslogs/*__<uuid>_*/**``                            (logger sesslog directory; same conditional)
+
+    For populations without the logger, (3) and (4) match zero files and
+    are silently absent from the result -- no error, no special-casing.
+
+    The discipline this enforces: we ASK GIT what's there, we never
+    construct paths and assume their existence.
+
+    Args:
+        claude_dir: absolute path to ``~/.claude`` (or the working dir csb
+            operates against; may be a subdir of the actual git repo root).
+        commit: commit-ish to inspect (e.g. parent-of-deletion).
+        slug: the sanitized project-slug folder name under ``projects/``.
+            Required to scope the projects/ pathspec; pass the slug
+            resolved from the DB row's ``jsonl_path`` (or from
+            ``git_find_jsonl_by_uuid`` for the DB-missing fallback).
+        uuid: the session UUID.
+
+    Returns:
+        Sorted list of distinct claude_dir-relative paths (forward-slash).
+        Empty list means either the commit is unknown or no matching
+        SESSION-HISTORY files exist at that commit.
+    """
+    if not uuid or not slug:
+        return []
+
+    # `git ls-tree` does NOT support `:(glob)` pathspec magic (unlike
+    # `git log`), so we pass broad directory pathspecs and filter for
+    # UUID-keyed paths in Python. The three pathspecs scope the walk:
+    #
+    #   - projects/<slug>/    -- contains the JSONL + the UUID subtree
+    #   - session-states/     -- contains logger state files for many UUIDs
+    #   - sesslogs/           -- contains many sesslog dirs for many UUIDs
+    #
+    # The Python filter below keeps only paths keyed to this UUID. This
+    # naturally excludes the seven ephemeral categories (debug/,
+    # telemetry/, file-history/, tasks/, todos/, session-env/, and the
+    # project-level .session_cache.json) because they are not under
+    # any of the three scoped pathspecs.
+    result = run_git(
+        claude_dir,
+        "ls-tree", "-r", "--name-only", commit,
+        "--",
+        f"projects/{slug}",
+        "session-states",
+        "sesslogs",
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    jsonl_subtree_prefix = f"projects/{slug}/{uuid}/"
+    session_state_prefix = f"session-states/{uuid}."
+    sesslog_dir_match = f"__{uuid}_"
+
+    paths = set()
+    for line in result.stdout.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        normalized = _normalize_git_path(s)
+        # Git emits repo-relative paths; translate to claude_dir-relative
+        # so downstream operations (Path / git_show_file_bytes which
+        # also uses -C claude_dir) interpret them correctly.
+        rel = _to_claude_dir_relative(claude_dir, normalized)
+
+        if rel == jsonl_path:
+            paths.add(rel)
+        elif rel.startswith(jsonl_subtree_prefix):
+            paths.add(rel)
+        elif rel.startswith(session_state_prefix):
+            paths.add(rel)
+        elif rel.startswith("sesslogs/"):
+            # The logger writes its per-session dir DIRECTLY under
+            # sesslogs/ as `sesslogs/<sanitized-name>__<uuid>_<user>/...`
+            # (see claude-session-logger reconciliation.py:183-207). Only
+            # match when the FIRST component after sesslogs/ contains
+            # `__<uuid>_` -- nested intermediates like `sesslogs/bak/`
+            # are NOT logger-managed (verified 2026-06-03 against the
+            # logger source; `sesslogs/bak/` is a user-maintained folder
+            # outside csb-restore's scope).
+            #
+            # The logger DOES write `baks/` (plural) INSIDE the per-session
+            # sesslog dir for housekeeping recovery (file_io.py:408). Those
+            # are naturally included because they're under the matched
+            # first-component dir.
+            parts = rel.split("/", 2)
+            if len(parts) >= 2 and sesslog_dir_match in parts[1]:
+                paths.add(rel)
+    return sorted(paths)
+
+
 def git_find_deleted_file(claude_dir: str, file_path: Union[str, Path]) -> Optional[str]:
     """
     Find the last commit that contained a now-deleted file.
