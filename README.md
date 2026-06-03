@@ -78,7 +78,9 @@ csb search "X" --session <uuid>       # Constrain to one session by UUID prefix
 csb search "X" --json                 # NDJSON output for piping into jq
 csb restore <session-id>              # Restore deleted session from git history
 csb resume <session-id>               # Launch claude --resume with full UUID
-csb rebuild-index                     # Reconstruct SQLite from scratch
+csb update rebuild-index              # Safely reconstruct SQLite (preserves deleted-session metadata)
+csb update build-fts5                 # Build / refresh per-project FTS5 content index
+csb update backfill-deleted           # Discover culled sessions from git history; auto-repair sparse rows
 csb config [key] [value]              # View/edit csb's own configuration
 csb config settings:cleanupPeriodDays         # View Claude Code's session purge TTL
 csb config settings:cleanupPeriodDays 365     # Set the TTL (writes ~/.claude/settings.json)
@@ -152,7 +154,7 @@ flowchart LR
     Data -- "git show {commit}:path" --> Restore
 ```
 
-**Key principle**: Git is the source of truth. The SQLite database is a rebuildable index for fast queries. If the DB is lost, `csb rebuild-index` reconstructs it from git history.
+**Key principle**: Git is the source of truth. The SQLite database is a rebuildable index for fast queries. If the DB is lost or corrupted, `csb update rebuild-index` reconstructs it while preserving deleted-session metadata. See [`docs/maintenance.md`](docs/maintenance.md) for the `csb update` family of maintenance verbs.
 
 ## Automation
 
@@ -231,7 +233,7 @@ csb restore <prefix>                # Prefix works when the session IS in csb's 
 csb restore <uuid> --dry-run        # Preview commit + target path without writing
 ```
 
-If csb's DB doesn't have a row for the session (e.g., after `csb rebuild-index`, or on a fresh machine), `csb restore` falls back to walking `git log --all` for `projects/*/<uuid>.jsonl`. It needs the full UUID for the fallback path.
+If csb's DB doesn't have a row for the session (e.g., on a fresh machine), `csb restore` falls back to walking `git log --all` for `projects/*/<uuid>.jsonl`. It needs the full UUID for the fallback path. To discover deleted sessions from git that aren't in the live DB, use `csb update backfill-deleted` (see [`docs/maintenance.md`](docs/maintenance.md)).
 
 ### Recovering many sessions at once
 

@@ -161,7 +161,7 @@ def open_fts5_db(path: Path, quiet: bool = False) -> sqlite3.Connection:
 
     ``quiet`` suppresses the per-migration auto-upgrade notice from
     ``fts5_migrations.apply_pending`` -- pass True from contexts that
-    print their own progress (e.g. ``csb build-fts5 --quiet``) and
+    print their own progress (e.g. ``csb update build-fts5 --quiet``) and
     leave default False everywhere else so users see when their per-
     project DBs are silently auto-upgraded after an upgrade.
 

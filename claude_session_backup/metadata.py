@@ -26,21 +26,14 @@ class SessionMetadata:
     folder_usage: dict[str, int] = field(default_factory=dict)  # path -> count
 
 
-def extract_metadata(jsonl_path: Path) -> SessionMetadata:
+def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
+    """Apply per-event JSONL parsing onto a ``SessionMetadata`` instance.
+
+    Shared by ``extract_metadata`` (file-streaming) and
+    ``extract_metadata_from_bytes`` (in-memory bytes from git show).
+    Mutates and returns ``meta`` for chaining.
     """
-    Parse a session JSONL file and extract metadata.
-
-    Streams the file line-by-line to handle large files efficiently.
-
-    Stores ALL distinct cwds seen in the JSONL events into ``folder_usage``
-    (keyed by absolute path, valued by occurrence count). The renderer
-    decides how many to display via ``--top N`` / ``--all-folders``;
-    truncating at index time would make those flags unable to surface
-    long-tail folders, see #21.
-    """
-    meta = SessionMetadata(session_id=jsonl_path.stem)
-
-    folder_counter = Counter()
+    folder_counter: Counter = Counter()
     first_cwd = None
     first_ts = None
     last_ts = None
@@ -50,59 +43,54 @@ def extract_metadata(jsonl_path: Path) -> SessionMetadata:
     version = None
     session_name = None
 
-    try:
-        with open(jsonl_path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
 
-                # Extract session name from custom-title event
-                if event.get("type") == "custom-title":
-                    session_name = event.get("customTitle")
+        # Extract session name from custom-title event
+        if event.get("type") == "custom-title":
+            session_name = event.get("customTitle")
 
-                # Track timestamps
-                ts = event.get("timestamp")
-                if ts:
-                    if first_ts is None:
-                        first_ts = ts
-                    last_ts = ts
+        # Track timestamps
+        ts = event.get("timestamp")
+        if ts:
+            if first_ts is None:
+                first_ts = ts
+            last_ts = ts
 
-                # Track working directories
-                cwd = event.get("cwd")
-                if cwd:
-                    if first_cwd is None:
-                        first_cwd = cwd
-                    folder_counter[cwd] += 1
+        # Track working directories
+        cwd = event.get("cwd")
+        if cwd:
+            if first_cwd is None:
+                first_cwd = cwd
+            folder_counter[cwd] += 1
 
-                # Track Claude Code version
-                v = event.get("version")
-                if v and version is None:
-                    version = v
+        # Track Claude Code version
+        v = event.get("version")
+        if v and version is None:
+            version = v
 
-                # Count messages and tool calls
-                evt_type = event.get("type")
-                if evt_type in ("user", "assistant"):
-                    msg_count += 1
-                if evt_type == "user" and ts:
-                    last_user_ts = ts
-                elif evt_type == "tool_use":
-                    tool_count += 1
+        # Count messages and tool calls
+        evt_type = event.get("type")
+        if evt_type in ("user", "assistant"):
+            msg_count += 1
+        if evt_type == "user" and ts:
+            last_user_ts = ts
+        elif evt_type == "tool_use":
+            tool_count += 1
 
-                # Also count tool calls embedded in message content
-                if evt_type == "assistant":
-                    content = event.get("message", {}).get("content", [])
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get("type") == "tool_use":
-                                tool_count += 1
-
-    except OSError:
-        pass
+        # Also count tool calls embedded in message content
+        if evt_type == "assistant":
+            content = event.get("message", {}).get("content", [])
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        tool_count += 1
 
     meta.session_name = session_name
     meta.start_folder = first_cwd
@@ -118,6 +106,62 @@ def extract_metadata(jsonl_path: Path) -> SessionMetadata:
     for path, count in folder_counter.most_common():
         meta.folder_usage[path] = count
 
+    return meta
+
+
+def extract_metadata(jsonl_path: Path) -> SessionMetadata:
+    """
+    Parse a session JSONL file and extract metadata.
+
+    Streams the file line-by-line to handle large files efficiently.
+
+    Stores ALL distinct cwds seen in the JSONL events into ``folder_usage``
+    (keyed by absolute path, valued by occurrence count). The renderer
+    decides how many to display via ``--top N`` / ``--all-folders``;
+    truncating at index time would make those flags unable to surface
+    long-tail folders, see #21.
+    """
+    meta = SessionMetadata(session_id=jsonl_path.stem)
+
+    try:
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            _parse_jsonl_lines(f, meta)
+    except OSError:
+        pass
+
+    return meta
+
+
+def extract_metadata_from_bytes(blob: bytes, session_id: str,
+                                 project: str = "") -> SessionMetadata:
+    """
+    Parse a session JSONL blob (in-memory bytes) and extract metadata.
+
+    Same per-event parsing as ``extract_metadata`` but takes raw bytes
+    rather than a file path. Used by ``cmd_backfill_deleted`` to
+    reconstruct metadata for sessions whose JSONL has been culled from
+    disk -- the bytes come from ``git show <commit>:<path>``.
+
+    The session UUID is taken from the ``session_id`` parameter, NOT
+    inferred from any filename or JSONL content (the JSONL itself
+    doesn't reliably carry the session UUID -- it's always the filename
+    in the live FS path). Caller supplies it from the path being read.
+
+    Args:
+      blob: raw JSONL bytes (UTF-8)
+      session_id: the session UUID (from the historical jsonl_path)
+      project: project slug (from the historical jsonl_path)
+
+    Returns:
+      A ``SessionMetadata`` with all observable fields populated.
+      Malformed lines are silently skipped (matches ``extract_metadata``).
+    """
+    meta = SessionMetadata(session_id=session_id, project=project)
+    try:
+        text = blob.decode("utf-8")
+    except UnicodeDecodeError:
+        text = blob.decode("utf-8", errors="replace")
+    _parse_jsonl_lines(text.splitlines(), meta)
     return meta
 
 

@@ -270,7 +270,7 @@ def _build_matcher(pattern: str, regex: bool, case_sensitive: bool):
 #
 # Each source is INDEPENDENTLY OPTIONAL. A user without
 # claude-session-logger sees `convo` / `sesslog` skipped automatically.
-# A user who hasn't run `csb build-fts5` sees `fts5` skipped. A user
+# A user who hasn't run `csb update build-fts5` sees `fts5` skipped. A user
 # who wants only one source uses `--source <name>` to pin the preference
 # to a single entry. Future: per-user config can override the default
 # preference list (e.g. logger-only users may want
@@ -698,7 +698,7 @@ def find_path_filtered_sessions(
         except sqlite3.OperationalError:
             # Pre-strength DBs (v0.3.0) lack the column; rather than
             # silently misranking, treat as empty. The user gets no hits
-            # from that DB and can run `csb build-fts5` to migrate.
+            # from that DB and can run `csb update build-fts5` to migrate.
             return []
         return [(r[0], r[1], r[2]) for r in rows]
     except sqlite3.DatabaseError:
@@ -919,7 +919,7 @@ def search(
 
     Each source is independently optional. A user without
     claude-session-logger naturally skips ``convo`` / ``sesslog``. A
-    user who hasn't run ``csb build-fts5`` naturally skips ``fts5``.
+    user who hasn't run ``csb update build-fts5`` naturally skips ``fts5``.
     A user with only the raw transcripts naturally falls all the way
     through to ``jsonl``. No "fallback" framing -- the dispatcher just
     walks the preference list in order.

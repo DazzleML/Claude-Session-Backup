@@ -15,7 +15,9 @@ Usage:
     csb show <session-id>         # detailed session info
     csb restore <session-id>      # restore deleted session from git
     csb search "query"            # search session metadata
-    csb rebuild-index             # reconstruct SQLite from git history
+    csb update rebuild-index      # safely reconstruct SQLite (preserves deleted)
+    csb update build-fts5         # build/refresh FTS5 content index
+    csb update backfill-deleted   # discover culled sessions from git history
 """
 
 from ._version import __version__, get_version, get_base_version, VERSION, BASE_VERSION

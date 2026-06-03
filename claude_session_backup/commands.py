@@ -9,6 +9,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 from .config import (
     load_config,
@@ -49,7 +50,9 @@ from .index import (
     open_db,
     record_scan,
     register_session_sources,
+    restore_deleted_snapshot,
     search_sessions,
+    snapshot_deleted_sessions,
     upsert_session,
 )
 from .sesslog_scanner import list_sesslog_folders, list_session_sources
@@ -1034,25 +1037,406 @@ def cmd_build_fts5(args) -> int:
     return 0
 
 
-def cmd_rebuild_index(args) -> int:
-    """Reconstruct SQLite index by re-scanning all sessions."""
+def cmd_update(args) -> int:
+    """Dispatcher for `csb update <target>`.
+
+    Routes to the per-target implementation. With no target, prints the
+    help so users learn what's updatable. Each target is a refresh /
+    rebuild verb for a specific csb representation:
+
+      rebuild-index    -- SQLite session index
+      build-fts5       -- per-project FTS5 content indexes
+      backfill-deleted -- git-history backfill of culled sessions (v0.3.11)
+    """
+    target = getattr(args, "update_target", None)
+    if target is None:
+        print(
+            "csb update: pick a target.\n"
+            "  csb update rebuild-index      -- reconstruct SQLite session index\n"
+            "  csb update build-fts5         -- per-project FTS5 content index\n"
+            "  csb update backfill-deleted   -- backfill culled-session metadata from git\n"
+            "\n"
+            "Run `csb update <target> -h` for per-target options.",
+            file=sys.stderr,
+        )
+        return 2
+    if target == "rebuild-index":
+        return cmd_rebuild_index(args)
+    if target == "build-fts5":
+        return cmd_build_fts5(args)
+    if target == "backfill-deleted":
+        return cmd_backfill_deleted(args)
+    # argparse's metavar restriction shouldn't let us reach here; defensive.
+    print(f"Unknown update target: {target}", file=sys.stderr)
+    return 2
+
+
+def _maybe_refresh_fts5(args) -> None:
+    """Stub seam for main's FTS5 refresh integration (post-merge).
+
+    Per the v0.3.11 handoff
+    (private/claude/2026-06-02__14-14-02__handoff__...md), main will wire
+    the actual `csb update rebuild-index --include-fts5` and
+    `csb backup --refresh-fts5` work on the unified base after the
+    reverse-merge. This stub is the agreed-on hook point. Currently a
+    no-op so the flag plumbs through without effect.
+    """
+    pass
+
+
+def cmd_backfill_deleted(args) -> int:
+    """Discover deleted sessions from git history; synthesize DB rows.
+
+    Two-pass algorithm:
+
+      1. Refresh the ``git_deleted_jsonls`` cache by walking
+         ``git log --all --diff-filter=D --name-only -- 'projects/*.jsonl'``
+         (via ``git_list_deleted_jsonls``). Inserts new rows; updates
+         git-side fields on existing ones (the ``extracted_metadata``
+         flag is preserved across re-upsert).
+
+      2. For each cache row not yet marked ``extracted_metadata = 1``
+         and not already in the live ``sessions`` table:
+           - Resolve the commit BEFORE the deletion via
+             ``git_find_deleted_file``.
+           - Read the historical blob via ``git_show_file_bytes``.
+           - Parse it with ``extract_metadata_from_bytes`` (the session
+             UUID is supplied from the cached path -- not inferred from
+             the blob, see Phase 0 reality-check report).
+           - Insert a deleted-flagged ``sessions`` row + ``folder_usage``
+             rows, then flip ``extracted_metadata = 1`` so subsequent
+             passes skip this row.
+
+    Flags:
+      --dry-run -- preview without writing anything
+      --full    -- (currently identical to default; incremental refresh
+                   via the last_refreshed_at marker is a follow-on)
+
+    Plan ref: private/claude/2026-06-02__15-46-56__claude-plan__safe-
+    update-umbrella-and-backfill-v0.3.11.md (Phase 4)
+    """
+    from .index import (
+        count_git_deleted_jsonls,
+        list_git_deleted_jsonls,
+        mark_git_deleted_extracted,
+        upsert_git_deleted_jsonl,
+    )
+    from .git_ops import (
+        git_list_deleted_jsonls,
+        git_show_file_bytes,
+    )
+    from .metadata import extract_metadata_from_bytes
+
     config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    quiet = getattr(args, "quiet", False)
+    dry_run = getattr(args, "dry_run", False)
+
+    if not is_git_repo(claude_dir):
+        print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
+        return 1
+
+    with backup_lock(claude_dir) as acquired:
+        if not acquired:
+            if not quiet:
+                print("Another csb operation is in progress. Skipping.",
+                      file=sys.stderr)
+            return 0
+
+        conn = open_db(config["index_path"])
+        init_schema(conn)
+
+        # 1. Refresh the cache from git log.
+        now = _now_iso()
+        deletions = git_list_deleted_jsonls(claude_dir)
+        cache_new = 0
+        for d in deletions:
+            if dry_run:
+                # Preview pass: count would-be-new rows without writing.
+                exists = list_git_deleted_jsonls(conn)
+                if not any(r["jsonl_path"] == d["jsonl_path"] for r in exists):
+                    cache_new += 1
+                continue
+            inserted = upsert_git_deleted_jsonl(
+                conn,
+                jsonl_path=d["jsonl_path"],
+                session_id=d["session_id"],
+                deleted_commit=d.get("deleted_commit"),
+                deleted_at=d.get("deleted_at"),
+                last_refreshed_at=now,
+            )
+            if inserted:
+                cache_new += 1
+
+        if not quiet:
+            print(f"git log: {len(deletions)} deleted JSONL path(s); "
+                  f"{cache_new} new to cache")
+
+        # 2. Synthesize new rows + auto-repair sparse existing ones.
+        #
+        # Auto-repair (Approach b from the v0.3.11 design discussion):
+        # if the live sessions row exists AND its folder_usage has <=1
+        # entries (the past-rebuild fingerprint), AND git has richer
+        # metadata, refresh the row in-place from the historical blob.
+        # No flag -- the heuristic is conservative enough that a row
+        # already at >=2 folders is left alone.
+        #
+        # We walk ALL cache rows (not just extracted=0) so the repair
+        # pass fires for rows from past backfill runs that already
+        # marked themselves extracted. For extracted-and-intact rows
+        # the per-row gates short-circuit before any git work.
+        pending = list_git_deleted_jsonls(conn)
+        synthesized = 0
+        repaired = 0
+        skipped_live_intact = 0
+        skipped_no_blob = 0
+
+        for d in pending:
+            sid = d["session_id"]
+            jp = d["jsonl_path"]
+
+            live = get_session(conn, sid)
+
+            # Fast-path: live row exists AND its folder_usage is already
+            # non-sparse (>1 folder). No repair needed; no git work.
+            # Saves 2 git ops per row -- significant on real DBs where
+            # most rows are intact.
+            if live:
+                live_folder_count = conn.execute(
+                    "SELECT COUNT(*) FROM folder_usage WHERE session_id = ?",
+                    (sid,),
+                ).fetchone()[0]
+                if live_folder_count > 1:
+                    skipped_live_intact += 1
+                    if not dry_run:
+                        mark_git_deleted_extracted(conn, jp)
+                        # Stamp metadata_validated_at: the user invoked
+                        # backfill-deleted explicitly, so they expect
+                        # every cache-known row to reflect "I checked
+                        # this just now." Intact-ness IS a finding even
+                        # if it didn't trigger a git read.
+                        conn.execute(
+                            "UPDATE sessions SET metadata_validated_at = ? "
+                            "WHERE session_id = ?",
+                            (now, sid),
+                        )
+                        conn.commit()
+                    continue
+            else:
+                live_folder_count = 0
+
+            # Slow path: need git data. Find commit before deletion -> blob.
+            parent_commit = git_find_deleted_file(claude_dir, jp)
+            blob = None
+            if parent_commit:
+                blob = git_show_file_bytes(claude_dir, parent_commit, jp)
+
+            if blob is None:
+                # No usable git data. Mark extracted so we don't keep
+                # retrying on every backfill pass.
+                skipped_no_blob += 1
+                if not dry_run:
+                    mark_git_deleted_extracted(conn, jp)
+                continue
+
+            # Derive the project slug from the path: projects/<slug>/<uuid>.jsonl
+            parts = jp.split("/")
+            project = parts[1] if len(parts) >= 3 and parts[0] == "projects" else ""
+
+            meta = extract_metadata_from_bytes(blob, session_id=sid, project=project)
+            new_folder_count = len(meta.folder_usage)
+
+            if live:
+                # Auto-repair gate: refresh ONLY if git has strictly richer
+                # folder data than the live (sparse) row.
+                if new_folder_count > live_folder_count:
+                    if dry_run:
+                        if not quiet:
+                            label = meta.session_name or live["session_name"] or "(unnamed)"
+                            print(f"  [DRY] would repair: {sid[:8]}  {label!r}  "
+                                  f"({live_folder_count} -> {new_folder_count} folders)")
+                        repaired += 1
+                        continue
+                    # Repair: same upsert+mark_deleted as synthesize. The
+                    # upsert's DELETE+INSERT on folder_usage refreshes the
+                    # full folder list; mark_deleted re-applies deleted_at
+                    # (upsert sets it to NULL on UPDATE by API contract).
+                    upsert_session(
+                        conn, meta, jp,
+                        jsonl_size=int(d.get("last_seen_size") or 0),
+                        jsonl_mtime=float(d.get("last_seen_mtime") or 0.0),
+                        scanned_at=now,
+                    )
+                    mark_deleted(conn, sid, live.get("deleted_at") or d.get("deleted_at") or now)
+                    mark_git_deleted_extracted(conn, jp)
+                    repaired += 1
+                else:
+                    # Git has nothing better. Mark cache extracted, stamp
+                    # metadata_validated_at on the row (we DID verify there's
+                    # nothing more to recover), and move on.
+                    skipped_live_intact += 1
+                    if not dry_run:
+                        mark_git_deleted_extracted(conn, jp)
+                        conn.execute(
+                            "UPDATE sessions SET metadata_validated_at = ? "
+                            "WHERE session_id = ?",
+                            (now, sid),
+                        )
+                        conn.commit()
+                continue
+
+            # No live row -- synthesize from the blob.
+            if dry_run:
+                if not quiet:
+                    label = meta.session_name or "(unnamed)"
+                    print(f"  [DRY] would synthesize: {sid[:8]}  {label!r}  "
+                          f"({new_folder_count} folder(s))")
+                synthesized += 1
+                continue
+
+            # Insert via normal upsert (sets deleted_at = NULL by API
+            # contract), then mark_deleted to re-apply the cull timestamp.
+            upsert_session(
+                conn, meta, jp,
+                jsonl_size=int(d.get("last_seen_size") or 0),
+                jsonl_mtime=float(d.get("last_seen_mtime") or 0.0),
+                scanned_at=now,
+            )
+            mark_deleted(conn, sid, d.get("deleted_at") or now)
+            mark_git_deleted_extracted(conn, jp)
+            synthesized += 1
+
+        conn.close()
+
+        if not quiet:
+            verb_s = "would synthesize" if dry_run else "synthesized"
+            verb_r = "would repair" if dry_run else "repaired"
+            print(f"backfill-deleted: {verb_s} {synthesized} session(s), "
+                  f"{verb_r} {repaired} sparse row(s) "
+                  f"({skipped_live_intact} intact in live DB, "
+                  f"{skipped_no_blob} unreadable from git)")
+        return 0
+
+
+def cmd_rebuild_index(args) -> int:
+    """Reconstruct SQLite index; preserve deleted-session metadata across the rebuild.
+
+    Replaces the v0.3.10 destructive ``unlink + cmd_backup`` flow that
+    silently lost deleted-session rows (data-loss bug confirmed by
+    ``tests/one-offs/rebuild_reality_check.py``).
+
+    The safe rebuild:
+
+      1. Acquires ``backup_lock`` for the whole operation -- concurrent
+         ``csb backup`` cannot race the swap.
+      2. Snapshots every deleted-session row (and its folder_usage rows)
+         into memory via ``snapshot_deleted_sessions``.
+      3. Moves the pre-rebuild DB aside to ``<db>.bak`` (does NOT delete
+         it -- crash safety). Stale ``.bak`` from a prior failed rebuild
+         is cleared first.
+      4. Runs the indexer (``cmd_backup --no-commit``) against the live
+         filesystem -- this rebuilds the active-session view.
+      5. On rebuild failure, restores the ``.bak`` and propagates the
+         error -- the user is never left with a corrupted-or-missing DB.
+      6. On rebuild success, calls ``restore_deleted_snapshot`` to merge
+         deleted-session rows back in (skipping any UUIDs the live
+         rescan already repopulated, which would mean the JSONL came
+         back somehow).
+      7. Optionally runs ``_maybe_refresh_fts5`` (stub on this branch;
+         main wires the real refresh post-merge) if ``--include-fts5``.
+      8. Optionally chains ``cmd_backfill_deleted`` if
+         ``--include-backfill-deleted`` is set.
+      9. Removes the ``.bak`` on full success.
+
+    Plan ref: private/claude/2026-06-02__15-46-56__claude-plan__safe-
+    update-umbrella-and-backfill-v0.3.11.md (Phase 2)
+    """
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
     db_path = config["index_path"]
+    quiet = getattr(args, "quiet", False)
 
-    # Delete existing DB and rebuild
-    db_file = Path(db_path)
-    if db_file.exists():
-        db_file.unlink()
-        print(f"Removed existing index: {db_path}")
+    with backup_lock(claude_dir) as acquired:
+        if not acquired:
+            if not quiet:
+                print(
+                    "Another csb backup or update is in progress. "
+                    "Rebuild skipped.",
+                    file=sys.stderr,
+                )
+            return 0  # not an error -- match cmd_backup's skipped-lock contract
 
-    # Re-run backup logic without git commit
-    args.no_commit = True
-    args.quiet = False
-    result = cmd_backup(args)
+        # 1. Snapshot deleted-session knowledge before the destructive part.
+        snapshot: list[dict] = []
+        bak_path: Optional[Path] = None
+        db_file = Path(db_path)
+        if db_file.exists():
+            conn = open_db(db_path)
+            init_schema(conn)
+            snapshot = snapshot_deleted_sessions(conn)
+            conn.close()
 
-    if result == 0:
-        print("Index rebuilt successfully.")
-    return result
+            bak_path = db_file.with_suffix(db_file.suffix + ".bak")
+            if bak_path.exists():
+                # A prior rebuild crashed mid-flight. Drop the stale .bak
+                # (the live DB is fresher than it).
+                bak_path.unlink()
+                if not quiet:
+                    print(f"Removed stale rebuild backup: {bak_path}",
+                          file=sys.stderr)
+            os.rename(str(db_file), str(bak_path))
+            if not quiet:
+                print(f"Moved old index aside: {bak_path}")
+
+        # 2-3. Run the indexer's inner function directly (NOT cmd_backup,
+        # which would try to re-acquire backup_lock and silently skip,
+        # leaving us with just the snapshot's deleted rows and no live
+        # sessions). On any failure, restore the .bak.
+        args.no_commit = True
+        try:
+            result = _cmd_backup_inner(args, config, claude_dir, quiet)
+        except Exception:
+            if bak_path is not None and bak_path.exists():
+                os.rename(str(bak_path), str(db_file))
+                if not quiet:
+                    print(f"Rebuild raised; restored: {db_path}",
+                          file=sys.stderr)
+            raise
+
+        if result != 0:
+            if bak_path is not None and bak_path.exists():
+                os.rename(str(bak_path), str(db_file))
+                if not quiet:
+                    print(f"Rebuild returned non-zero ({result}); restored: "
+                          f"{db_path}", file=sys.stderr)
+            return result
+
+        # 4. Merge the snapshot back in (skip UUIDs the rescan already has).
+        if snapshot:
+            conn = open_db(db_path)
+            init_schema(conn)
+            restored = restore_deleted_snapshot(conn, snapshot)
+            conn.close()
+            if not quiet:
+                noun = "record" if restored == 1 else "records"
+                print(f"Preserved {restored} deleted-session {noun} "
+                      f"across rebuild")
+
+        # 5. Optional --include-fts5 (stub seam; main fills this in post-merge)
+        if getattr(args, "include_fts5", False):
+            _maybe_refresh_fts5(args)
+
+        # 6. Optional --include-backfill-deleted (Phase 4 fills in cmd_backfill_deleted)
+        if getattr(args, "include_backfill_deleted", False):
+            cmd_backfill_deleted(args)
+
+        # 7. Cleanup .bak on success.
+        if bak_path is not None and bak_path.exists():
+            bak_path.unlink()
+
+        if not quiet:
+            print("Index rebuilt successfully.")
+        return 0
 
 
 def cmd_config(args) -> int:

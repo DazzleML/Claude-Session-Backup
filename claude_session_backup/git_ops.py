@@ -20,6 +20,7 @@ The restore path is byte-pure end to end:
     commits never receive autocrlf normalization regardless of host config
 """
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional, Union
@@ -218,6 +219,86 @@ def _normalize_git_path(file_path: Union[str, Path]) -> str:
     return s.lstrip("/")
 
 
+# Cache: claude_dir -> "" (claude_dir IS repo root) or "some/prefix/" (claude_dir
+# is a subdir at that prefix from the repo root). Keyed by realpath so we treat
+# symlinks and junctions consistently. Populated lazily on first call.
+_REPO_PREFIX_CACHE: dict = {}
+
+
+def _claude_dir_prefix(claude_dir: str) -> str:
+    """
+    Return the repo-root-relative prefix for paths INSIDE claude_dir.
+
+    When ``~/.claude/`` is the git repo root (the README's recommended
+    setup), this returns ``""`` -- paths from git output need no
+    translation. When the repo is one level up (e.g. ``~/`` with
+    ``.claude/`` as a tracked subdir), this returns ``".claude/"`` so
+    callers can strip it before passing paths back to git via
+    ``-C claude_dir``.
+
+    Cached per claude_dir realpath (one ``git rev-parse`` per process
+    per repo). Returns ``""`` on any error -- safe degradation matches
+    the original behavior.
+    """
+    import os
+    key = os.path.realpath(claude_dir)
+    if key in _REPO_PREFIX_CACHE:
+        return _REPO_PREFIX_CACHE[key]
+    try:
+        result = run_git(claude_dir, "rev-parse", "--show-prefix", check=False)
+        prefix = result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        prefix = ""
+    # rev-parse --show-prefix returns "" if claude_dir is the repo root,
+    # or e.g. ".claude/" if claude_dir is a subdir. Always trailing-slash
+    # form on success (we trust git's output).
+    _REPO_PREFIX_CACHE[key] = prefix
+    return prefix
+
+
+def _to_claude_dir_relative(claude_dir: str, repo_relative_path: str) -> str:
+    """
+    Translate a path returned by git (repo-root-relative) into a
+    claude_dir-relative path ready to pass to a ``-C claude_dir``
+    git pathspec (e.g. ``git log -- <path>``).
+
+    When the prefix is empty (claude_dir IS the repo root), this is a
+    no-op. When the prefix is non-empty and the path starts with it,
+    strip it. When the path doesn't start with the prefix (e.g., it's
+    outside claude_dir for some reason), pass it through unchanged --
+    the caller's git invocation will fail loudly rather than silently
+    look at the wrong path.
+    """
+    prefix = _claude_dir_prefix(claude_dir)
+    if prefix and repo_relative_path.startswith(prefix):
+        return repo_relative_path[len(prefix):]
+    return repo_relative_path
+
+
+def _to_repo_relative(claude_dir: str, claude_dir_relative_path: str) -> str:
+    """
+    Translate a claude_dir-relative path INTO a repo-root-relative one,
+    suitable for ``git show <commit>:<path>``.
+
+    The asymmetry: ``git log -- <pathspec>`` interprets pathspec
+    relative to the working dir (so `-C claude_dir + projects/foo`
+    works), but ``git show <commit>:<path>`` ALWAYS interprets path
+    relative to the repo root (regardless of ``-C``). So callers of
+    ``git show`` must prepend the claude_dir->repo prefix.
+
+    When claude_dir IS the repo root, prefix is empty -> no-op. When
+    the path already starts with the prefix (caller passed a repo-
+    relative path by mistake), pass through unchanged (no double-
+    prefix).
+    """
+    prefix = _claude_dir_prefix(claude_dir)
+    if not prefix:
+        return claude_dir_relative_path
+    if claude_dir_relative_path.startswith(prefix):
+        return claude_dir_relative_path
+    return prefix + claude_dir_relative_path
+
+
 def git_show_file(claude_dir: str, commit: str, file_path: Union[str, Path]) -> Optional[str]:
     """
     Retrieve file content from a specific git commit as a decoded string.
@@ -226,7 +307,12 @@ def git_show_file(claude_dir: str, commit: str, file_path: Union[str, Path]) -> 
     ``git_show_file_bytes`` instead. This function is kept for non-restore
     callers that want the convenience of a string.
     """
-    norm = _normalize_git_path(file_path)
+    # `git show <commit>:<path>` always interprets <path> as REPO-relative
+    # (regardless of `-C`). When claude_dir is a subdir of the repo (e.g.,
+    # ~/.claude/ inside a ~/ git repo), prepend the repo-to-claude_dir
+    # prefix so the path resolves correctly. No-op when claude_dir IS the
+    # repo root.
+    norm = _to_repo_relative(claude_dir, _normalize_git_path(file_path))
     result = run_git(
         claude_dir,
         "show", f"{commit}:{norm}",
@@ -252,7 +338,9 @@ def git_show_file_bytes(
     Returns None if the file is not present in the given commit (or git
     returns non-zero).
     """
-    norm = _normalize_git_path(file_path)
+    # See git_show_file: the <path> in `git show <commit>:<path>` is
+    # REPO-relative, so prepend the claude_dir->repo prefix when needed.
+    norm = _to_repo_relative(claude_dir, _normalize_git_path(file_path))
     result = subprocess.run(
         [
             "git", "-C", claude_dir,
@@ -276,7 +364,7 @@ def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
     ever tracked, across all branches.
 
     Used as a fallback when csb's DB has no row for the session -- after
-    ``csb rebuild-index`` (which only sees current on-disk state), on a fresh
+    ``csb update rebuild-index`` (which only sees current on-disk state), on a fresh
     machine, or for sessions committed by something other than csb. The git
     history is authoritative for "did this UUID ever exist as a session".
 
@@ -312,7 +400,13 @@ def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
     for line in result.stdout.splitlines():
         s = line.strip()
         if s:
-            paths.add(_normalize_git_path(s))
+            # git emits paths relative to the REPO ROOT, which may be
+            # a parent of claude_dir (e.g. ~/ with .claude/ as a subdir).
+            # Strip the claude_dir prefix so downstream git calls (which
+            # use -C claude_dir) interpret the path correctly.
+            paths.add(_to_claude_dir_relative(
+                claude_dir, _normalize_git_path(s)
+            ))
     return sorted(paths)
 
 
@@ -435,3 +529,82 @@ def ensure_gitattributes(claude_dir: str) -> bool:
     sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
     path.write_text(existing + sep + block, encoding="utf-8", newline="\n")
     return True
+
+
+# UUID extracted from path -- matches the standard 36-char hyphenated form.
+_UUID_PATH_RE = re.compile(
+    r"/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$",
+    re.IGNORECASE,
+)
+
+
+def git_list_deleted_jsonls(claude_dir: str,
+                             since_commit: Optional[str] = None) -> list[dict]:
+    """Enumerate every projects/*/<uuid>.jsonl that git has seen deleted.
+
+    Runs ``git log --all --diff-filter=D --pretty=format:%H|%cI
+    --name-only -- ':(glob)projects/*/*.jsonl'`` and parses the
+    alternating commit-line / path-line output. Output is suitable for
+    populating ``git_deleted_jsonls`` via the ``upsert_git_deleted_jsonl``
+    helper (in ``index.py``).
+
+    The ``:(glob)`` pathspec magic restricts ``*`` to one path component
+    -- so ``projects/<slug>/<uuid>.jsonl`` matches but ``projects/<slug>/
+    <session-uuid>/subagents/agent-*.jsonl`` doesn't. We only want
+    top-level session transcripts.
+
+    Args:
+      claude_dir: path to the ~/.claude git repo
+      since_commit: if set, restricts to ``<since_commit>..`` -- useful
+        for incremental refresh (only walk new commits since last refresh)
+
+    Returns:
+      List of dicts with keys ``jsonl_path``, ``session_id``,
+      ``deleted_commit``, ``deleted_at`` (ISO 8601 with timezone).
+      Empty list if no deletions match.
+    """
+    range_arg = []
+    if since_commit:
+        range_arg = [f"{since_commit}.."]
+
+    result = run_git(
+        claude_dir,
+        "log", "--all",
+        *range_arg,
+        "--pretty=format:%H|%cI",
+        "--name-only",
+        "--diff-filter=D",
+        "--", ":(glob)projects/*/*.jsonl",
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+
+    out: list[dict] = []
+    current_commit: Optional[str] = None
+    current_iso: Optional[str] = None
+    for raw_line in result.stdout.splitlines():
+        line = raw_line.strip()
+        if not line:
+            # blank line separates commit blocks
+            current_commit = None
+            current_iso = None
+            continue
+        if current_commit is None and "|" in line:
+            # commit line: "<hash>|<iso-timestamp>"
+            current_commit, _, current_iso = line.partition("|")
+            continue
+        # path line -- git emits repo-root-relative; translate to
+        # claude_dir-relative so downstream -C claude_dir calls work.
+        norm = _to_claude_dir_relative(
+            claude_dir, _normalize_git_path(line)
+        )
+        m = _UUID_PATH_RE.search(norm)
+        if m:
+            out.append({
+                "jsonl_path": norm,
+                "session_id": m.group(1).lower(),
+                "deleted_commit": current_commit,
+                "deleted_at": current_iso,
+            })
+    return out

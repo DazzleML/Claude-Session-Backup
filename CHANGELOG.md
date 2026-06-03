@@ -9,6 +9,48 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.11] -- 2026-06-03 (prealpha)
+
+The restore-shoring-up arc lands on this branch. v0.3.11 closes a confirmed data-loss bug in `csb rebuild-index`, introduces a `csb update` umbrella for maintenance verbs, adds git-history backfill of culled-session metadata with auto-repair for past-rebuild casualties, and ships display polish around the deleted-session story. 771/771 tests pass (was 729 at the post-merge baseline; +42 new). See `docs/maintenance.md` for the user-facing reference.
+
+### Changed (BREAKING)
+- **`csb rebuild-index` -> `csb update rebuild-index`**. The old top-level verb is removed, no compat alias. Prealpha; no real-world scripts at risk per scope agreement.
+- **`csb build-fts5` -> `csb update build-fts5`**. Same treatment. Two top-level verbs collapse into the `csb update` umbrella.
+
+### Fixed
+- **`csb update rebuild-index` no longer silently loses deleted-session metadata** (was: data-loss bug on every rebuild). Pre-v0.3.11, the rebuild did `db_file.unlink()` then `cmd_backup`, which re-discovered only the sessions whose JSONL was still on disk. Sessions culled by Claude Code's `cleanupPeriodDays` purger lost their entire DB row -- name, message_count, folder_usage, deleted_at, jsonl_path. The fix snapshots deleted-session rows + folder_usage to memory before the destructive part, moves the existing DB to `<db>.bak` (instead of unlink), runs the indexer against the live filesystem, then re-inserts snapshotted rows for any UUIDs the rescan didn't repopulate. The whole operation acquires `backup_lock`. On any failure, the `.bak` is restored -- the user never ends up with a corrupted-or-missing DB. The fix is verified by `tests/one-offs/rebuild_reality_check.py` (sandboxed Phase-0 probe; scenarios 3 and 7 flip from CONFIRMED-BUG to DISPROVED).
+- **`csb list` "OVERDUE by Nd" wording is misleading for already-deleted sessions**. Replaced with "PURGED Nd ago" when `deleted_at` is set (the cull already happened; "overdue" implies "should have but hasn't"). Live sessions past `cleanupPeriodDays` still show "OVERDUE by Nd" as the call-to-action.
+- **Phantom third line in Rich-rendered deleted-session footers in narrow terminals**. Found by the v0.3.11 checklist walk: when Rich's console width was 79 (piped/CI/subprocess contexts), the meta line wrapped and emitted `val: 26-6-3` on its own unindented line that looked like display corruption. Fix: `no_wrap=True` on every meta print in `render_session_rich`, so the explicit one-line-vs-two-line decision isn't undermined by Rich's internal wrapping. Trade-off: at very narrow widths, trailing meta fields may be visually clipped rather than wrapped; in typical 120+ col terminals there's no clipping.
+
+### Added
+- **`csb update` umbrella** -- subcommand group for "reach in and refresh a representation" verbs. Three targets ship in v0.3.11: `rebuild-index`, `build-fts5`, `backfill-deleted`. Each acquires `backup_lock` and is safe on a live `~/.claude/`.
+- **`csb update backfill-deleted`** (new). Walks `git log --all --diff-filter=D -- 'projects/*.jsonl'`, populates a `git_deleted_jsonls` cache table, synthesizes sessions rows for UUIDs missing from the live DB (extracting metadata from the historical git blob), AND auto-repairs existing sparse rows (folder_usage count <= 1) when git has strictly richer folder data. `--dry-run` previews; `--full` forces a non-incremental refresh.
+- **`csb update rebuild-index --include-fts5`** -- stub seam for main's FTS5-refresh follow-on work. Currently a no-op; the flag plumbs through without effect.
+- **`csb update rebuild-index --include-backfill-deleted`** -- chain a backfill pass after rebuild in one acquired-lock window.
+- **`sessions.metadata_validated_at` column** (schema v5). ISO timestamp recording when csb last cross-checked the row against source-of-truth (live JSONL or historical git blob). Powers the `val: YY-M-D` display field.
+- **`git_deleted_jsonls` cache table** (schema v4). Records every JSONL path git has ever seen deleted, with the parent-of-deletion commit + ISO timestamp. Populated by backfill; consumed by repeat passes to skip extracted rows.
+- **`val: YY-M-D` display field** in `csb list` / `csb scan` per-session footers. Appears when `metadata_validated_at` is populated. Compact format (leading zeros dropped: `26-6-2` not `26-06-02`). `csb backup` writes it for every live session; `csb update backfill-deleted` writes it for every deleted-session row it processes (whether repaired or just confirmed-already-best).
+- **Two-line layout for deleted-session footers**, width-aware. When the combined `id: ... | val: ... | restore: ...` line fits the console width, it stays compact on one line. When it overflows, the `restore:` command splits onto its own line so the UUID stays unbroken (double-click-to-copy friendly). Auto-detects via `shutil.get_terminal_size`; default fallback width is 120 cols.
+- **`docs/maintenance.md`** -- user-facing reference covering the `csb update` family, safe-rebuild semantics, `val:` field, `PURGED`/`OVERDUE` wording, and the schema migration ledger.
+- **`extract_metadata_from_bytes(blob, session_id, project)`** in `metadata.py`. Sibling of the file-streaming `extract_metadata`; shares the per-event parsing loop. Used by `cmd_backfill_deleted` to reconstruct metadata from historical git blobs without touching the filesystem.
+- **`git_list_deleted_jsonls(claude_dir, since_commit=None)`** in `git_ops.py`. Enumerates every culled JSONL with its deletion commit + timestamp. Includes path-prefix translation (`_to_claude_dir_relative` / `_to_repo_relative` helpers) for installations where `~/.claude/` is a subdir of the git repo, not the repo root.
+- **42 new automated tests**: 8 for rebuild-index snapshot/restore + .bak crash safety + --include-fts5 stub, 6 for `cmd_backfill_deleted` end-to-end including auto-repair, 5 for `git_deleted_jsonls` cache helpers, 4 for migrations v3->v4 and v3->v5, 3 for path-prefix translation, 2 for `extract_metadata_from_bytes`, 7 for timeline display (val:, PURGED, two-line + compact-fit, leading-zero strip, no-wrap regression), 7 more covering edge cases.
+- **`tests/one-offs/rebuild_reality_check.py`** (new). Sandboxed reproduction script for the original data-loss bug. Builds a temp git repo with three sessions, culls one, and walks seven scenarios end-to-end. Scenarios 3 and 7 flip from CONFIRMED-BUG to DISPROVED post-fix.
+- **`tests/one-offs/probe_layout_wrap.py`** (new, written during checklist walk). Documents the Rich-narrow-width wrap behavior at the heart of the v0.3.11 display bug. Useful for diagnosing future render regressions.
+- **`tests/checklists/v0.3.11__Phase__safe-update-umbrella-and-backfill.md`** (new). Hand-runnable test checklist covering the user-visible surface. Walked by tester-unbounded agent before commit -- 8/8 sections PASS post-fix.
+
+### Notes
+- **Schema migrations**: v3 -> v4 (`git_deleted_jsonls` table) and v3 -> v5 (`sessions.metadata_validated_at` column) both apply automatically on first DB open after upgrade. Single one-line `csb: migrated DB schema to vN` notice per migration; silent on subsequent runs.
+- **Auto-repair gate**: backfill only refreshes existing rows when (a) `folder_usage` count <= 1 AND (b) git's historical blob has strictly richer folder data. Rows already non-sparse, or sparse with git having nothing better, are left alone. The fast-path skip still stamps `metadata_validated_at` so the user sees "I checked this just now" via `val:`.
+- **Gitignore-window casualties (#9)**: sessions whose JSONL was deleted while csb's `.gitignore` excluded `*.jsonl` (Jan 23 - Apr 5 2026) have only `file-history-snapshot` events in their git blobs -- no `cwd` or `user`/`assistant` events. Backfill correctly identifies these as "git has nothing better" and leaves the live row alone. The data is permanently unrecoverable from git regardless of code changes.
+- **Single-folder sessions**: a session whose `folder_usage` table has 1 row may be legitimately single-folder (user worked in one cwd the whole time) or may be a past-rebuild casualty. The auto-repair heuristic conservatively reaches for git only when count <= 1 AND git's blob has strictly more folders. False-negative-safe: never rewrites legitimately single-folder rows.
+
+### Plan reference
+DWP analysis: `2026-06-02__15-20-57__safe-rebuild-index-and-deleted-session-cache.md`.
+Plan: `2026-06-02__15-46-56__claude-plan__safe-update-umbrella-and-backfill-v0.3.11.md` (8 phases).
+Handoff from main worktree: `2026-06-02__14-14-02__handoff__restore-worktree-incorporate-rebuild-safety-and-fts5-blockers.md`.
+Phase 0 reality-check report: `2026-06-02__19-53-38__rebuild-reality-check-report.md`.
+
 ## [0.3.10] -- 2026-05-30 (prealpha)
 
 Exposes Claude Code's session purge **TTL** (`cleanupPeriodDays`) through `csb config`, so you can see and change how long Claude Code keeps a transcript before deleting it -- without hand-editing `settings.json`. To keep csb's own config and Claude Code's config from ever colliding, Claude Code settings are addressed through a fully-qualified `settings:` namespace: a bare key always means csb's `session-backup-config.json`; a `settings:` key always means Claude Code's `settings.json`. 674/674 tests pass (was 636 at v0.3.9; +38).
@@ -486,7 +528,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...HEAD
+[0.3.11]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...v0.3.11
 [0.3.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.7...v0.3.8

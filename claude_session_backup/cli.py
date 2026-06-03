@@ -13,7 +13,9 @@ Usage:
     csb resume <session-id>              # launch claude --resume with full UUID
     csb scan [path]                      # find sessions in current dir and children
     csb search "query"                   # search session metadata
-    csb rebuild-index                    # reconstruct SQLite from git history
+    csb update rebuild-index             # safely reconstruct SQLite (preserves deleted)
+    csb update build-fts5                # build/refresh FTS5 content index
+    csb update backfill-deleted          # discover culled sessions from git history
     csb config [key] [value]             # view/edit csb's own configuration
     csb config settings:cleanupPeriodDays [days]  # view/set Claude Code's purge TTL
 """
@@ -342,7 +344,7 @@ def build_parser():
         choices=["auto", "fts5", "convo", "sesslog", "jsonl"], default="auto",
         help="Force a source channel (default: auto -- FTS5 when fresh, "
              "else .convo > .sesslog > jsonl). 'fts5' returns no hits for "
-             "sessions not yet indexed by `csb build-fts5`.",
+             "sessions not yet indexed by `csb update build-fts5`.",
     )
     p_search.add_argument(
         "--sort",
@@ -408,7 +410,7 @@ def build_parser():
              "lightest), then narrow to ones whose transcripts match the "
              "query. Recurses into subdirectories -- answers 'what's "
              "been done in this folder, and who said what about it?'. "
-             "Requires `csb build-fts5` for affected projects.",
+             "Requires `csb update build-fts5` for affected projects.",
     )
     p_search_dir_scope.add_argument(
         "-D", "--directory-only", metavar="PATH", default=None,
@@ -426,11 +428,61 @@ def build_parser():
     )
 
     # rebuild-index
-    p_rebuild = sub.add_parser("rebuild-index", help="Reconstruct SQLite index from git history")
-    _add_common_flags(p_rebuild)
+    # ── csb update: umbrella for "reach in and refresh a representation" ops ──
+    # Lives at the top level so all maintenance verbs group cleanly. Targets:
+    #   rebuild-index     - reconstruct the SQLite session index
+    #   build-fts5        - per-project FTS5 content index
+    #   backfill-deleted  - discover deleted sessions from git history that
+    #                       aren't in the live DB (v0.3.11)
+    # Each target is independently safe to run on a live ~/.claude/ -- the
+    # operation acquires the backup_lock and preserves deleted-session metadata.
+    p_update = sub.add_parser(
+        "update",
+        help="Refresh / rebuild a csb representation (DB index, FTS5, deleted cache)",
+        description=(
+            "csb update <target> refreshes or rebuilds a specific csb "
+            "representation. Each target is independently safe to run on a "
+            "live ~/.claude/ -- the operation acquires the backup_lock and "
+            "preserves all known deleted-session metadata. Targets: "
+            "rebuild-index (SQLite session index), build-fts5 (per-project "
+            "FTS5 content index), backfill-deleted (git-history backfill of "
+            "culled-session metadata)."
+        ),
+    )
+    update_sub = p_update.add_subparsers(dest="update_target", metavar="<target>")
 
-    # build-fts5
-    p_build = sub.add_parser(
+    # csb update rebuild-index
+    p_update_rebuild = update_sub.add_parser(
+        "rebuild-index",
+        help="Reconstruct SQLite index (preserves deleted-session metadata)",
+        description=(
+            "Reconstruct the SQLite session index. Acquires the backup_lock, "
+            "moves the existing DB aside as .bak, runs the indexer against "
+            "the live filesystem, then merges back any deleted-session rows "
+            "(plus their folder_usage) that aren't in the rebuilt DB. The "
+            ".bak is removed on success and restored on failure -- the "
+            "rebuild is crash-safe."
+        ),
+    )
+    _add_common_flags(p_update_rebuild)
+    p_update_rebuild.add_argument(
+        "--include-fts5", action="store_true",
+        help=(
+            "Also refresh the per-project FTS5 indexes (currently a no-op "
+            "stub on this branch -- main wires the actual refresh in "
+            "post-merge)."
+        ),
+    )
+    p_update_rebuild.add_argument(
+        "--include-backfill-deleted", action="store_true",
+        help=(
+            "Also run backfill-deleted after the rebuild -- discover "
+            "culled-session metadata from git history in the same pass."
+        ),
+    )
+
+    # csb update build-fts5
+    p_update_build = update_sub.add_parser(
         "build-fts5",
         help="Build/refresh FTS5 content index (per-project DBs in ~/.claude/csb-fts/)",
         description=(
@@ -440,18 +492,43 @@ def build_parser():
             "build. Use --force to re-index unconditionally."
         ),
     )
-    _add_common_flags(p_build)
-    p_build.add_argument(
+    _add_common_flags(p_update_build)
+    p_update_build.add_argument(
         "--project", default=None, metavar="SLUG",
         help="Limit to one project (encoded slug form, e.g. 'C--code-myproj')",
     )
-    p_build.add_argument(
+    p_update_build.add_argument(
         "--session-id", default=None, metavar="UUID",
         help="Limit to one session (UUID prefix; uses the shared resolver)",
     )
-    p_build.add_argument(
+    p_update_build.add_argument(
         "--force", action="store_true",
         help="Re-index every candidate even if up-to-date",
+    )
+
+    # csb update backfill-deleted (NEW in v0.3.11)
+    p_update_backfill = update_sub.add_parser(
+        "backfill-deleted",
+        help="Discover culled sessions from git history; synthesize DB rows",
+        description=(
+            "Discover deleted sessions that exist in git history but not in "
+            "the live SQLite DB. For each such session, extract metadata "
+            "from the historical JSONL blob and INSERT a deleted-flagged "
+            "sessions row + folder_usage. Surfaces pre-csb-era deletions "
+            "and sessions culled while csb wasn't running."
+        ),
+    )
+    _add_common_flags(p_update_backfill)
+    p_update_backfill.add_argument(
+        "--full", action="store_true",
+        help=(
+            "Full re-scan of all git history. Default behavior is "
+            "incremental -- walks only commits newer than the last refresh."
+        ),
+    )
+    p_update_backfill.add_argument(
+        "--dry-run", action="store_true",
+        help="Preview what would be backfilled without writing any rows.",
     )
 
     # config
@@ -551,12 +628,9 @@ def main(argv=None):
     elif args.command == "search":
         from .commands import cmd_search
         return cmd_search(args)
-    elif args.command == "rebuild-index":
-        from .commands import cmd_rebuild_index
-        return cmd_rebuild_index(args)
-    elif args.command == "build-fts5":
-        from .commands import cmd_build_fts5
-        return cmd_build_fts5(args)
+    elif args.command == "update":
+        from .commands import cmd_update
+        return cmd_update(args)
     elif args.command == "config":
         from .commands import cmd_config
         return cmd_config(args)

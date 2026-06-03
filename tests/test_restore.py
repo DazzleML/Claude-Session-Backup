@@ -1023,6 +1023,827 @@ def test_cmd_scan_restore_empty_scope_says_nothing_to_restore(mock_claude_dir, t
     assert "nothing to restore" in captured.out.lower()
 
 
+# ── Phase 2 (v0.3.11): safe csb update rebuild-index ───────────────────
+
+def _make_rebuild_args(**kwargs):
+    """Build a Namespace mimicking argparse output for cmd_rebuild_index."""
+    import argparse
+    defaults = {
+        "claude_dir": None,
+        "db": None,
+        "quiet": True,
+        "no_commit": True,
+        "include_fts5": False,
+        "include_backfill_deleted": False,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_rebuild_index_preserves_deleted_rows(populated_db_and_repo, capsys):
+    """The headline Phase 2 case: rebuild must not lose deleted-session rows.
+
+    Note: mock_claude_dir has its own pre-existing session committed via the
+    conftest fixture, which a live-FS rescan will discover. So the rebuild's
+    post-state includes BOTH populated_db_and_repo's rows AND that fixture
+    session. The test asserts on the load-bearing invariant -- the deleted
+    row survives, not absolute counts.
+    """
+    from claude_session_backup.commands import cmd_rebuild_index
+    from claude_session_backup.index import open_db
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    pre_deleted = conn.execute(
+        "SELECT COUNT(*) FROM sessions WHERE deleted_at IS NOT NULL"
+    ).fetchone()[0]
+    pre_culled_present = conn.execute(
+        "SELECT 1 FROM sessions WHERE session_id = ?", (ids["deleted1"],)
+    ).fetchone() is not None
+    conn.close()
+    assert pre_deleted == 1
+    assert pre_culled_present
+
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+
+    # Post-rebuild: the deleted row must survive (the load-bearing invariant).
+    conn = open_db(str(db))
+    post_deleted = conn.execute(
+        "SELECT COUNT(*) FROM sessions WHERE deleted_at IS NOT NULL"
+    ).fetchone()[0]
+    post_culled_row = conn.execute(
+        "SELECT * FROM sessions WHERE session_id = ?", (ids["deleted1"],)
+    ).fetchone()
+    conn.close()
+    assert post_deleted >= 1, "deleted_at flag lost across rebuild"
+    assert post_culled_row is not None, "deleted-session row gone after rebuild"
+    assert post_culled_row["deleted_at"], \
+        "deleted_at lost its value across rebuild"
+
+
+def test_cmd_rebuild_index_preserves_folder_usage(populated_db_and_repo):
+    """The FK-CASCADE risk: dropping a deleted session row also drops its
+    folder_usage rows. The snapshot must preserve them too."""
+    from claude_session_backup.commands import cmd_rebuild_index
+    from claude_session_backup.index import open_db
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    pre_folders = conn.execute(
+        "SELECT folder_path FROM folder_usage WHERE session_id = ?",
+        (ids["deleted1"],),
+    ).fetchall()
+    conn.close()
+    assert len(pre_folders) >= 1, "fixture should have folder_usage for the deleted session"
+
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+
+    conn = open_db(str(db))
+    post_folders = conn.execute(
+        "SELECT folder_path FROM folder_usage WHERE session_id = ?",
+        (ids["deleted1"],),
+    ).fetchall()
+    conn.close()
+    assert {row["folder_path"] for row in post_folders} == {row["folder_path"] for row in pre_folders}, \
+        "folder_usage paths for deleted session lost across rebuild"
+
+
+def test_cmd_rebuild_index_empty_pre_rebuild_db(mock_claude_dir, tmp_path):
+    """Degenerate case: no pre-rebuild DB. Rebuild should succeed cleanly."""
+    from claude_session_backup.commands import cmd_rebuild_index
+
+    db_path = tmp_path / "fresh.db"
+    assert not db_path.exists(), "test setup error: DB should NOT exist"
+
+    args = _make_rebuild_args(claude_dir=str(mock_claude_dir), db=str(db_path))
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+    assert db_path.exists(), "rebuild on fresh state should create the DB"
+
+
+def test_cmd_rebuild_index_clears_bak_on_success(populated_db_and_repo):
+    """Successful rebuild must clean up the .bak file."""
+    from claude_session_backup.commands import cmd_rebuild_index
+    from pathlib import Path
+
+    claude, db, ids = populated_db_and_repo
+    bak = Path(str(db) + ".bak")
+    assert not bak.exists(), "no leftover .bak before rebuild"
+
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+    assert not bak.exists(), ".bak must be cleaned up on success"
+
+
+def test_cmd_rebuild_index_clears_stale_bak_from_prior_failure(populated_db_and_repo):
+    """A pre-existing .bak from a crashed prior rebuild must not block the next one."""
+    from claude_session_backup.commands import cmd_rebuild_index
+    from pathlib import Path
+
+    claude, db, ids = populated_db_and_repo
+    # Simulate a stale .bak left from a crashed prior rebuild
+    bak = Path(str(db) + ".bak")
+    bak.write_bytes(b"stale -- should be cleared by next rebuild")
+    assert bak.exists()
+
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+    assert not bak.exists(), "stale .bak must be cleared then re-created+removed cleanly"
+
+
+def test_cmd_rebuild_index_restores_bak_on_failure(populated_db_and_repo, monkeypatch):
+    """Inner failure must restore the .bak so the user isn't left without a DB."""
+    from claude_session_backup.commands import cmd_rebuild_index
+    from claude_session_backup import commands as cmds
+    from pathlib import Path
+
+    claude, db, ids = populated_db_and_repo
+    pre_size = Path(str(db)).stat().st_size
+    pre_bytes = Path(str(db)).read_bytes()
+
+    # Force the indexer's inner function to raise
+    def boom(*a, **kw):
+        raise RuntimeError("simulated inner failure")
+    monkeypatch.setattr(cmds, "_cmd_backup_inner", boom)
+
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db))
+    try:
+        cmd_rebuild_index(args)
+        assert False, "expected RuntimeError to propagate"
+    except RuntimeError:
+        pass
+
+    # DB must still exist and match its pre-rebuild contents
+    assert Path(str(db)).exists(), "DB must be restored from .bak on failure"
+    assert Path(str(db)).read_bytes() == pre_bytes, \
+        "DB contents must round-trip across the failed rebuild"
+    assert not Path(str(db) + ".bak").exists(), \
+        ".bak should have been renamed back into place"
+
+
+def test_cmd_rebuild_index_include_fts5_flag_calls_stub(populated_db_and_repo, monkeypatch):
+    """--include-fts5 must invoke the _maybe_refresh_fts5 stub (main's seam)."""
+    from claude_session_backup.commands import cmd_rebuild_index
+    from claude_session_backup import commands as cmds
+
+    called = {"n": 0}
+
+    def fake_refresh(args):
+        called["n"] += 1
+
+    monkeypatch.setattr(cmds, "_maybe_refresh_fts5", fake_refresh)
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db), include_fts5=True)
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+    assert called["n"] == 1, "stub seam should fire exactly once when --include-fts5 set"
+
+
+def test_cmd_rebuild_index_skips_fts5_stub_when_flag_absent(populated_db_and_repo, monkeypatch):
+    """Default rebuild (no --include-fts5) must NOT call the FTS5 seam."""
+    from claude_session_backup.commands import cmd_rebuild_index
+    from claude_session_backup import commands as cmds
+
+    called = {"n": 0}
+
+    def fake_refresh(args):
+        called["n"] += 1
+
+    monkeypatch.setattr(cmds, "_maybe_refresh_fts5", fake_refresh)
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db), include_fts5=False)
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+    assert called["n"] == 0
+
+
+# ── snapshot_deleted_sessions / restore_deleted_snapshot (unit-level) ───
+
+def test_snapshot_deleted_sessions_captures_folders(populated_db_and_repo):
+    """Snapshot must include folder_usage rows under the _folders key."""
+    from claude_session_backup.index import open_db, snapshot_deleted_sessions
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    snap = snapshot_deleted_sessions(conn)
+    conn.close()
+
+    assert len(snap) == 1, "fixture has exactly one deleted session"
+    row = snap[0]
+    assert row["session_id"] == ids["deleted1"]
+    assert "_folders" in row
+    assert len(row["_folders"]) >= 1
+    assert row["_folders"][0]["folder_path"] == "C:\\code\\proj"
+
+
+def test_restore_deleted_snapshot_skips_already_present(populated_db_and_repo):
+    """If the live rescan already re-discovered a snapshot UUID, don't double-insert."""
+    from claude_session_backup.index import (
+        open_db, snapshot_deleted_sessions, restore_deleted_snapshot,
+    )
+
+    claude, db, ids = populated_db_and_repo
+    conn = open_db(str(db))
+    snap = snapshot_deleted_sessions(conn)
+    # The deleted session is still in the DB (we haven't done a rebuild here).
+    # restore_deleted_snapshot should skip it as already-present.
+    restored = restore_deleted_snapshot(conn, snap)
+    conn.close()
+    assert restored == 0, "should skip rows that already exist in the live DB"
+
+
+# ── Phase 3 (v0.3.11): git_deleted_jsonls cache + git_list_deleted_jsonls ──
+
+def test_git_list_deleted_jsonls_finds_culled_jsonl(mock_claude_dir):
+    """git_list_deleted_jsonls enumerates JSONL deletions from git log."""
+    from claude_session_backup.git_ops import git_list_deleted_jsonls
+
+    uuid = "cccccccc-dddd-eeee-ffff-000000000001"
+    rel = f"projects/test-proj/{uuid}.jsonl"
+    # Commit a file then delete + commit deletion
+    _commit_file(mock_claude_dir, rel, b'{"x":1}\n', f"add {uuid[:8]}")
+    (mock_claude_dir / rel).unlink()
+    _git(mock_claude_dir, "add", "-A")
+    _git(mock_claude_dir, "commit", "--no-gpg-sign", "-m", f"cull {uuid[:8]}")
+
+    deletions = git_list_deleted_jsonls(str(mock_claude_dir))
+    matching = [d for d in deletions if d["session_id"] == uuid]
+    assert len(matching) == 1
+    assert matching[0]["jsonl_path"] == rel
+    assert matching[0]["deleted_commit"], "should have a commit hash"
+    assert matching[0]["deleted_at"], "should have an ISO timestamp"
+
+
+def test_to_claude_dir_relative_strips_prefix_when_subdir(tmp_path):
+    """Unit test for the helper that does the actual path translation.
+
+    Direct verification: when claude_dir is a subdir of the git repo,
+    `_to_claude_dir_relative` must strip the repo-to-claude_dir prefix
+    so downstream `git -C claude_dir` calls see the path correctly.
+    """
+    from claude_session_backup.git_ops import (
+        _to_claude_dir_relative, _REPO_PREFIX_CACHE,
+    )
+
+    # Build the same subdir-in-repo layout as the integration test
+    repo_root = tmp_path / "home"
+    claude_dir = repo_root / ".claude"
+    claude_dir.mkdir(parents=True)
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t.local",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t.local",
+    }
+    subprocess.run(["git", "init", str(repo_root)], env=env, check=True,
+                   capture_output=True)
+
+    # Clear cache so the test isn't influenced by other tests' cache entries
+    _REPO_PREFIX_CACHE.clear()
+    try:
+        # Case 1: repo-relative path with the prefix -> stripped
+        assert _to_claude_dir_relative(
+            str(claude_dir), ".claude/projects/foo/u.jsonl"
+        ) == "projects/foo/u.jsonl"
+
+        # Case 2: path without the prefix -> passes through (defensive)
+        assert _to_claude_dir_relative(
+            str(claude_dir), "other/path"
+        ) == "other/path"
+    finally:
+        _REPO_PREFIX_CACHE.clear()
+
+
+def test_to_repo_relative_prepends_prefix_when_subdir(tmp_path):
+    """Symmetric companion: git show <commit>:<path> needs REPO-relative
+    paths even when invoked via `-C claude_dir`. The helper must prepend
+    the prefix in the subdir case."""
+    from claude_session_backup.git_ops import (
+        _to_repo_relative, _REPO_PREFIX_CACHE,
+    )
+
+    repo_root = tmp_path / "home"
+    claude_dir = repo_root / ".claude"
+    claude_dir.mkdir(parents=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t.local",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t.local",
+    }
+    subprocess.run(["git", "init", str(repo_root)], env=env, check=True,
+                   capture_output=True)
+
+    _REPO_PREFIX_CACHE.clear()
+    try:
+        # claude_dir-relative -> repo-relative (prefix added)
+        assert _to_repo_relative(
+            str(claude_dir), "projects/foo/u.jsonl"
+        ) == ".claude/projects/foo/u.jsonl"
+
+        # If caller already passed the repo-relative form, don't double-prefix
+        assert _to_repo_relative(
+            str(claude_dir), ".claude/projects/foo/u.jsonl"
+        ) == ".claude/projects/foo/u.jsonl"
+    finally:
+        _REPO_PREFIX_CACHE.clear()
+
+
+def test_to_claude_dir_relative_noop_when_claude_dir_is_repo_root(tmp_path):
+    """When claude_dir IS the repo root, prefix is empty and the helper
+    must be a no-op (otherwise it'd corrupt every path)."""
+    from claude_session_backup.git_ops import (
+        _to_claude_dir_relative, _REPO_PREFIX_CACHE,
+    )
+
+    # claude_dir IS the repo root (the README's recommended setup)
+    claude_dir = tmp_path / "dot-claude"
+    claude_dir.mkdir()
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t.local",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t.local",
+    }
+    subprocess.run(["git", "init", str(claude_dir)], env=env, check=True,
+                   capture_output=True)
+
+    _REPO_PREFIX_CACHE.clear()
+    try:
+        assert _to_claude_dir_relative(
+            str(claude_dir), "projects/foo/u.jsonl"
+        ) == "projects/foo/u.jsonl"
+    finally:
+        _REPO_PREFIX_CACHE.clear()
+
+
+def test_git_list_deleted_jsonls_strips_repo_prefix_when_claude_dir_is_subdir(tmp_path):
+    """Bug repro: when ~/.claude/ is a subdir of the git repo (repo at ~/),
+    git emits paths like '.claude/projects/...' relative to repo root, but
+    csb's downstream calls pass them back to git via `-C claude_dir`,
+    expecting 'projects/...'. The translation must strip the repo prefix.
+
+    Discovered when csb update backfill-deleted reported "24 unreadable
+    from git" against a real ~/ -based repo: the cache had 26 paths with
+    .claude/projects/... that subsequent git ops couldn't find.
+    """
+    from claude_session_backup.git_ops import git_list_deleted_jsonls
+
+    # Build a sandboxed repo at the parent level (mirrors ~/ setup).
+    # ~/                          <- repo root
+    #   .claude/                  <- claude_dir (subdir, NOT repo root)
+    #     projects/<slug>/<uuid>.jsonl
+    repo_root = tmp_path / "home"
+    claude_dir = repo_root / ".claude"
+    proj_dir = claude_dir / "projects" / "subdir-test"
+    proj_dir.mkdir(parents=True)
+
+    uuid = "ffffffff-1111-2222-3333-444444444444"
+    rel_in_claude_dir = f"projects/subdir-test/{uuid}.jsonl"
+    abs_path = claude_dir / "projects" / "subdir-test" / f"{uuid}.jsonl"
+    abs_path.write_bytes(b'{"x":1}\n')
+
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t.local",
+        "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t.local",
+    }
+    # git init at the REPO ROOT (parent of claude_dir, not claude_dir itself)
+    subprocess.run(["git", "init", str(repo_root)], env=env, check=True,
+                   capture_output=True)
+    for k, v in [("commit.gpgsign", "false"), ("user.name", "test"),
+                 ("user.email", "t@t.local")]:
+        subprocess.run(["git", "-C", str(repo_root), "config", k, v],
+                       env=env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "add", "-A"],
+                   env=env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit",
+                    "--no-gpg-sign", "-m", "initial"],
+                   env=env, check=True, capture_output=True)
+    # Cull + commit deletion
+    abs_path.unlink()
+    subprocess.run(["git", "-C", str(repo_root), "add", "-A"],
+                   env=env, check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo_root), "commit",
+                    "--no-gpg-sign", "-m", "cull"],
+                   env=env, check=True, capture_output=True)
+
+    deletions = git_list_deleted_jsonls(str(claude_dir))
+    matching = [d for d in deletions if d["session_id"] == uuid]
+    assert len(matching) == 1, "should find the culled JSONL"
+    # KEY ASSERTION: the cached path must be claude_dir-relative, NOT
+    # repo-relative. Before the fix this came back as '.claude/projects/...'
+    assert matching[0]["jsonl_path"] == rel_in_claude_dir, (
+        f"path must be claude_dir-relative ('{rel_in_claude_dir}'), got "
+        f"'{matching[0]['jsonl_path']}' (the repo-root-relative form). "
+        f"This is the bug: downstream git_show_file_bytes(claude_dir, "
+        f"commit, path) cannot find the file when 'path' has the .claude/ "
+        f"prefix."
+    )
+
+
+def test_git_list_deleted_jsonls_excludes_subagent_jsonls(mock_claude_dir):
+    """The :(glob) pathspec must not match nested subagent JSONLs."""
+    from claude_session_backup.git_ops import git_list_deleted_jsonls
+
+    parent_uuid = "11111111-aaaa-bbbb-cccc-000000000001"
+    subagent_uuid = "22222222-aaaa-bbbb-cccc-000000000002"
+    parent_rel = f"projects/foo/{parent_uuid}.jsonl"
+    subagent_rel = f"projects/foo/{parent_uuid}/subagents/{subagent_uuid}.jsonl"
+
+    _commit_file(mock_claude_dir, parent_rel, b'{"x":1}\n', "add parent")
+    _commit_file(mock_claude_dir, subagent_rel, b'{"y":2}\n', "add subagent")
+    # Delete both
+    (mock_claude_dir / parent_rel).unlink()
+    (mock_claude_dir / subagent_rel).unlink()
+    _git(mock_claude_dir, "add", "-A")
+    _git(mock_claude_dir, "commit", "--no-gpg-sign", "-m", "cull both")
+
+    deletions = git_list_deleted_jsonls(str(mock_claude_dir))
+    uuids = {d["session_id"] for d in deletions}
+    assert parent_uuid in uuids
+    assert subagent_uuid not in uuids, "subagent JSONLs must be excluded by :(glob) pattern"
+
+
+def test_upsert_git_deleted_jsonl_insert_returns_true(tmp_path):
+    from claude_session_backup.index import open_db, init_schema, upsert_git_deleted_jsonl
+
+    conn = open_db(str(tmp_path / "cache.db"))
+    init_schema(conn)
+    inserted = upsert_git_deleted_jsonl(
+        conn, jsonl_path="projects/x/u.jsonl", session_id="u",
+        deleted_commit="abc123", deleted_at="2026-06-01T00:00:00+00:00",
+    )
+    conn.close()
+    assert inserted is True
+
+
+def test_upsert_git_deleted_jsonl_update_returns_false(tmp_path):
+    """Second upsert of the same path is an UPDATE, returns False."""
+    from claude_session_backup.index import open_db, init_schema, upsert_git_deleted_jsonl
+
+    conn = open_db(str(tmp_path / "cache.db"))
+    init_schema(conn)
+    upsert_git_deleted_jsonl(conn, "projects/x/u.jsonl", "u", "abc123")
+    second = upsert_git_deleted_jsonl(conn, "projects/x/u.jsonl", "u", "def456")
+    conn.close()
+    assert second is False
+
+
+def test_upsert_git_deleted_jsonl_preserves_extracted_flag(tmp_path):
+    """Re-upserting a row must NOT reset extracted_metadata to 0."""
+    from claude_session_backup.index import (
+        open_db, init_schema,
+        upsert_git_deleted_jsonl, mark_git_deleted_extracted,
+        list_git_deleted_jsonls,
+    )
+
+    conn = open_db(str(tmp_path / "cache.db"))
+    init_schema(conn)
+    upsert_git_deleted_jsonl(conn, "projects/x/u.jsonl", "u", "abc123")
+    mark_git_deleted_extracted(conn, "projects/x/u.jsonl")
+    # Re-upsert (simulating a later refresh that re-sees the same deletion)
+    upsert_git_deleted_jsonl(conn, "projects/x/u.jsonl", "u", "abc123",
+                              last_refreshed_at="2026-06-02T00:00:00Z")
+    rows = list_git_deleted_jsonls(conn)
+    conn.close()
+    assert len(rows) == 1
+    assert rows[0]["extracted_metadata"] == 1, "extracted flag must survive re-upsert"
+
+
+# ── Phase 4 (v0.3.11): cmd_backfill_deleted ───────────────────────────
+
+def test_extract_metadata_from_bytes_takes_session_id_from_param(mock_claude_dir):
+    """Phase 0 finding: extract_metadata reads session_id from filename.
+    The from_bytes variant must take session_id explicitly (not from blob)."""
+    from claude_session_backup.metadata import extract_metadata_from_bytes
+
+    blob = b'{"type":"custom-title","customTitle":"test","sessionId":"u-from-json"}\n'
+    meta = extract_metadata_from_bytes(blob, session_id="from-param", project="proj")
+    assert meta.session_id == "from-param", "must use parameter, not infer from blob"
+    assert meta.project == "proj"
+    assert meta.session_name == "test"
+
+
+def test_extract_metadata_from_bytes_parses_events(mock_claude_dir):
+    """The bytes variant must produce the same metadata as the file variant
+    for equivalent input."""
+    from claude_session_backup.metadata import (
+        extract_metadata, extract_metadata_from_bytes,
+    )
+    import tempfile
+
+    blob = (b'{"type":"custom-title","customTitle":"hello"}\n'
+            b'{"type":"user","timestamp":"2026-06-01T10:00:00Z",'
+            b'"cwd":"/c/proj","message":{"content":"hi"}}\n'
+            b'{"type":"assistant","timestamp":"2026-06-01T10:00:05Z",'
+            b'"cwd":"/c/proj"}\n')
+
+    # File-based reference
+    with tempfile.NamedTemporaryFile(suffix=".jsonl", delete=False) as tf:
+        tf.write(blob)
+        tf_path = Path(tf.name)
+    try:
+        file_meta = extract_metadata(tf_path)
+    finally:
+        tf_path.unlink(missing_ok=True)
+
+    # Bytes-based variant (with explicit session_id since the file path is gone)
+    bytes_meta = extract_metadata_from_bytes(blob, session_id=file_meta.session_id)
+
+    # Modulo session_id (driven by filename in the file variant), the
+    # parsed fields must match.
+    assert bytes_meta.session_name == file_meta.session_name == "hello"
+    assert bytes_meta.start_folder == file_meta.start_folder == "/c/proj"
+    assert bytes_meta.message_count == file_meta.message_count == 2
+    assert bytes_meta.folder_usage == file_meta.folder_usage
+
+
+@pytest.fixture
+def repo_with_culled_session(mock_claude_dir, tmp_path):
+    """A claude dir whose git history has one CULLED session (JSONL deleted
+    on disk + commit) plus an empty DB. The set-up for cmd_backfill_deleted."""
+    uuid = "abcdef00-1111-2222-3333-444444444444"
+    rel = f"projects/test-cull-proj/{uuid}.jsonl"
+    content = (b'{"type":"custom-title","customTitle":"culled-session"}\n'
+               b'{"type":"user","timestamp":"2026-06-01T10:00:00Z",'
+               b'"cwd":"/c/cull-test"}\n')
+    _commit_file(mock_claude_dir, rel, content, f"add {uuid[:8]}")
+    (mock_claude_dir / rel).unlink()
+    _git(mock_claude_dir, "add", "-A")
+    _git(mock_claude_dir, "commit", "--no-gpg-sign", "-m", f"cull {uuid[:8]}")
+
+    db = tmp_path / "backfill.db"
+    return mock_claude_dir, db, uuid, rel
+
+
+def _make_backfill_args(**kwargs):
+    import argparse
+    defaults = {
+        "claude_dir": None, "db": None, "quiet": True,
+        "dry_run": False, "full": False,
+    }
+    defaults.update(kwargs)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_backfill_deleted_synthesizes_row_for_culled_session(repo_with_culled_session):
+    """Headline Phase 4 case: a session culled from disk is now in git
+    history. backfill-deleted must synthesize a deleted-flagged row from
+    the historical blob."""
+    from claude_session_backup.commands import cmd_backfill_deleted
+    from claude_session_backup.index import open_db, init_schema, get_session
+
+    claude, db, uuid, rel = repo_with_culled_session
+    args = _make_backfill_args(claude_dir=str(claude), db=str(db))
+
+    rc = cmd_backfill_deleted(args)
+    assert rc == 0
+
+    conn = open_db(str(db))
+    init_schema(conn)
+    row = get_session(conn, uuid)
+    conn.close()
+
+    assert row is not None, "synthesized row missing for culled session"
+    assert row["session_id"] == uuid
+    assert row["session_name"] == "culled-session"
+    assert row["deleted_at"], "synthesized row must have deleted_at set"
+    assert row["start_folder"] == "/c/cull-test"
+
+
+def test_cmd_backfill_deleted_dry_run_writes_nothing(repo_with_culled_session):
+    """--dry-run must NOT insert any rows."""
+    from claude_session_backup.commands import cmd_backfill_deleted
+    from claude_session_backup.index import open_db, init_schema, get_session, count_git_deleted_jsonls
+
+    claude, db, uuid, rel = repo_with_culled_session
+    args = _make_backfill_args(claude_dir=str(claude), db=str(db), dry_run=True)
+
+    rc = cmd_backfill_deleted(args)
+    assert rc == 0
+
+    conn = open_db(str(db))
+    init_schema(conn)
+    # No sessions row
+    assert get_session(conn, uuid) is None
+    # No cache row either (dry run doesn't even write to git_deleted_jsonls)
+    assert count_git_deleted_jsonls(conn) == 0
+    conn.close()
+
+
+def test_cmd_backfill_deleted_skips_already_in_live_db(repo_with_culled_session):
+    """If the live sessions table already has a row for the UUID, just
+    flag the cache row as extracted and skip the re-import."""
+    from claude_session_backup.commands import cmd_backfill_deleted
+    from claude_session_backup.index import (
+        open_db, init_schema, upsert_session, count_git_deleted_jsonls,
+        list_git_deleted_jsonls,
+    )
+    from claude_session_backup.metadata import SessionMetadata
+
+    claude, db, uuid, rel = repo_with_culled_session
+
+    # Pre-populate the live DB with a row for this UUID
+    conn = open_db(str(db))
+    init_schema(conn)
+    meta = SessionMetadata(session_id=uuid, project="test-cull-proj")
+    meta.session_name = "pre-existing"
+    upsert_session(conn, meta, rel, 0, 0.0, "2026-06-01T00:00:00Z")
+    conn.close()
+
+    args = _make_backfill_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_backfill_deleted(args)
+    assert rc == 0
+
+    # The cache row should exist but be marked extracted (since the live
+    # row was already there).
+    conn = open_db(str(db))
+    extracted = list_git_deleted_jsonls(conn, extracted=1)
+    pending = list_git_deleted_jsonls(conn, extracted=0)
+    conn.close()
+    assert len(extracted) == 1
+    assert len(pending) == 0
+    assert extracted[0]["session_id"] == uuid
+
+
+def test_cmd_backfill_deleted_idempotent(repo_with_culled_session):
+    """Running backfill twice must not double-insert."""
+    from claude_session_backup.commands import cmd_backfill_deleted
+    from claude_session_backup.index import open_db, init_schema
+
+    claude, db, uuid, rel = repo_with_culled_session
+    args = _make_backfill_args(claude_dir=str(claude), db=str(db))
+
+    cmd_backfill_deleted(args)
+    cmd_backfill_deleted(args)  # second pass
+
+    conn = open_db(str(db))
+    n = conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?",
+                     (uuid,)).fetchone()[0]
+    conn.close()
+    assert n == 1, "second backfill pass must not create a duplicate"
+
+
+def test_cmd_update_backfill_deleted_via_cli_dispatcher(repo_with_culled_session):
+    """End-to-end: csb update backfill-deleted via the cli.main() entrypoint."""
+    from claude_session_backup.cli import main as cli_main
+
+    claude, db, uuid, rel = repo_with_culled_session
+    rc = cli_main([
+        "update", "backfill-deleted",
+        "--claude-dir", str(claude),
+        "--db", str(db),
+        "--quiet",
+    ])
+    assert rc == 0
+
+
+def test_cmd_backfill_deleted_auto_repairs_sparse_folder_usage(repo_with_culled_session):
+    """The 'past-rebuild fingerprint' case: a deleted-session live row exists
+    but its folder_usage was wiped by an old destructive rebuild. backfill
+    should auto-detect (sparse folder_usage + git has richer data) and
+    refresh the row in place."""
+    from claude_session_backup.commands import cmd_backfill_deleted
+    from claude_session_backup.index import (
+        open_db, init_schema, upsert_session, mark_deleted,
+    )
+    from claude_session_backup.metadata import SessionMetadata
+
+    claude, db, uuid, rel = repo_with_culled_session
+
+    # Pre-populate a SPARSE live row -- only 1 folder (the start_folder).
+    # This is what `csb list --deleted only` shows after a past
+    # destructive rebuild cascade-deleted the rich folder_usage.
+    conn = open_db(str(db))
+    init_schema(conn)
+    sparse_meta = SessionMetadata(session_id=uuid, project="test-cull-proj")
+    sparse_meta.session_name = "culled-session"  # name we know is in the blob
+    sparse_meta.start_folder = "/c/cull-test"
+    sparse_meta.folder_usage = {"/c/cull-test": 1}  # sparse: just the one
+    upsert_session(conn, sparse_meta, rel, 0, 0.0, "2026-06-01T00:00:00Z")
+    mark_deleted(conn, uuid, "2026-06-01T12:00:00Z")
+    pre_folder_count = conn.execute(
+        "SELECT COUNT(*) FROM folder_usage WHERE session_id = ?", (uuid,)
+    ).fetchone()[0]
+    conn.close()
+    assert pre_folder_count == 1, "fixture setup: row should be sparse"
+
+    # Add a second folder to the git blob so it has STRICTLY MORE data
+    # than the live sparse row. We commit a richer JSONL that replaces
+    # what was culled, then re-cull it.
+    richer = (b'{"type":"custom-title","customTitle":"culled-session"}\n'
+              b'{"type":"user","timestamp":"2026-06-01T10:00:00Z",'
+              b'"cwd":"/c/cull-test"}\n'
+              b'{"type":"assistant","timestamp":"2026-06-01T10:00:05Z",'
+              b'"cwd":"/c/cull-test/subdir"}\n'
+              b'{"type":"user","timestamp":"2026-06-01T10:01:00Z",'
+              b'"cwd":"/c/cull-test/subdir"}\n')
+    _commit_file(claude, rel, richer, "re-add with richer cwds")
+    (claude / rel).unlink()
+    _git(claude, "add", "-A")
+    _git(claude, "commit", "--no-gpg-sign", "-m", "re-cull richer version")
+
+    args = _make_backfill_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_backfill_deleted(args)
+    assert rc == 0
+
+    # The sparse row should now have its folder_usage refreshed from git.
+    conn = open_db(str(db))
+    post_folder_count = conn.execute(
+        "SELECT COUNT(*) FROM folder_usage WHERE session_id = ?", (uuid,)
+    ).fetchone()[0]
+    post_row = conn.execute(
+        "SELECT deleted_at FROM sessions WHERE session_id = ?", (uuid,)
+    ).fetchone()
+    conn.close()
+    assert post_folder_count > pre_folder_count, "folder_usage should have been refreshed from git"
+    assert post_row["deleted_at"], "deleted_at must survive the auto-repair"
+
+
+def test_cmd_backfill_deleted_leaves_intact_rows_alone(repo_with_culled_session):
+    """Rows whose folder_usage already has >=2 entries are NOT auto-repaired
+    (the gate is sparse-only). Avoids unnecessary rewrites."""
+    from claude_session_backup.commands import cmd_backfill_deleted
+    from claude_session_backup.index import (
+        open_db, init_schema, upsert_session, mark_deleted,
+    )
+    from claude_session_backup.metadata import SessionMetadata
+
+    claude, db, uuid, rel = repo_with_culled_session
+
+    # Pre-populate an INTACT live row -- 2+ folders already.
+    conn = open_db(str(db))
+    init_schema(conn)
+    rich_meta = SessionMetadata(session_id=uuid, project="test-cull-proj")
+    rich_meta.session_name = "culled-session"
+    rich_meta.start_folder = "/c/cull-test"
+    # 3 folders: above the sparse gate
+    rich_meta.folder_usage = {
+        "/c/cull-test": 100, "/c/cull-test/a": 50, "/c/cull-test/b": 20,
+    }
+    upsert_session(conn, rich_meta, rel, 999, 12345.0, "2026-06-01T00:00:00Z")
+    mark_deleted(conn, uuid, "2026-06-01T12:00:00Z")
+    pre_size = conn.execute(
+        "SELECT jsonl_size FROM sessions WHERE session_id = ?", (uuid,)
+    ).fetchone()[0]
+    pre_folder_count = conn.execute(
+        "SELECT COUNT(*) FROM folder_usage WHERE session_id = ?", (uuid,)
+    ).fetchone()[0]
+    conn.close()
+    assert pre_folder_count == 3
+
+    args = _make_backfill_args(claude_dir=str(claude), db=str(db))
+    rc = cmd_backfill_deleted(args)
+    assert rc == 0
+
+    # The intact row should be untouched -- same size, same folder count.
+    conn = open_db(str(db))
+    post_size = conn.execute(
+        "SELECT jsonl_size FROM sessions WHERE session_id = ?", (uuid,)
+    ).fetchone()[0]
+    post_folder_count = conn.execute(
+        "SELECT COUNT(*) FROM folder_usage WHERE session_id = ?", (uuid,)
+    ).fetchone()[0]
+    conn.close()
+    assert post_folder_count == pre_folder_count == 3, \
+        "intact row's folder_usage should NOT have been touched"
+    assert post_size == pre_size == 999, "intact row's jsonl_size should NOT have been overwritten"
+
+
+def test_list_git_deleted_jsonls_filters_by_extracted(tmp_path):
+    from claude_session_backup.index import (
+        open_db, init_schema,
+        upsert_git_deleted_jsonl, mark_git_deleted_extracted,
+        list_git_deleted_jsonls, count_git_deleted_jsonls,
+    )
+
+    conn = open_db(str(tmp_path / "cache.db"))
+    init_schema(conn)
+    upsert_git_deleted_jsonl(conn, "projects/a/u1.jsonl", "u1")
+    upsert_git_deleted_jsonl(conn, "projects/a/u2.jsonl", "u2")
+    upsert_git_deleted_jsonl(conn, "projects/a/u3.jsonl", "u3")
+    mark_git_deleted_extracted(conn, "projects/a/u2.jsonl")
+
+    assert count_git_deleted_jsonls(conn) == 3
+    assert count_git_deleted_jsonls(conn, extracted=0) == 2
+    assert count_git_deleted_jsonls(conn, extracted=1) == 1
+
+    pending = list_git_deleted_jsonls(conn, extracted=0)
+    assert {r["jsonl_path"] for r in pending} == {
+        "projects/a/u1.jsonl", "projects/a/u3.jsonl",
+    }
+    done = list_git_deleted_jsonls(conn, extracted=1)
+    assert {r["jsonl_path"] for r in done} == {"projects/a/u2.jsonl"}
+    conn.close()
+
+
 # ── Linux regression -- the byte-pure path must also work on POSIX ──────
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX regression check")

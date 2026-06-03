@@ -125,16 +125,20 @@ def test_init_schema_on_fresh_db_does_not_run_migrations(tmp_path, capsys):
 # ── Upgrade path: v2 -> v3 ────────────────────────────────────────────
 
 
-def test_apply_pending_from_v2_to_v3(tmp_path):
+def test_apply_pending_from_v2_to_current(tmp_path):
     conn = _make_v2_db(str(tmp_path / "old.db"))
     assert _get_version(conn) == 2
     assert not _has_table(conn, "session_sources")
 
     new_version = migrations.apply_pending(conn, quiet=True)
 
-    assert new_version == 3
-    assert _get_version(conn) == 3
+    assert new_version == SCHEMA_VERSION
+    assert _get_version(conn) == SCHEMA_VERSION
+    # v3 migration: session_sources
     assert _has_table(conn, "session_sources")
+    # v4 migration (v0.3.11): git_deleted_jsonls cache
+    if SCHEMA_VERSION >= 4:
+        assert _has_table(conn, "git_deleted_jsonls")
 
 
 def test_apply_pending_from_v2_creates_indexes(tmp_path):
@@ -151,7 +155,10 @@ def test_apply_pending_emits_notice_when_not_quiet(tmp_path, capsys):
     migrations.apply_pending(conn, quiet=False)
 
     captured = capsys.readouterr()
+    # Every applied migration should announce itself.
     assert "csb: migrated DB schema to v3" in captured.out
+    if SCHEMA_VERSION >= 4:
+        assert "csb: migrated DB schema to v4" in captured.out
 
 
 def test_apply_pending_quiet_emits_nothing(tmp_path, capsys):
@@ -170,8 +177,10 @@ def test_apply_pending_idempotent(tmp_path):
     v_a = migrations.apply_pending(conn, quiet=True)
     v_b = migrations.apply_pending(conn, quiet=True)
 
-    assert v_a == v_b == 3
+    assert v_a == v_b == SCHEMA_VERSION
     assert _has_table(conn, "session_sources")
+    if SCHEMA_VERSION >= 4:
+        assert _has_table(conn, "git_deleted_jsonls")
 
 
 def test_apply_pending_second_run_is_silent(tmp_path, capsys):
@@ -276,4 +285,51 @@ def test_session_sources_unique_constraint(tmp_path):
             "INSERT INTO session_sources "
             "(session_id, project, source_type, source_path) VALUES (?, ?, ?, ?)",
             ("sess-1", "proj", "convo", "/x.jsonl"),
+        )
+
+
+# ── v3 -> v4 (v0.3.11): git_deleted_jsonls cache ──────────────────────
+
+def test_v4_adds_git_deleted_jsonls(tmp_path):
+    """v3 -> v4 migration creates the git_deleted_jsonls cache table."""
+    conn = _make_v2_db(str(tmp_path / "old.db"))
+    migrations.apply_pending(conn, quiet=True)
+    assert _has_table(conn, "git_deleted_jsonls")
+
+
+def test_v4_table_has_expected_columns(tmp_path):
+    """Schema-locked: future migrations may add columns, but the v4 baseline
+    set must be present (callers depend on these names)."""
+    conn = _make_v2_db(str(tmp_path / "old.db"))
+    migrations.apply_pending(conn, quiet=True)
+    cols = {row["name"] for row in
+            conn.execute("PRAGMA table_info(git_deleted_jsonls)").fetchall()}
+    expected = {
+        "jsonl_path", "session_id", "last_commit", "deleted_commit",
+        "deleted_at", "last_seen_size", "last_seen_mtime",
+        "extracted_metadata", "last_refreshed_at",
+    }
+    assert expected.issubset(cols), f"missing columns: {expected - cols}"
+
+
+def test_v4_indexes_present(tmp_path):
+    conn = _make_v2_db(str(tmp_path / "old.db"))
+    migrations.apply_pending(conn, quiet=True)
+    assert _has_index(conn, "idx_git_deleted_jsonls_session")
+    assert _has_index(conn, "idx_git_deleted_jsonls_extracted")
+
+
+def test_v4_primary_key_on_jsonl_path(tmp_path):
+    """Duplicate jsonl_path rows must fail at INSERT (PK constraint)."""
+    conn = _make_v2_db(str(tmp_path / "old.db"))
+    migrations.apply_pending(conn, quiet=True)
+    conn.execute(
+        "INSERT INTO git_deleted_jsonls (jsonl_path, session_id) VALUES (?, ?)",
+        ("projects/foo/u.jsonl", "uuid-1"),
+    )
+    conn.commit()
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO git_deleted_jsonls (jsonl_path, session_id) VALUES (?, ?)",
+            ("projects/foo/u.jsonl", "uuid-2"),
         )

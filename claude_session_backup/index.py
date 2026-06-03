@@ -2,7 +2,7 @@
 SQLite index -- rebuildable metadata cache for fast queries.
 
 This is NOT the source of truth. The git repository is.
-If this database is lost, `csb rebuild-index` reconstructs it.
+If this database is lost, `csb update rebuild-index` reconstructs it.
 """
 
 import sqlite3
@@ -11,7 +11,7 @@ from typing import Optional
 
 from .metadata import SessionMetadata
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     jsonl_mtime REAL DEFAULT 0,
     last_scanned_at TEXT,
     deleted_at TEXT,
-    last_git_commit TEXT
+    last_git_commit TEXT,
+    metadata_validated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS folder_usage (
@@ -72,12 +73,26 @@ CREATE TABLE IF NOT EXISTS session_sources (
     UNIQUE (session_id, source_path)
 );
 
+CREATE TABLE IF NOT EXISTS git_deleted_jsonls (
+    jsonl_path TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    last_commit TEXT,
+    deleted_commit TEXT,
+    deleted_at TEXT,
+    last_seen_size INTEGER,
+    last_seen_mtime REAL,
+    extracted_metadata INTEGER NOT NULL DEFAULT 0,
+    last_refreshed_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_last_active ON sessions(last_active_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
 CREATE INDEX IF NOT EXISTS idx_sessions_deleted ON sessions(deleted_at);
 CREATE INDEX IF NOT EXISTS idx_session_sources_session ON session_sources(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_sources_project ON session_sources(project);
 CREATE INDEX IF NOT EXISTS idx_session_sources_fts5 ON session_sources(fts5_indexed_at);
+CREATE INDEX IF NOT EXISTS idx_git_deleted_jsonls_session ON git_deleted_jsonls(session_id);
+CREATE INDEX IF NOT EXISTS idx_git_deleted_jsonls_extracted ON git_deleted_jsonls(extracted_metadata);
 """
 
 
@@ -130,13 +145,20 @@ def init_schema(conn: sqlite3.Connection, quiet: bool = False):
 def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
                    jsonl_path: str = "", jsonl_size: int = 0,
                    jsonl_mtime: float = 0.0, scanned_at: str = ""):
-    """Insert or update a session in the index."""
+    """Insert or update a session in the index.
+
+    Every successful upsert sets ``metadata_validated_at = scanned_at``
+    because we just re-extracted metadata from source-of-truth (a live
+    JSONL or a historical git blob). The display surfaces this as
+    ``val: YY-MM-DD`` so users can tell verified-recent rows from stale.
+    """
     conn.execute("""
         INSERT INTO sessions (
             session_id, project, session_name, start_folder,
             started_at, last_active_at, last_user_at, message_count, tool_call_count,
-            claude_version, jsonl_path, jsonl_size, jsonl_mtime, last_scanned_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            claude_version, jsonl_path, jsonl_size, jsonl_mtime, last_scanned_at, deleted_at,
+            metadata_validated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             session_name = COALESCE(excluded.session_name, sessions.session_name),
             start_folder = COALESCE(excluded.start_folder, sessions.start_folder),
@@ -149,12 +171,14 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
             jsonl_size = excluded.jsonl_size,
             jsonl_mtime = excluded.jsonl_mtime,
             last_scanned_at = excluded.last_scanned_at,
-            deleted_at = NULL
+            deleted_at = NULL,
+            metadata_validated_at = excluded.metadata_validated_at
     """, (
         meta.session_id, meta.project, meta.session_name, meta.start_folder,
         meta.started_at, meta.last_active_at, meta.last_user_at,
         meta.message_count, meta.tool_call_count,
         meta.claude_version, jsonl_path, jsonl_size, jsonl_mtime, scanned_at,
+        scanned_at,  # metadata_validated_at == scanned_at: we just re-extracted
     ))
 
     # Update folder usage
@@ -243,6 +267,89 @@ def mark_deleted(conn: sqlite3.Connection, session_id: str, deleted_at: str):
         (deleted_at, session_id),
     )
     conn.commit()
+
+
+def snapshot_deleted_sessions(conn: sqlite3.Connection) -> list[dict]:
+    """Return every deleted-session row plus its folder_usage rows.
+
+    Used by ``cmd_rebuild_index`` to preserve deleted-session knowledge
+    across a destructive rebuild: snapshot before the wipe, re-insert
+    afterwards for any UUIDs the rebuild's live-FS scan didn't repopulate.
+
+    Each output dict has the sessions-row columns AND a ``_folders`` key
+    holding the matching folder_usage rows as dicts. The ``_folders`` key
+    is consumed by ``restore_deleted_snapshot``; ignore it elsewhere.
+    """
+    rows = conn.execute(
+        "SELECT * FROM sessions WHERE deleted_at IS NOT NULL"
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        folders = conn.execute(
+            "SELECT folder_path, usage_count, is_start_folder "
+            "FROM folder_usage WHERE session_id = ?",
+            (r["session_id"],),
+        ).fetchall()
+        d["_folders"] = [dict(f) for f in folders]
+        out.append(d)
+    return out
+
+
+def restore_deleted_snapshot(conn: sqlite3.Connection,
+                              snapshot: list[dict]) -> int:
+    """Re-insert snapshot rows for UUIDs not already in the live DB.
+
+    Called by ``cmd_rebuild_index`` after the live-FS rescan. Sessions
+    the rescan found (because their JSONL is on disk) are left alone --
+    only genuinely-missing UUIDs from the snapshot get re-inserted. The
+    INSERT uses the live schema's column list, so legacy snapshot rows
+    with stale columns drop them gracefully.
+
+    Returns count of rows actually re-inserted (excludes
+    already-present skips).
+    """
+    if not snapshot:
+        return 0
+
+    # Probe live schema for column whitelist (handles schema drift across
+    # csb versions: snapshot from old schema -> new schema may have added
+    # or removed columns; only keep the intersection).
+    live_cols = {row["name"] for row in
+                 conn.execute("PRAGMA table_info(sessions)").fetchall()}
+
+    restored = 0
+    for d in snapshot:
+        sid = d["session_id"]
+        existing = conn.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ?", (sid,)
+        ).fetchone()
+        if existing:
+            continue
+
+        folders = d.pop("_folders", [])
+
+        # Build INSERT from columns the snapshot AND live schema both have
+        cols = [k for k in d.keys()
+                if not k.startswith("_") and k in live_cols]
+        placeholders = ", ".join("?" for _ in cols)
+        col_names = ", ".join(cols)
+        conn.execute(
+            f"INSERT INTO sessions ({col_names}) VALUES ({placeholders})",
+            tuple(d[k] for k in cols),
+        )
+
+        for f in folders:
+            conn.execute(
+                "INSERT INTO folder_usage "
+                "(session_id, folder_path, usage_count, is_start_folder) "
+                "VALUES (?, ?, ?, ?)",
+                (sid, f["folder_path"], f["usage_count"], f["is_start_folder"]),
+            )
+        restored += 1
+
+    conn.commit()
+    return restored
 
 
 # Whitelist of allowed ORDER BY clauses for list_sessions().
@@ -795,3 +902,113 @@ def search_sessions(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
         results.append(session)
 
     return results
+
+
+# ── git_deleted_jsonls cache (schema v4 / v0.3.11 backfill work) ───────
+
+def upsert_git_deleted_jsonl(
+    conn: sqlite3.Connection,
+    jsonl_path: str,
+    session_id: str,
+    deleted_commit: Optional[str] = None,
+    deleted_at: Optional[str] = None,
+    last_commit: Optional[str] = None,
+    last_seen_size: Optional[int] = None,
+    last_seen_mtime: Optional[float] = None,
+    last_refreshed_at: Optional[str] = None,
+) -> bool:
+    """Insert-or-update one row in the git_deleted_jsonls cache.
+
+    Returns True if a new row was inserted, False if an existing row was
+    updated. Callers use this to count new-vs-known deletions during a
+    backfill refresh.
+
+    Preserves the ``extracted_metadata`` flag across updates -- don't
+    reset it to 0 if a row is already marked extracted (the historical
+    blob didn't change just because we re-scanned git).
+    """
+    existing = conn.execute(
+        "SELECT extracted_metadata FROM git_deleted_jsonls WHERE jsonl_path = ?",
+        (jsonl_path,),
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO git_deleted_jsonls "
+            "(jsonl_path, session_id, deleted_commit, deleted_at, "
+            " last_commit, last_seen_size, last_seen_mtime, "
+            " extracted_metadata, last_refreshed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)",
+            (jsonl_path, session_id, deleted_commit, deleted_at,
+             last_commit, last_seen_size, last_seen_mtime, last_refreshed_at),
+        )
+        conn.commit()
+        return True
+
+    # Update path: refresh the git-side data but keep extracted_metadata.
+    conn.execute(
+        "UPDATE git_deleted_jsonls SET "
+        " session_id = ?, deleted_commit = ?, deleted_at = ?, "
+        " last_commit = COALESCE(?, last_commit), "
+        " last_seen_size = COALESCE(?, last_seen_size), "
+        " last_seen_mtime = COALESCE(?, last_seen_mtime), "
+        " last_refreshed_at = ? "
+        "WHERE jsonl_path = ?",
+        (session_id, deleted_commit, deleted_at,
+         last_commit, last_seen_size, last_seen_mtime,
+         last_refreshed_at, jsonl_path),
+    )
+    conn.commit()
+    return False
+
+
+def list_git_deleted_jsonls(
+    conn: sqlite3.Connection,
+    extracted: Optional[int] = None,
+) -> list[dict]:
+    """Return git_deleted_jsonls rows. Filter by extracted_metadata if set.
+
+    ``extracted=0`` -> only rows still pending metadata extraction
+    ``extracted=1`` -> only rows already extracted
+    ``extracted=None`` (default) -> all rows
+    """
+    if extracted is None:
+        rows = conn.execute(
+            "SELECT * FROM git_deleted_jsonls ORDER BY jsonl_path"
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM git_deleted_jsonls "
+            "WHERE extracted_metadata = ? ORDER BY jsonl_path",
+            (int(extracted),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_git_deleted_jsonls(
+    conn: sqlite3.Connection,
+    extracted: Optional[int] = None,
+) -> int:
+    """Count git_deleted_jsonls rows. Filter by extracted_metadata if set."""
+    if extracted is None:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM git_deleted_jsonls"
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM git_deleted_jsonls WHERE extracted_metadata = ?",
+            (int(extracted),),
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def mark_git_deleted_extracted(
+    conn: sqlite3.Connection,
+    jsonl_path: str,
+) -> None:
+    """Flip extracted_metadata to 1 for a given path. No-op if the row is missing."""
+    conn.execute(
+        "UPDATE git_deleted_jsonls SET extracted_metadata = 1 "
+        "WHERE jsonl_path = ?",
+        (jsonl_path,),
+    )
+    conn.commit()

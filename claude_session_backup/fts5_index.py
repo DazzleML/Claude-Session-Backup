@@ -10,7 +10,7 @@ session import.
 
 The orchestrator is intentionally explicit -- no hidden background
 indexing, no triggers in the main DB. ``csb backup`` does NOT call
-this (would slow the hook). Users opt in via ``csb build-fts5`` or
+this (would slow the hook). Users opt in via ``csb update build-fts5`` or
 the future ``csb backup --refresh-fts5`` flag.
 
 Source of truth (per design doc):

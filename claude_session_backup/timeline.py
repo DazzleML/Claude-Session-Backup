@@ -133,7 +133,8 @@ def _find_max_usage_folder(folders: list[dict]) -> Optional[str]:
 
 # ── Purge countdown ────────────────────────────────────────────────
 
-def purge_countdown(jsonl_mtime: float, cleanup_days: int) -> tuple[Optional[int], str]:
+def purge_countdown(jsonl_mtime: float, cleanup_days: int,
+                    deleted_at: Optional[str] = None) -> tuple[Optional[int], str]:
     """
     Calculate days remaining before Claude Code would purge this session.
 
@@ -143,6 +144,10 @@ def purge_countdown(jsonl_mtime: float, cleanup_days: int) -> tuple[Optional[int
     Args:
         jsonl_mtime: File modification time as Unix timestamp
         cleanup_days: Claude Code's cleanupPeriodDays setting
+        deleted_at: ISO timestamp string -- if set, the purge has already
+            happened. Changes the wording from "OVERDUE by Nd" (which
+            implies "should have been culled but wasn't") to "PURGED Nd
+            ago" (which accurately describes the past event).
 
     Returns:
         (days_remaining, purge_text)
@@ -160,6 +165,9 @@ def purge_countdown(jsonl_mtime: float, cleanup_days: int) -> tuple[Optional[int
         return days, f"(purge in {days}d)"
     else:
         overdue = abs(days)
+        if deleted_at:
+            # The purge already happened; describe the past, not the future.
+            return days, f"(PURGED {overdue}d ago)"
         return days, f"(OVERDUE by {overdue}d)"
 
 
@@ -236,7 +244,7 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0,
     if ts_started:
         purge_text = ""
         if cleanup_days > 0 and mtime > 0:
-            _, purge_text = purge_countdown(mtime, cleanup_days)
+            _, purge_text = purge_countdown(mtime, cleanup_days, deleted_at=deleted)
             if purge_text:
                 purge_text = f" {purge_text}"
         lines.append(f"       started: {ts_started}{purge_text}")
@@ -269,11 +277,63 @@ def format_session_line(session: dict, index: int, cleanup_days: int = 0,
     version = session.get("claude_version")
     if version:
         meta_parts.append(f"v{version}")
+    validated = _format_validated_date(session.get("metadata_validated_at"))
+    if validated:
+        meta_parts.append(f"val: {validated}")
+    meta_text = f"       {' | '.join(meta_parts)}"
+
+    # Width-aware layout: if the combined "<meta> | restore: <cmd>" line
+    # fits in the console width, keep it on one line (compact). Otherwise
+    # split -- the restore command on its own line keeps the UUID
+    # unbroken (double-click-to-copy friendly).
     if deleted:
-        meta_parts.append(f"restore: claude --resume {full_id}")
-    lines.append(f"       {' | '.join(meta_parts)}")
+        restore_text = f"restore: claude --resume {full_id}"
+        combined = f"{meta_text} | {restore_text}"
+        width = _console_width()
+        if len(combined) <= width:
+            lines.append(combined)
+        else:
+            lines.append(meta_text)
+            lines.append(f"       {restore_text}")
+    else:
+        lines.append(meta_text)
 
     return "\n".join(lines)
+
+
+def _console_width(default: int = 120) -> int:
+    """Detect console column width, defaulting to ``default`` if undetectable.
+
+    Used for width-aware row layout (one-line vs two-line for deleted
+    sessions' restore command). Defaults to 120 -- modern terminals
+    are almost always at least that wide, and the fallback applies
+    only in subprocess/pipe contexts where the visual layout matters
+    less anyway.
+    """
+    import shutil
+    return shutil.get_terminal_size((default, 24)).columns
+
+
+def _format_validated_date(iso: Optional[str]) -> Optional[str]:
+    """Render a metadata_validated_at ISO timestamp as a compact form.
+
+    Drops leading zeros from month/day to save horizontal space:
+    ``2026-06-02`` -> ``26-6-2``, ``2026-12-15`` -> ``26-12-15``.
+
+    Returns None for missing/malformed input -- the caller omits the
+    ``val:`` field rather than show a partial value.
+    """
+    if not iso:
+        return None
+    try:
+        # The stored form is ISO 8601, optionally with timezone. Take
+        # the date portion (first 10 chars), drop the century (next 2),
+        # and strip leading zeros from month + day.
+        ymd = iso[:10][2:]  # "2026-06-02T10:00:00Z" -> "26-06-02"
+        y, m, d = ymd.split("-")
+        return f"{y}-{int(m)}-{int(d)}"
+    except (TypeError, IndexError, ValueError):
+        return None
 
 
 # ── Rich formatting ────────────────────────────────────────────────
@@ -321,7 +381,7 @@ def render_session_rich(console: Console, session: dict, index: int,
     days_remaining = None
     purge_text = ""
     if cleanup_days > 0 and mtime > 0:
-        days_remaining, purge_text = purge_countdown(mtime, cleanup_days)
+        days_remaining, purge_text = purge_countdown(mtime, cleanup_days, deleted_at=deleted)
     purge_style = _purge_style(days_remaining)
 
     # Collect folder data
@@ -388,10 +448,38 @@ def render_session_rich(console: Console, session: dict, index: int,
     version = session.get("claude_version")
     if version:
         meta.append(f" | v{version}", style="dim")
+    validated = _format_validated_date(session.get("metadata_validated_at"))
+    if validated:
+        meta.append(f" | val: {validated}", style="dim")
+    # Width-aware: if the combined meta + restore fits, append inline.
+    # Otherwise emit them on separate lines.
+    #
+    # no_wrap=True on every console.print(meta) here: Rich would otherwise
+    # soft-wrap the meta Text when len(meta.plain) > console.width, emitting
+    # an unindented continuation line that LOOKS like a third row (the
+    # "val: 26-6-3" on its own line bug from v0.3.11 probe). We've already
+    # made the explicit one-line-vs-two-line decision above; let the
+    # terminal handle any further visual overflow rather than Rich
+    # injecting bare newlines into our composed layout.
     if deleted:
-        meta.append(f" | restore: ", style="dim")
-        meta.append(f"claude --resume {full_id}", style="bold yellow")
-    console.print(meta)
+        restore_plain = f" | restore: claude --resume {full_id}"
+        # Rich's Text.__len__ counts visible characters, not ANSI codes.
+        # Add the would-be inline restore length to the current meta length.
+        combined_len = len(meta.plain) + len(restore_plain)
+        # Use console.width if Rich knows it, else fall back to our helper.
+        width = console.width if getattr(console, "width", 0) else _console_width()
+        if combined_len <= width:
+            meta.append(" | restore: ", style="dim")
+            meta.append(f"claude --resume {full_id}", style="bold yellow")
+            console.print(meta, no_wrap=True)
+        else:
+            console.print(meta, no_wrap=True)
+            restore_line = Text("       ")
+            restore_line.append("restore: ", style="dim")
+            restore_line.append(f"claude --resume {full_id}", style="bold yellow")
+            console.print(restore_line, no_wrap=True)
+    else:
+        console.print(meta, no_wrap=True)
 
 
 # ── Timeline renderers ─────────────────────────────────────────────
