@@ -500,12 +500,20 @@ def cmd_check(args) -> int:
     return CHECK_GAP_EXIT
 
 
-def _resolve_session_or_exit(conn, query: str) -> tuple[str | None, int]:
+def _resolve_session_or_exit(
+    conn, query: str, miss_ok: bool = False
+) -> tuple[str | None, int]:
     """Resolve a session-ID input via ``ids.resolve_session_id``.
 
     Returns ``(full_uuid, 0)`` on success. On any resolver failure, prints
     the appropriate error to stderr and returns ``(None, exit_code)`` --
     the caller closes the connection and propagates the exit code.
+
+    ``miss_ok=True`` (#42): a plain no-match or a non-ID-shaped input
+    returns ``(None, 0)`` SILENTLY so the caller can fall through to the
+    multi-modal ``_resolve_session_query`` (names, paths, keywords).
+    Ambiguous ID matches still print and return exit code 2 -- ambiguity
+    is a real error in every mode.
 
     Exit codes match standard conventions:
       - 1: no session found
@@ -524,9 +532,13 @@ def _resolve_session_or_exit(conn, query: str) -> tuple[str | None, int]:
         print(format_ambiguous_error(e), file=sys.stderr)
         return None, 2
     except NoSuchSessionID as e:
+        if miss_ok:
+            return None, 0
         print(f"No session found matching '{e.query}'", file=sys.stderr)
         return None, 1
     except InvalidSessionIDInput as e:
+        if miss_ok:
+            return None, 0
         print(f"Error: {e}", file=sys.stderr)
         return None, 2
 
@@ -2465,7 +2477,7 @@ def _launch_viewer(viewer: dict, session_value: str) -> int:
         return 1
 
 
-def _resolve_view_query(query: str, conn, claude_dir: str):
+def _resolve_session_query(query: str, conn, claude_dir: str):
     """Resolve a user query to a session row (multi-modal, #14).
 
     Resolution order (richest-match first):
@@ -2518,7 +2530,19 @@ def _resolve_view_query(query: str, conn, claude_dir: str):
         return None, (f"UUID extracted from folder name ({m.group(1)}) "
                       f"but no matching session")
 
-    results = search_sessions(conn, query, limit=10)
+    # Exact session-name match WINS over substring results (#42): this is
+    # Claude Code's own /resume semantics (searchSessionsByCustomTitle with
+    # exact:true), and csb's session_name IS the JSONL customTitle, so the
+    # two agree by construction. Without this rung, a full session name
+    # would substring-match itself AND its keyword cousins -> candidates
+    # noise where Claude resumes directly.
+    results = search_sessions(conn, query, limit=50)
+    exact = [s for s in results if (s.get("session_name") or "") == query]
+    if len(exact) == 1:
+        return exact[0], "name-exact"
+    if len(exact) > 1:
+        return exact, "candidates:name-exact"
+    results = results[:10]
     if len(results) == 1:
         return results[0], "search"
     if len(results) > 1:
@@ -2563,7 +2587,7 @@ def cmd_view(args) -> int:
             print(format_timeline(sessions))
         return 0
 
-    result, method = _resolve_view_query(query, conn, config["claude_dir"])
+    result, method = _resolve_session_query(query, conn, config["claude_dir"])
     if result is None:
         print(f"Error: {method}", file=sys.stderr)
         conn.close()
@@ -2709,24 +2733,45 @@ def _transcript_is_resumable(jsonl_full_path: Path) -> tuple[bool, str]:
 
 
 def cmd_resume(args) -> int:
-    """Launch claude --resume with the full session UUID."""
+    """Launch claude --resume with the full session UUID.
+
+    Accepts every identifier `csb view` accepts (#42): UUID/prefix (the
+    historical surface), exact session NAME (Claude Code's own /resume
+    title semantics -- csb resolves it to the UUID, so Claude always
+    receives the one format that is unconditionally direct), .jsonl path,
+    directory, sesslog folder name, or free-text keyword.
+    """
     from .pathkit import derive_start_at
 
     config = _get_config(args)
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    full_id, exit_code = _resolve_session_or_exit(conn, args.session_id)
-    if full_id is None:
+    query = args.session_id
+    # Historical UUID/prefix resolver first (prefix/suffix matching,
+    # ambiguity reporting with exit code 2). miss_ok: a plain no-match or
+    # non-ID-shaped input (a session NAME, path, keyword) falls through to
+    # the multi-modal resolver instead of erroring (#42).
+    full_id, exit_code = _resolve_session_or_exit(conn, query, miss_ok=True)
+    if full_id is None and exit_code:
         conn.close()
         return exit_code
-
-    session = get_session(conn, full_id)
+    session = get_session(conn, full_id) if full_id else None
+    if session is None:
+        result, method = _resolve_session_query(
+            query, conn, config["claude_dir"]
+        )
+        if result is None:
+            print(f"Error: {method}", file=sys.stderr)
+            conn.close()
+            return 1
+        if isinstance(result, list):
+            label = method.split(":", 1)[1] if ":" in method else method
+            _show_view_candidates(result, query, label)
+            conn.close()
+            return 1
+        session = result
     conn.close()
-
-    if not session:
-        print(f"No session found matching '{args.session_id}'", file=sys.stderr)
-        return 1
 
     full_id = session["session_id"]
     name = session.get("session_name") or "(unnamed)"

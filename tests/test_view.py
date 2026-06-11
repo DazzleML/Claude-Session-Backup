@@ -13,7 +13,7 @@ import pytest
 from claude_session_backup.commands import (
     _find_viewer,
     _launch_viewer,
-    _resolve_view_query,
+    _resolve_session_query,
     cmd_view,
 )
 from claude_session_backup.index import init_schema, open_db, upsert_session
@@ -136,12 +136,12 @@ def test_find_viewer_program_files_standard_install(
     assert found == {"mode": "binary", "path": str(exe)}
 
 
-# ── _resolve_view_query ─────────────────────────────────────────────────
+# ── _resolve_session_query ─────────────────────────────────────────────────
 
 
 def test_resolve_uuid_prefix(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
-    session, method = _resolve_view_query("aaaa0001", conn, str(claude))
+    session, method = _resolve_session_query("aaaa0001", conn, str(claude))
     assert method == "uuid"
     assert session["session_id"] == UUID_A
     conn.close()
@@ -150,7 +150,7 @@ def test_resolve_uuid_prefix(tmp_path):
 def test_resolve_absolute_jsonl_path(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
     p = claude / f"projects/C--code-viewproj/{UUID_A}.jsonl"
-    session, method = _resolve_view_query(str(p), conn, str(claude))
+    session, method = _resolve_session_query(str(p), conn, str(claude))
     assert method == "path"
     assert session["session_id"] == UUID_A
     conn.close()
@@ -159,7 +159,7 @@ def test_resolve_absolute_jsonl_path(tmp_path):
 def test_resolve_sesslog_folder_name(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
     name = f"VIEWPROJ__some-title__{UUID_A}_Extreme"
-    session, method = _resolve_view_query(name, conn, str(claude))
+    session, method = _resolve_session_query(name, conn, str(claude))
     assert method == "sesslog-name"
     assert session["session_id"] == UUID_A
     conn.close()
@@ -167,7 +167,7 @@ def test_resolve_sesslog_folder_name(tmp_path):
 
 def test_resolve_free_text_unique(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
-    session, method = _resolve_view_query("alpha-build", conn, str(claude))
+    session, method = _resolve_session_query("alpha-build", conn, str(claude))
     assert method == "search"
     assert session["session_id"] == UUID_A
     conn.close()
@@ -175,7 +175,7 @@ def test_resolve_free_text_unique(tmp_path):
 
 def test_resolve_free_text_multi_returns_candidates(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
-    result, method = _resolve_view_query("session", conn, str(claude))
+    result, method = _resolve_session_query("session", conn, str(claude))
     assert isinstance(result, list) and len(result) == 2
     assert method == "candidates:search"
     conn.close()
@@ -185,7 +185,7 @@ def test_resolve_directory_by_folder_usage(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
     workdir = tmp_path / "workdir"
     workdir.mkdir()
-    session, method = _resolve_view_query(str(workdir), conn, str(claude))
+    session, method = _resolve_session_query(str(workdir), conn, str(claude))
     assert method == "folder"
     assert session["session_id"] == UUID_A
     conn.close()
@@ -193,9 +193,50 @@ def test_resolve_directory_by_folder_usage(tmp_path):
 
 def test_resolve_no_match(tmp_path):
     claude, db, conn = _make_view_env(tmp_path)
-    result, reason = _resolve_view_query("zzz-no-such-thing", conn, str(claude))
+    result, reason = _resolve_session_query("zzz-no-such-thing", conn, str(claude))
     assert result is None
     assert "no sessions match" in reason
+    conn.close()
+
+
+def test_resolve_exact_name_match(tmp_path):
+    """#42: an exact session-name query resolves directly (Claude Code's
+    own /resume exact-title semantics)."""
+    claude, db, conn = _make_view_env(tmp_path)
+    session, method = _resolve_session_query(
+        "alpha-build-session", conn, str(claude)
+    )
+    assert method == "name-exact"
+    assert session["session_id"] == UUID_A
+    conn.close()
+
+
+def test_resolve_exact_name_beats_substring_matches(tmp_path):
+    """#42: the exact name wins even when it ALSO substring-matches other
+    sessions -- direct resolve, not a candidates list."""
+    from claude_session_backup.index import upsert_session as _upsert
+    claude, db, conn = _make_view_env(tmp_path)
+    # A third session whose name CONTAINS the full name of session A,
+    # so a pure substring search would return 2 candidates.
+    uuid_c = "cccc0003-1111-2222-3333-444444444444"
+    _upsert(
+        conn,
+        SessionMetadata(
+            session_id=uuid_c,
+            session_name="alpha-build-session-redux-part-two",
+            project="C--code-viewproj",
+        ),
+        jsonl_path=f"projects/C--code-viewproj/{uuid_c}.jsonl",
+        jsonl_size=10, jsonl_mtime=1700000002.0,
+        scanned_at="2026-05-01T10:00:00Z",
+    )
+    session, method = _resolve_session_query(
+        "alpha-build-session", conn, str(claude)
+    )
+    assert method == "name-exact", (
+        "exact name must resolve directly, not return candidates"
+    )
+    assert session["session_id"] == UUID_A
     conn.close()
 
 
@@ -381,3 +422,104 @@ def test_launch_viewer_binary_detached(monkeypatch):
     if os.name == "nt":
         import subprocess
         assert calls["kw"]["creationflags"] & subprocess.DETACHED_PROCESS
+
+# == #42: csb resume accepts every identifier csb view accepts ==============
+#
+# Claude Code's native surface (verified in resume.tsx): full UUID, or
+# exact custom-title match. csb resolves names/paths/keywords to the UUID
+# via the index and always hands claude --resume the full UUID.
+
+
+def _resume_args(db, claude, **kw):
+    defaults = dict(
+        session_id=None, claude_dir=str(claude), db=str(db), quiet=True,
+        restore_pruned=False, no_restore_pruned=False,
+    )
+    defaults.update(kw)
+    return argparse.Namespace(**defaults)
+
+
+def _intercept_claude(monkeypatch, launched):
+    import subprocess as subprocess_module
+    real_run = subprocess_module.run
+
+    def _mock_run(*a, **kw):
+        cmd = a[0] if a else kw.get("args", [])
+        if cmd and cmd[0] == "claude":
+            launched.append(cmd)
+
+            class _R:
+                returncode = 0
+            return _R()
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr(subprocess_module, "run", _mock_run)
+
+
+def test_cmd_resume_by_exact_session_name(tmp_path, capsys, monkeypatch):
+    """#42 headline: `csb resume <exact-session-name>` resolves via the
+    index and launches `claude --resume <full-uuid>`."""
+    from claude_session_backup.commands import cmd_resume
+    claude, db, conn = _make_view_env(tmp_path)
+    conn.close()
+    launched = []
+    _intercept_claude(monkeypatch, launched)
+
+    rc = cmd_resume(_resume_args(
+        db, claude, session_id="alpha-build-session",
+    ))
+    captured = capsys.readouterr()
+    assert rc == 0, "stderr: " + captured.err
+    assert len(launched) == 1
+    assert launched[0][:3] == ["claude", "--resume", UUID_A], (
+        "claude must receive the FULL UUID, never the name"
+    )
+
+
+def test_cmd_resume_keyword_multi_match_shows_candidates(
+    tmp_path, capsys, monkeypatch
+):
+    """#42: an ambiguous keyword lists candidates (like csb view) and
+    never launches claude."""
+    from claude_session_backup.commands import cmd_resume
+    claude, db, conn = _make_view_env(tmp_path)
+    conn.close()
+    launched = []
+    _intercept_claude(monkeypatch, launched)
+
+    rc = cmd_resume(_resume_args(db, claude, session_id="session"))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "2 sessions match" in out
+    assert launched == []
+
+
+def test_cmd_resume_uuid_prefix_regression(tmp_path, capsys, monkeypatch):
+    """#42 regression pin: the historical UUID-prefix surface is unchanged."""
+    from claude_session_backup.commands import cmd_resume
+    claude, db, conn = _make_view_env(tmp_path)
+    conn.close()
+    launched = []
+    _intercept_claude(monkeypatch, launched)
+
+    rc = cmd_resume(_resume_args(db, claude, session_id="aaaa0001"))
+    captured = capsys.readouterr()
+    assert rc == 0, "stderr: " + captured.err
+    assert launched and launched[0][:3] == ["claude", "--resume", UUID_A]
+
+
+def test_cmd_resume_nonsense_query_errors_cleanly(
+    tmp_path, capsys, monkeypatch
+):
+    """#42: a query matching nothing errors with the resolver's message."""
+    from claude_session_backup.commands import cmd_resume
+    claude, db, conn = _make_view_env(tmp_path)
+    conn.close()
+    launched = []
+    _intercept_claude(monkeypatch, launched)
+
+    rc = cmd_resume(_resume_args(db, claude, session_id="zzz-nothing-here"))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "no sessions match" in err
+    assert launched == []

@@ -1,6 +1,6 @@
 {
   "name": "claude-session-backup",
-  "version": "0.3.20",
+  "version": "0.3.21",
   "description": "Git-backed Claude Code session backup -- auto-archives sessions before compaction and on session end",
   "author": {
     "name": "djdarcy",
