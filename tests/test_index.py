@@ -798,3 +798,62 @@ def test_find_by_term_escapes_user_wildcards(mock_db):
     results = find_sessions_by_term(mock_db, "literal_under")
     ids = {r["session_id"] for r in results}
     assert ids == {"s1"}
+
+
+# ── restore-verify gate: upsert preserves deleted_at on invalid transcript (v0.3.16) ──
+
+def test_upsert_preserves_deleted_at_when_transcript_invalid(mock_db):
+    """The headline v0.3.16 guard: a previously-deleted session whose JSONL
+    reappears as garbage (is_valid_transcript=False) must KEEP its deleted_at,
+    not get silently un-deleted. This is the b6a4929f DB-cascade fix."""
+    meta = _make_meta("sess-garbage", "name")
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+    mark_deleted(mock_db, "sess-garbage", "2026-05-31T00:00:00Z")
+    assert get_session(mock_db, "sess-garbage")["deleted_at"] == "2026-05-31T00:00:00Z"
+
+    # A garbage JSONL reappears (event_count would be 0 -> is_valid_transcript=False)
+    meta2 = _make_meta("sess-garbage", "name")
+    meta2.message_count = 0
+    upsert_session(mock_db, meta2, "p.jsonl", 111, 0.0, "t2",
+                   is_valid_transcript=False)
+
+    # deleted_at MUST be preserved
+    assert get_session(mock_db, "sess-garbage")["deleted_at"] == "2026-05-31T00:00:00Z"
+
+
+def test_upsert_clears_deleted_at_on_genuine_revival(mock_db):
+    """A previously-deleted session whose JSONL reappears as a REAL transcript
+    (is_valid_transcript=True) correctly un-deletes -- legit revival still works."""
+    meta = _make_meta("sess-revive", "name")
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+    mark_deleted(mock_db, "sess-revive", "2026-05-31T00:00:00Z")
+    assert get_session(mock_db, "sess-revive")["deleted_at"] is not None
+
+    meta2 = _make_meta("sess-revive", "name")
+    meta2.message_count = 42
+    upsert_session(mock_db, meta2, "p.jsonl", 50000, 0.0, "t2",
+                   is_valid_transcript=True)
+
+    assert get_session(mock_db, "sess-revive")["deleted_at"] is None
+
+
+def test_upsert_default_is_valid_transcript_true_preserves_legacy_behavior(mock_db):
+    """Existing callers that don't pass is_valid_transcript get the default
+    (True) -- a re-upsert clears deleted_at as before. No behavior change for
+    backfill / tests that manage deleted_at separately."""
+    meta = _make_meta("sess-legacy", "name")
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+    mark_deleted(mock_db, "sess-legacy", "2026-05-31T00:00:00Z")
+
+    upsert_session(mock_db, _make_meta("sess-legacy", "name"), "p.jsonl", 100, 0.0, "t2")
+    assert get_session(mock_db, "sess-legacy")["deleted_at"] is None
+
+
+def test_upsert_invalid_transcript_does_not_invent_deleted_at(mock_db):
+    """The guard only PRESERVES; it never sets deleted_at. A never-deleted
+    session upserted with is_valid_transcript=False stays alive (deleted_at NULL)."""
+    meta = _make_meta("sess-alive", "name")
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")  # alive, deleted_at NULL
+    upsert_session(mock_db, _make_meta("sess-alive", "name"), "p.jsonl", 50, 0.0, "t2",
+                   is_valid_transcript=False)
+    assert get_session(mock_db, "sess-alive")["deleted_at"] is None

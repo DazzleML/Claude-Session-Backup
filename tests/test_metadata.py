@@ -84,3 +84,37 @@ def test_extract_metadata_keeps_all_folders(tmp_path):
     # All six distinct cwds must be in folder_usage with their actual counts.
     # Pre-#21 behavior would have kept only first_cwd + top 3, dropping /e and /f.
     assert meta.folder_usage == {"/a": 5, "/b": 4, "/c": 3, "/d": 2, "/e": 1, "/f": 1}
+
+
+# ── event_count (restore-verify gate, v0.3.16) ──────────────────────────
+
+def test_event_count_zero_for_garbage_stub(tmp_path):
+    """A garbage/stub file (e.g. a symlink-target path string, not JSONL)
+    parses into ZERO events -- the signal the restore-verify gate uses to
+    refuse un-deleting a session from a non-transcript."""
+    stub = tmp_path / "stub.jsonl"
+    stub.write_bytes(b"C:/Users/x/.claude/projects/slug/uuid.jsonl")  # bare path
+    meta = extract_metadata(stub)
+    assert meta.event_count == 0
+    assert meta.message_count == 0
+
+
+def test_event_count_zero_for_empty_file(tmp_path):
+    empty = tmp_path / "empty.jsonl"
+    empty.write_bytes(b"")
+    assert extract_metadata(empty).event_count == 0
+
+
+def test_event_count_counts_all_parsed_events(tmp_path):
+    """event_count is ALL parsed JSON events, not just user/assistant msgs --
+    so a real-but-message-light transcript still reads as valid (>=1)."""
+    jsonl = tmp_path / "real.jsonl"
+    events = [
+        {"type": "progress", "timestamp": "2026-05-01T10:00:00Z"},   # not a msg
+        {"type": "system", "timestamp": "2026-05-01T10:00:01Z"},     # not a msg
+        {"type": "user", "timestamp": "2026-05-01T10:00:02Z", "uuid": "u1"},
+    ]
+    jsonl.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+    meta = extract_metadata(jsonl)
+    assert meta.event_count == 3       # all three parsed
+    assert meta.message_count == 1     # only the user msg
