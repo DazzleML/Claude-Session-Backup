@@ -959,9 +959,10 @@ def test_cmd_scan_deleted_returns_only_deleted(populated_db_and_repo, capsys):
     from claude_session_backup.commands import cmd_scan
 
     claude, db, ids = populated_db_and_repo
+    # #41: scan uses the canonical two-valued grammar -- "only", not True.
     args = _make_scan_args(
         directories_below="C:\\code\\proj",
-        deleted=True,
+        deleted="only",
         claude_dir=str(claude), db=str(db),
     )
     rc = cmd_scan(args)

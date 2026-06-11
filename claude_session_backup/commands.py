@@ -269,32 +269,55 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
     return 0
 
 
+_warned_all_deprecated = False
+
+
+def deleted_mode(args) -> str:
+    """Normalize the shared ``--deleted [only|all]`` flag to a mode string:
+    ``"live"`` (flag absent), ``"only"``, or ``"all"`` (#41).
+
+    The single interpretation point for every command that filters on
+    deletion state. Also absorbs scan's deprecated ``--all`` boolean alias
+    (maps to ``"all"`` with a one-time deprecation warning; removal: 0.4).
+    The companion attach-side helper is ``cli.add_deleted_flag`` -- the pair
+    is split across modules only to avoid a cli->commands import cycle.
+    """
+    global _warned_all_deprecated
+    if getattr(args, "all", False):
+        if not _warned_all_deprecated:
+            print(
+                "Warning: --all is deprecated; use --deleted all "
+                "(removal planned for 0.4).",
+                file=sys.stderr,
+            )
+            _warned_all_deprecated = True
+        return "all"
+    return getattr(args, "deleted", None) or "live"
+
+
 def cmd_list(args) -> int:
     """Timeline view sorted by last-used."""
     config = _get_config(args)
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    # v0.3.5: --deleted is two-valued. None / "only" / "all".
-    # The old separate --all flag was folded into --deleted all.
-    deleted_mode = getattr(args, "deleted", None)
+    mode = deleted_mode(args)
     filter_keyword = getattr(args, "filter", None)
     sessions = list_sessions(
         conn,
         limit=args.n,
-        show_deleted=(deleted_mode == "only"),
-        show_all=(deleted_mode == "all"),
+        show_deleted=(mode == "only"),
+        show_all=(mode == "all"),
         filter_keyword=filter_keyword,
         sort_key=getattr(args, "sort", "last-used"),
     )
 
     # Filter-aware "N deleted hidden" footer (Phase 3 / #27).
-    # Only emit when running in default live-only mode (deleted_mode is None).
-    # When --deleted only/all is passed, the deleted rows are already on
-    # screen, so the footer would be noise. Suppressed when count is zero
-    # -- don't say "0 deleted hidden".
+    # Only emit in default live-only mode. When --deleted only/all is
+    # passed, the deleted rows are already on screen, so the footer would
+    # be noise. Suppressed when count is zero -- don't say "0 deleted hidden".
     deleted_hidden_count = 0
-    if deleted_mode is None:
+    if mode == "live":
         deleted_hidden_count = count_deleted_with_filter(conn, filter_keyword)
 
     conn.close()
@@ -1548,9 +1571,9 @@ def cmd_search(args) -> int:
             below=below,
             session_filter=session_filter or None,
             source_override=source_override,
-            # v0.3.5: --deleted is two-valued. None / "only" / "all".
-            include_deleted=(args.deleted == "all"),
-            only_deleted=(args.deleted == "only"),
+            # Shared --deleted [only|all] grammar; one normalizer (#41).
+            include_deleted=(deleted_mode(args) == "all"),
+            only_deleted=(deleted_mode(args) == "only"),
             limit=effective_limit,
             sort_key=getattr(args, "sort", "last-used"),
             fetch_folders=full_info_level >= 2,
@@ -2632,16 +2655,16 @@ def cmd_scan(args) -> int:
     no_usage = getattr(args, "no_usage", False)
     top_n = _resolve_top_folders(args, config)
 
-    # Deletion-filter scope (Phase 3 / #27).
-    # Precedence: --restore implies --deleted (restore only applies to deleted
-    # sessions); --deleted and --all are mutually exclusive at the argparse
-    # layer; default is "active" (preserves pre-#27 behavior).
+    # Deletion-filter scope (Phase 3 / #27; canonical grammar since #41).
+    # Precedence: --restore implies deleted scope (restore only applies to
+    # deleted sessions) and is applied AFTER normalization; default is
+    # "active" (preserves pre-#27 behavior). The deprecated --all alias is
+    # absorbed by deleted_mode().
     want_restore = bool(getattr(args, "restore", False))
-    if want_restore:
+    mode = deleted_mode(args)
+    if want_restore or mode == "only":
         deleted_filter = "deleted"
-    elif getattr(args, "deleted", False):
-        deleted_filter = "deleted"
-    elif getattr(args, "all", False):
+    elif mode == "all":
         deleted_filter = "all"
     else:
         deleted_filter = "active"
