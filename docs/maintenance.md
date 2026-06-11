@@ -233,9 +233,14 @@ Nothing to restore: all 28 expected files are already on disk. Use --force to ov
 - `--force` -- overwrite present files from git. Default behavior preserves on-disk content. Use when local files are stale or corrupted and git is authoritative.
 - `--dry-run` -- show what would be restored AND what would be preserved without writing anything.
 
-### Symlinks are skipped (not restored)
+### Symlinks are recreated, never written-through
 
-claude-session-logger writes `sesslogs/<dir>/transcript.jsonl` as a **symlink** pointing at the projects JSONL. A git symlink blob's content is just the link-target path string -- restoring it as a file (or, worse, writing it *through* a live on-disk link) would corrupt the target. So `csb restore` (v0.3.15+) **skips symlink entries entirely** and reports them: `Skipped N symlink(s) (not restored; claude-session-logger recreates them)`. The logger regenerates its own `transcript.jsonl` on session activity, so nothing is lost. A write-guard in the lowest restore primitive (`git_restore_file`) is the second safety layer: even an unexpected on-disk symlink at a restore destination is removed before writing, so bytes never land on a link target.
+claude-session-logger writes `sesslogs/<dir>/transcript.jsonl` as a **symlink** pointing at the projects JSONL. A git symlink blob's content is just the link-target path string -- restoring it as a file (or, worse, writing it *through* a live on-disk link) would corrupt the target (the v0.3.15 clobber bug). csb's handling:
+
+- **The symlink blob is NEVER written to disk.** A write-guard in the lowest restore primitive (`git_restore_file`, v0.3.15) removes any on-disk symlink/junction at a destination before writing, so bytes never land on a link target.
+- **The `transcript.jsonl` symlink is RECREATED** (v0.3.17, #38) as a real filesystem link pointing at the restored transcript, via `dazzle_filekit.create_symlink` (the same helper the logger uses; tries `os.symlink` -> `dazzlelink` -> `mklink`). Reported as `Recreated N symlink(s)`. This also heals a stuck state: if a regular file is sitting where the symlink should be, the logger *refuses* to recreate the link -- csb replaces the stub with a proper symlink.
+- **On Windows without symlink privilege** (no Developer Mode / admin), recreation gracefully falls back to skip-and-report (`Skipped N symlink(s)`) -- never failing the restore, never materializing the target-path as a regular file. The logger will recreate the link on next session activity.
+- **Any non-`transcript.jsonl` symlink** in scope is conservatively skipped (csb only knows the correct target for the transcript link).
 
 ### `csb resume` preflight
 
