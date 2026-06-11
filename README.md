@@ -16,9 +16,9 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 **csb** preserves every session in your existing `~/.claude` git repository, builds a searchable metadata index, detects deletions, and can restore lost sessions from git history.
 
 > [!NOTE]
-> **Alpha software.** The core is complete and proven: backup, deletion detection, content search (FTS5), and end-to-end session restore (involving recovering a deleted session's full footprint from git with transcript, subagents, tool-results, logger sesslogs, and resuming in Claude Code). 
+> **Alpha software (cusp of beta) -- nearly feature-complete.** Everything on the original roadmap has shipped: backup, deletion detection, content search (JSONL+sesslogs+FTS5), full session restore (a deleted session's complete footprint recovered from git -- transcript, subagents, tool-results, logger sesslogs -- with original timestamps and symlinks, resumable in Claude Code), a viewer launcher (`csb view`), and a human-readable chat-log layer (`csb distill`).
 >
-> One convenience feature remains on the roadmap but is *not* required for core function: a distilled/readable conversation layer ([#12](https://github.com/DazzleML/Claude-Session-Backup/issues/12) -- an alternate form of what [claude-session-logger](https://github.com/DazzleML/claude-session-logger/) already produces; content search works today regardless). Expect occasional rough edges and breaking changes between minor versions until beta. By all means use it (and please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues)) but, as with any backup tool, keep a second copy of anything irreplaceable.
+> Staying alpha a little longer while the tires get kicked; beta follows once v0.4.0 has settled. Expect occasional rough edges and breaking changes between minor versions until then. By all means use it (and please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues)) but, as with any backup tool, keep a second copy of anything irreplaceable.
 
 ## Quick Start
 
@@ -295,15 +295,27 @@ pip install -e ".[dev]"
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions welcome! Please open an issue or submit a pull request.
+
+See **[CONTRIBUTING.md](CONTRIBUTING.md)** for:
+- Development setup (`pip install -e ".[dev]"`)
+- Running the test suite and human test checklists (`tests/checklists/`)
+- Version management with `sync-versions.py`
+- Pull request checklist
+
+Like the project?
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/djdarcy)
+
+## Related Projects
+
+- [claude-session-logger](https://github.com/DazzleML/claude-session-logger) -- Real-time per-session tool/conversation logging; csb backs up and restores its files, and its session naming + state-file conventions shaped csb's.
+- [dazzle-filekit](https://github.com/DazzleLib/dazzle-filekit) -- Cross-platform file operations toolkit (symlink recreation, timestamp restore).
 
 ## Acknowledgements
 
-This project draws inspiration and patterns from:
-
-- **[claude-vault](https://github.com/kuroko1t/claude-vault)** by [@kuroko1t](https://github.com/kuroko1t) -- FTS5 search design, JSONL parsing patterns, Claude Code hook integration. Their [blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500) was the catalyst for this project.
-- **[claude-code-history-viewer](https://github.com/jhlee0409/claude-code-history-viewer)** by [@jhlee0409](https://github.com/jhlee0409) -- Full JSONL data model understanding, session file structure documentation, file restore patterns.
-- **[claude-session-logger](https://github.com/DazzleML/claude-session-logger)** by [@djdarcy](https://github.com/djdarcy) -- Real-time session logging, session naming conventions, session-state file handling.
+- [claude-vault](https://github.com/kuroko1t/claude-vault) by [@kuroko1t](https://github.com/kuroko1t) --  Work on `csb` serendipitously began a week or so before [kuroko1t's blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500) inspiring additional backends (FTS5) beyond claude-session-logger and full jsonl.
+- [claude-code-history-viewer](https://github.com/jhlee0409/claude-code-history-viewer) by [@jhlee0409](https://github.com/jhlee0409) -- GUI session reader that `csb view` launches.
 
 ## License
 

@@ -31,6 +31,15 @@ DEFAULT_CONFIG = {
     # ($CLAUDEVIEW_BIN env var first, then platform install locations).
     # Set persistently via: csb config viewer_path "C:/path/to/viewer.exe"
     "viewer_path": None,
+    # ``csb distill`` (#12): when to produce the human-readable chat-log
+    # rendering. "always" -- csb backup regenerates stale canonical files
+    # under ~/.claude/distilled/; "on-demand" (default) -- only when the
+    # user runs `csb distill`; "never" -- distilling disabled entirely
+    # (even the explicit command refuses, with a hint).
+    "distill_policy": "on-demand",
+    # Default content filter for distilled output: "convo" (messages
+    # only), "tools" (one-line tool calls only), or "both".
+    "distill_filter": "both",
 }
 
 # Environment variable overrides (CLI flag > env var > config file > default)

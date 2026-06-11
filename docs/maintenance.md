@@ -92,6 +92,23 @@ csb update build-fts5 --session-id <uuid-prefix>  # limit to one session
 csb update build-fts5 --force                      # re-index even if up-to-date
 ```
 
+## `csb distill` (v0.4.0, #12)
+
+Render a session as a human-readable, instant-messenger-style chat log. The distilled file is a READING layer over the preserved JSONL -- never a replacement; the bytes stay in git regardless.
+
+```bash
+csb distill <query>                 # write canonical ~/.claude/distilled/<slug>/<uuid>.md
+csb distill <query> -o notes.md     # write a specific file
+csb distill <query> --stdout        # stream to stdout (pipe into less / glow)
+csb distill <query> --filter convo  # messages only / tools / both (default both)
+csb distill <query> --source convo  # force a channel (default: jsonl > sesslog > convo)
+```
+
+- **`distill_policy` config** (`csb config distill_policy <value>`): `always` -- `csb backup` regenerates stale canonical files (mtime-gated, fails-soft, before the noise commit so they get backed up); `on-demand` (default) -- only the explicit command; `never` -- distilling disabled entirely, even explicitly (the user opted out).
+- **Canonical location** `~/.claude/distilled/` is csb-owned (never inside the logger's `sesslogs/`) and deterministic per session, so regeneration is idempotent and git history stays stable.
+- **Channel preference is jsonl > sesslog > convo** -- the opposite of `csb search`. Distill renders csb's own preserved record: the JSONL is the verbatim source of truth; the logger's channels are themselves derivations (and logger users would otherwise see different output than standalone users). Search stays convo-first for speed and pre-filtered matching.
+- Pruned sessions offer restore-from-git first -- the same flags and policy as `csb resume` / `csb view`.
+
 ## `csb update backfill-deleted`
 
 Discover deleted sessions from git history that the live DB doesn't know about, and synthesize sessions rows from the historical JSONL blobs. Also auto-repair existing rows whose `folder_usage` was corrupted by a past destructive rebuild (when git has richer data).

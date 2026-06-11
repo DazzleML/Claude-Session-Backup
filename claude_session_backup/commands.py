@@ -242,6 +242,18 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
         mark_deleted(conn, missing_id, now)
         deleted_count += 1
 
+    # Distill-on-backup (#12): policy "always" regenerates stale canonical
+    # chat-log files for the sessions just scanned. Runs BEFORE the git
+    # commits so fresh distilled files ride the noise commit. Fails-soft.
+    if str(config.get("distill_policy") or "on-demand") == "always":
+        distilled_n = _refresh_distilled_files(conn, config, sessions, quiet)
+        if distilled_n and not quiet:
+            print(
+                f"Distilled {distilled_n} session"
+                f"{'s' if distilled_n != 1 else ''} -> "
+                f"{Path(config['claude_dir']) / 'distilled'}"
+            )
+
     # Git operations -- two separate commits: noise first, then user
     noise_hash = ""
     user_hash = ""
@@ -2297,7 +2309,9 @@ def _resolve_pruned_decision(args, session: dict, name: str,
     Decision precedence: explicit flag (--restore-pruned / --no-restore-pruned)
     > TTY-interactive prompt > non-TTY safe default (error with hint).
     """
-    gerund = {"resume": "resuming", "view": "viewing"}.get(verb, verb + "ing")
+    gerund = {
+        "resume": "resuming", "view": "viewing", "distill": "distilling",
+    }.get(verb, verb + "ing")
     if getattr(args, "no_restore_pruned", False):
         print(
             f"Session '{name}' is pruned (deleted_at set). "
@@ -2687,6 +2701,237 @@ def cmd_view(args) -> int:
         return 0
 
     return _launch_viewer(viewer, full_id)
+
+
+# ── csb distill (#12): human-readable chat-log rendering ────────────────────
+#
+# The distilled output is an optional READING layer over the preserved
+# JSONL -- never a replacement (full-recovery-first). Rendering lives in
+# distill.py; this layer is resolution + policy + pruned handling + output
+# routing, mirroring cmd_view's structure.
+
+
+def _distill_canonical_path(claude_dir: str, session: dict) -> Path:
+    """`~/.claude/distilled/<project-slug>/<uuid>.md` -- csb-owned dir
+    (never inside the logger's sesslogs/), auto-backed-up by the noise
+    commits, deterministic name -> idempotent regeneration."""
+    jsonl_rel = session.get("jsonl_path") or ""
+    slug = (Path(jsonl_rel).parent.name if jsonl_rel
+            else (session.get("project") or "unknown"))
+    return Path(claude_dir) / "distilled" / slug / f"{session['session_id']}.md"
+
+
+def _safe_stdout_write(text: str) -> None:
+    """Write to stdout tolerating narrow console codepages (cp1252):
+    unencodable characters degrade to replacement chars rather than
+    crashing the render."""
+    try:
+        sys.stdout.write(text)
+    except UnicodeEncodeError:
+        enc = sys.stdout.encoding or "utf-8"
+        sys.stdout.write(text.encode(enc, errors="replace").decode(enc))
+
+
+def _render_session_distill(
+    session: dict, src_rows, claude_dir: str, mode: str,
+    source_override: "str | None" = None,
+):
+    """Shared assembly for cmd_distill + the backup `always` hook.
+
+    Returns (chunk_iterator, source_label) or (None, reason).
+    """
+    from .distill import build_chat_messages, pick_channels, render_chat_log
+
+    full_id = session["session_id"]
+    jsonl_rel = session.get("jsonl_path") or ""
+    jsonl_abs = Path(claude_dir) / jsonl_rel if jsonl_rel else None
+    convo_type, convo_path, tool_paths = pick_channels(
+        src_rows, jsonl_abs, source_override,
+    )
+    if mode != "tools" and convo_path is None:
+        return None, (
+            "no readable conversation source on disk (transcript missing?). "
+            f"Try `csb backup` to refresh the index, or `csb restore {full_id}`."
+        )
+    messages = build_chat_messages(
+        convo_type=convo_type, convo_path=convo_path,
+        tool_paths=tool_paths, session_id=full_id, mode=mode,
+    )
+    if not messages:
+        return None, "nothing to distill (no conversation or tool events found)."
+    name = session.get("session_name") or ""
+    source_label = convo_type or "tools-only"
+    chunks = render_chat_log(
+        messages, session_name=name, session_id=full_id,
+        source_label=source_label, mode=mode,
+    )
+    return chunks, source_label
+
+
+def cmd_distill(args) -> int:
+    """Render a session as an IM-style chat log (#12).
+
+    Identifier surface matches view/resume (shared resolver). Default
+    output is the canonical ``~/.claude/distilled/<slug>/<uuid>.md``
+    (the log is a document, often large); ``-o PATH`` writes elsewhere;
+    ``--stdout`` streams for piping. Policy ``never`` disables even the
+    explicit command -- the user opted out entirely.
+    """
+    config = _get_config(args)
+    policy = str(config.get("distill_policy") or "on-demand")
+    if policy == "never":
+        print(
+            "distill_policy is 'never' -- distilling is disabled.",
+            file=sys.stderr,
+        )
+        print(
+            "Enable with: csb config distill_policy on-demand",
+            file=sys.stderr,
+        )
+        return 1
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    query = args.query
+    result, method = _resolve_session_query(query, conn, config["claude_dir"])
+    if result is None:
+        print(f"Error: {method}", file=sys.stderr)
+        conn.close()
+        return 1
+    if isinstance(result, list):
+        label = method.split(":", 1)[1] if ":" in method else method
+        _show_view_candidates(result, query, label)
+        conn.close()
+        return 1
+    session = result
+    full_id = session["session_id"]
+    name = session.get("session_name") or "(unnamed)"
+
+    # Pruned session: restore-in-place first, same policy as resume/view.
+    if session.get("deleted_at"):
+        decision = _resolve_pruned_decision(args, session, name, verb="distill")
+        if decision == "abort":
+            conn.close()
+            return 0
+        if decision == "error":
+            conn.close()
+            return 1
+        jsonl_rel = session.get("jsonl_path")
+        if not jsonl_rel:
+            print(
+                f"Session '{name}' is pruned but has no jsonl_path in the "
+                f"DB row -- cannot auto-restore. Run `csb restore {full_id}` "
+                f"manually.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 1
+        commit = git_find_deleted_file(config["claude_dir"], jsonl_rel)
+        if not commit:
+            print(
+                f"Couldn't find '{jsonl_rel}' in git history -- nothing to "
+                f"restore.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 1
+        restore_result = _restore_session(
+            claude_dir=config["claude_dir"],
+            full_uuid=full_id,
+            jsonl_path=jsonl_rel,
+            commit=commit,
+            db_mtime=session.get("jsonl_mtime") or None,
+            quiet=getattr(args, "quiet", False),
+        )
+        if restore_result is None or (
+            restore_result.wrote == 0 and restore_result.failed
+        ):
+            print(
+                "Restore did not complete cleanly; not distilling.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 1
+        print(
+            f"Restored {restore_result.wrote} file"
+            f"{'s' if restore_result.wrote != 1 else ''} from commit "
+            f"{restore_result.commit_short}."
+        )
+
+    src_rows = conn.execute(
+        "SELECT source_type, source_path FROM session_sources "
+        "WHERE session_id = ?",
+        (full_id,),
+    ).fetchall()
+    conn.close()
+
+    mode = getattr(args, "filter", None) or str(
+        config.get("distill_filter") or "both"
+    )
+    chunks, label = _render_session_distill(
+        session, src_rows, config["claude_dir"], mode,
+        source_override=getattr(args, "source", None),
+    )
+    if chunks is None:
+        print(f"Error: {label}", file=sys.stderr)
+        return 1
+
+    # Output routing: a distilled log is a DOCUMENT, often hundreds of KB,
+    # so the default is the canonical file (path printed); stdout is the
+    # explicit opt-in for piping (--stdout).
+    if getattr(args, "stdout", False):
+        for chunk in chunks:
+            _safe_stdout_write(chunk)
+        return 0
+    output = getattr(args, "output", None)
+    dest = (Path(output) if output
+            else _distill_canonical_path(config["claude_dir"], session))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, "w", encoding="utf-8", newline="\n") as f:
+        for chunk in chunks:
+            f.write(chunk)
+    print(f"Distilled ({mode}, source: {label}) -> {dest}")
+    return 0
+
+
+def _refresh_distilled_files(conn, config, session_files, quiet) -> int:
+    """Backup-time `always` policy: regenerate the canonical distilled
+    file for every scanned session whose file is missing or older than
+    the live transcript. Fails-soft per session -- a render error never
+    fails the backup. Returns the number of files (re)written."""
+    claude_dir = config["claude_dir"]
+    mode = str(config.get("distill_filter") or "both")
+    written = 0
+    for sf in session_files:
+        try:
+            session = get_session(conn, sf.session_id)
+            if not session:
+                continue
+            dest = _distill_canonical_path(claude_dir, session)
+            if dest.exists() and dest.stat().st_mtime >= (sf.jsonl_mtime or 0):
+                continue
+            src_rows = conn.execute(
+                "SELECT source_type, source_path FROM session_sources "
+                "WHERE session_id = ?",
+                (sf.session_id,),
+            ).fetchall()
+            chunks, _label = _render_session_distill(
+                session, src_rows, claude_dir, mode,
+            )
+            if chunks is None:
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with open(dest, "w", encoding="utf-8", newline="\n") as f:
+                for chunk in chunks:
+                    f.write(chunk)
+            written += 1
+        except Exception as e:
+            if not quiet:
+                print(
+                    f"Warning: distill failed for {sf.session_id}: {e}",
+                    file=sys.stderr,
+                )
+    return written
 
 
 def _transcript_is_resumable(jsonl_full_path: Path) -> tuple[bool, str]:
