@@ -281,7 +281,17 @@ def mock_resume_env(monkeypatch):
         commands_module, "_resolve_session_or_exit", resolver_mock,
     )
 
-    return SimpleNamespace(run=run_mock, resolver=resolver_mock)
+    # Bypass the v0.3.15 transcript preflight by default: these tests use
+    # fake/non-existent jsonl_paths to exercise cd-target resolution and the
+    # launch mechanics, NOT transcript validity (which has dedicated tests in
+    # test_restore.py). Tests that want to exercise the preflight override this.
+    preflight_mock = MagicMock(return_value=(True, ""))
+    monkeypatch.setattr(
+        commands_module, "_transcript_is_resumable", preflight_mock,
+    )
+
+    return SimpleNamespace(run=run_mock, resolver=resolver_mock,
+                           preflight=preflight_mock)
 
 
 def _make_args(session_id="abcd1234", **kwargs):
