@@ -12,6 +12,7 @@ Usage:
     csb restore <session-id>             # restore deleted session from git history
     csb resume <session-id>              # launch claude --resume with full UUID
     csb view [query]                     # open a session in Claude Code History Viewer
+    csb distill <query>                  # render a session as a readable chat log
     csb scan [path]                      # find sessions in current dir and children
     csb search "query"                   # search session metadata
     csb update rebuild-index             # safely reconstruct SQLite (preserves deleted)
@@ -291,6 +292,71 @@ def build_parser():
         action="store_true", dest="no_restore_pruned",
         help="Refuse to restore; exit with an error and a hint to run "
              "`csb restore` separately.",
+    )
+
+    # distill (#12): human-readable chat-log rendering
+    p_distill = sub.add_parser(
+        "distill",
+        help="Render a session as a human-readable chat log",
+        description=(
+            "Render a session as an instant-messenger-style chat log --\n"
+            "timestamped speaker turns with generous separation, plus\n"
+            "one-line tool calls (never tool output). Markdown-friendly\n"
+            "(Typora) and editor-friendly (Vim-jumpable file references).\n\n"
+            "  csb distill <query>                 write ~/.claude/distilled/<slug>/<uuid>.md\n"
+            "  csb distill <query> -o notes.md     write to a specific file\n"
+            "  csb distill <query> --stdout        stream to stdout (pipe to less/glow)\n"
+            "  csb distill <query> --filter convo  messages only (no tool lines)\n"
+            "  csb distill <query> --filter tools  tool timeline only\n\n"
+            "The distilled file is a READING layer -- the full JSONL stays\n"
+            "preserved in git regardless. Config: distill_policy\n"
+            "{always|on-demand|never} (default on-demand; 'always' makes\n"
+            "csb backup regenerate stale files), distill_filter.\n"
+            "Accepts every identifier csb view/resume accept."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_common_flags(p_distill)
+    p_distill.add_argument(
+        "query",
+        help="Session UUID/prefix, name, .jsonl path, folder, sesslog dir "
+             "name, or keyword",
+    )
+    p_distill.add_argument(
+        "--filter", choices=["convo", "tools", "both"], default=None,
+        help="Content filter (default: distill_filter config, 'both'): "
+             "convo = messages only; tools = one-line tool calls only; "
+             "both = interleaved.",
+    )
+    p_distill.add_argument(
+        "--source", choices=["convo", "sesslog", "jsonl"], default=None,
+        help="Force a conversation source channel (default: auto -- "
+             "jsonl > sesslog > convo: distill renders csb's own "
+             "preserved record, so the verbatim JSONL beats the "
+             "logger's derived channels).",
+    )
+    distill_out_group = p_distill.add_mutually_exclusive_group()
+    distill_out_group.add_argument(
+        "-o", "--output", nargs="?", const="", default=None, metavar="PATH",
+        help="Write to PATH. Bare -o (or omitting the flag entirely) writes "
+             "the canonical ~/.claude/distilled/<slug>/<uuid>.md.",
+    )
+    distill_out_group.add_argument(
+        "--stdout", action="store_true",
+        help="Stream the chat log to stdout instead of writing a file "
+             "(for piping into less / glow / redirects).",
+    )
+    distill_pruned_group = p_distill.add_mutually_exclusive_group()
+    distill_pruned_group.add_argument(
+        "--restore-pruned",
+        action="store_true", dest="restore_pruned",
+        help="Auto-restore a pruned session from git before distilling, "
+             "without prompting.",
+    )
+    distill_pruned_group.add_argument(
+        "--no-restore-pruned",
+        action="store_true", dest="no_restore_pruned",
+        help="Refuse to restore; exit with an error.",
     )
 
     # scan
@@ -703,6 +769,9 @@ def main(argv=None):
     elif args.command == "view":
         from .commands import cmd_view
         return cmd_view(args)
+    elif args.command == "distill":
+        from .commands import cmd_distill
+        return cmd_distill(args)
     elif args.command == "scan":
         from .commands import cmd_scan
         return cmd_scan(args)

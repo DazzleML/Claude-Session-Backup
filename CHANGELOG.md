@@ -9,6 +9,23 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.0] -- 2026-06-11 (alpha)
+
+**`csb distill` -- read any session like a chat log (#12). The alpha roadmap is complete.** The last of the three alpha epics lands: sessions render as instant-messenger-style logs (timestamped speaker turns, generous separation, one-line tool calls -- never tool output), readable as Markdown in Typora and navigable in Vim. The distilled file is a READING layer over the preserved JSONL -- never a replacement; csb remains full-recovery-first. With #12 + #13 + #14 all shipped, csb is feature-complete for its original roadmap: on the cusp of beta, staying alpha while the tires get kicked. 904/904 tests pass (was 884; +20 new). Red-green verified. Closes #12.
+
+### Added
+- **`csb distill <query>`**: writes the canonical `~/.claude/distilled/<slug>/<uuid>.md` by default and prints the path -- a distilled log is a document, often hundreds of KB, so it never floods the console unasked. `-o PATH` writes elsewhere; `--stdout` streams for piping (`less`/`glow`/redirects). The canonical dir is csb-owned, deterministic-name -> idempotent regeneration, auto-backed-up by the noise commits. Accepts every identifier `csb view`/`csb resume` accept; pruned sessions restore-in-place first (same flags + policy).
+- **Format**: `YYYY/MM/DD hh:mm:ss <Identity>:` + verbatim message block + four-newline turn separation; identities `<User>`, `<Claude>`, `<Agent[:subtype]>`. Tool one-liners indent beneath their owning message: `[Read] path`, `[Bash] first-line-of-command`. Claude Code slash-command plumbing (`<command-name>` envelopes etc.) is filtered from jsonl-sourced output for readability.
+- **Three filters** `--filter {convo,tools,both}` (default `both`, configurable via `distill_filter`): messages only / tool timeline only / interleaved.
+- **Channel preference: jsonl > sesslog > convo** -- deliberately the OPPOSITE of `csb search`. Distill renders csb's own preserved record: the verbatim JSONL is the source of truth, while the logger's channels are themselves derivations (distilling a distillation would compound logger-side filtering, and logger users would see different output than standalone users). A block-less shell-only sesslog still serves the TOOL stream but never the conversation (the #36 philosophy); `--source` overrides. No new dependency -- the parsers are the same ones `csb search` already uses; csb stays standalone.
+- **`distill_policy` config** `{always | on-demand | never}` (default `on-demand`): `always` makes `csb backup` regenerate stale canonical files (before the noise commit, fails-soft, mtime-gated); `never` disables even the explicit command (with a config hint) -- the three states are genuinely distinct.
+- **20 new automated tests**: renderer shape exactness (incl. the four-newline separation), identity mapping, plumbing filter, channel preference (jsonl-first, no-jsonl sesslog fallback, shell-only-sesslog-to-convo, jsonl-only standalone), all three filter modes, tool attachment (first-line-only Bash), cmd flows (stdout / -o / bare-o canonical / policy-never / unresolved), and the backup `always` hook (writes then skips-fresh).
+
+### Notes
+- Verified live: a real 659-message session distilled via its convo channel into a 165KB chat log with 424 tool one-liners.
+- v1 tool targets are file paths (Vim-jumpable) without line ranges -- the shared FileOpRow doesn't carry ranges yet; a future enrichment can add `path:start-end`.
+- Correction to the [0.3.22] entry below: the README footer work described there was reverted by an editor save race before that commit; the footer landed via the user's subsequent edits instead.
+
 ## [0.3.22] -- 2026-06-11 (alpha)
 
 **FTS5 false-stale fixed at the search layer (#36).** Two robustness fixes close the search false-negative that surfaced in the b6a4929f incident: a byte-identical rewrite (restore, rsync) no longer makes auto-search abandon a perfectly current FTS5 index, and a shell-only `.sesslog` no longer dead-ends the dispatch before the `jsonl` that has the content. Verified LIVE against the original incident session: with its mtime forward-bumped, `csb search qwen --session b6a4929f` now finds content where it previously returned "No content matches". 884/884 tests pass (was 880; +4 new). Red-green verified. Closes #36.
@@ -731,7 +748,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0
 [0.3.22]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...v0.3.20
