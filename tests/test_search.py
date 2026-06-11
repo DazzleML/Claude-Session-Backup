@@ -314,7 +314,7 @@ def test_parse_jsonl_signature_accepts_optional_session_id(tmp_path):
 
 
 def _build_fake_fts5_db(claude_dir, project, encoded_slug, session_id,
-                        messages, jsonl_mtime):
+                        messages, jsonl_mtime, content_hash="deadbeef"):
     """Build a real-on-disk per-project FTS5 DB pre-populated with messages.
 
     Returns the DB path. Schema matches what fts5_db.init_fts5_schema
@@ -338,7 +338,7 @@ def _build_fake_fts5_db(claude_dir, project, encoded_slug, session_id,
             (session_id, f"u{i}", i, role, role_subtype, content,
              f"2026-05-18T10:{i:02d}:00Z"),
         )
-    mark_session_indexed(conn, session_id, jsonl_mtime, "deadbeef", now_iso())
+    mark_session_indexed(conn, session_id, jsonl_mtime, content_hash, now_iso())
     conn.commit()
     conn.close()
     return db_path
@@ -1935,3 +1935,151 @@ def test_search_dir_scope_excludes_descendants_with_folder_only(mock_db, tmp_pat
         },
     ))
     assert [h.session_id for h in hits] == ["top-sid"]
+
+
+# == #36: FTS5 content-hash freshness rescue + sesslog conversation probe ===
+
+
+def test_search_auto_fts5_fresh_via_content_hash_when_mtime_stale(
+    mock_db, tmp_path
+):
+    """#36 fix 1: mtime says stale but the stored content hash matches the
+    CURRENT file bytes -> FTS5 is fresh (a restore / byte-identical rewrite
+    only moved the mtime). Auto-dispatch uses FTS5, not grep."""
+    from claude_session_backup.fts5_importer import _content_hash
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff66666-6666-6666-6666-666666666666"
+
+    proj_dir = claude_dir / "projects" / encoded_slug
+    proj_dir.mkdir(parents=True)
+    jsonl_abs = proj_dir / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"FROM_JSONL"}}\n',
+        encoding="utf-8",
+    )
+    # FTS5 indexed at OLD mtime but with the REAL hash of the current bytes.
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "RESCUED_TERM lives in FTS5")],
+        jsonl_mtime=1000.0,
+        content_hash=_content_hash(jsonl_abs),
+    )
+    jsonl_relpath = f"projects/{encoded_slug}/{sid}.jsonl"
+    _insert_session_with_jsonl(
+        mock_db, sid, project, jsonl_relpath, 2000.0,  # mtime moved forward
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    # The hash rescue keeps FTS5 fresh -> RESCUED_TERM found via fts5.
+    hits = list(search(mock_db, "RESCUED_TERM", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "fts5"
+    # And grep did NOT run (FROM_JSONL is on disk only).
+    assert list(search(mock_db, "FROM_JSONL", claude_dir=claude_dir)) == []
+
+
+def _write_shell_only_sesslog(path):
+    """A .sesslog with shell commands/output but ZERO conversation blocks."""
+    path.write_text(
+        "$ git status\n"
+        "On branch main\n"
+        "nothing to commit, working tree clean\n"
+        "$ python -m pytest -q\n"
+        "880 passed\n",
+        encoding="utf-8",
+    )
+
+
+def test_search_auto_shell_only_sesslog_falls_through_to_jsonl(
+    mock_db, tmp_path
+):
+    """#36 fix 2 (the b6a4929f dead-end): a shell-only sesslog has no
+    conversation blocks -> auto-dispatch must keep walking to the jsonl
+    that HAS the content, instead of stopping at zero matches."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff77777-7777-7777-7777-777777777777"
+
+    sesslog = tmp_path / ".sesslog_bash.log"
+    _write_shell_only_sesslog(sesslog)
+    proj_dir = claude_dir / "projects" / encoded_slug
+    proj_dir.mkdir(parents=True)
+    jsonl_abs = proj_dir / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"NEEDLE in jsonl"}}\n',
+        encoding="utf-8",
+    )
+    _insert_session_with_jsonl(
+        mock_db, sid, project, f"projects/{encoded_slug}/{sid}.jsonl", 2000.0,
+    )
+    _insert_source(mock_db, sid, project, "sesslog", str(sesslog))
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "NEEDLE", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "jsonl", (
+        "dispatch dead-ended at the shell-only sesslog instead of "
+        "falling through to the jsonl"
+    )
+
+
+def test_search_auto_sesslog_with_convo_blocks_still_used(mock_db, tmp_path):
+    """#36 guard: the probe must NOT over-skip -- a sesslog that DOES carry
+    conversation blocks keeps its place in the dispatch order."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    sid = "fff88888-8888-8888-8888-888888888888"
+
+    sesslog = tmp_path / ".sesslog_mixed.log"
+    sesslog.write_text(
+        "$ git status\n"
+        "[[2026-05-18 10:00:00]] {USER: NEEDLE2 in the sesslog convo}\n",
+        encoding="utf-8",
+    )
+    _insert_session(mock_db, sid, "mixed", project)
+    _insert_source(mock_db, sid, project, "sesslog", str(sesslog))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "NEEDLE2", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "sesslog"
+
+
+def test_search_explicit_sesslog_shell_only_no_fallthrough(mock_db, tmp_path):
+    """#36 contract pin: explicit --source sesslog on a shell-only log
+    returns zero hits WITHOUT falling through -- the user asked for that
+    channel specifically."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = "C--code-test"
+    encoded_slug = "C--code-test"
+    sid = "fff99999-9999-9999-9999-999999999999"
+
+    sesslog = tmp_path / ".sesslog_shell.log"
+    _write_shell_only_sesslog(sesslog)
+    proj_dir = claude_dir / "projects" / encoded_slug
+    proj_dir.mkdir(parents=True)
+    jsonl_abs = proj_dir / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"NEEDLE3 here"}}\n',
+        encoding="utf-8",
+    )
+    _insert_session_with_jsonl(
+        mock_db, sid, project, f"projects/{encoded_slug}/{sid}.jsonl", 2000.0,
+    )
+    _insert_source(mock_db, sid, project, "sesslog", str(sesslog))
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "NEEDLE3", source_override="sesslog", claude_dir=claude_dir,
+    ))
+    assert hits == []
