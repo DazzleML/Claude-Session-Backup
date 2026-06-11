@@ -224,6 +224,14 @@ Nothing to restore: all 28 expected files are already on disk. Use --force to ov
 - `--force` -- overwrite present files from git. Default behavior preserves on-disk content. Use when local files are stale or corrupted and git is authoritative.
 - `--dry-run` -- show what would be restored AND what would be preserved without writing anything.
 
+### Symlinks are skipped (not restored)
+
+claude-session-logger writes `sesslogs/<dir>/transcript.jsonl` as a **symlink** pointing at the projects JSONL. A git symlink blob's content is just the link-target path string -- restoring it as a file (or, worse, writing it *through* a live on-disk link) would corrupt the target. So `csb restore` (v0.3.15+) **skips symlink entries entirely** and reports them: `Skipped N symlink(s) (not restored; claude-session-logger recreates them)`. The logger regenerates its own `transcript.jsonl` on session activity, so nothing is lost. A write-guard in the lowest restore primitive (`git_restore_file`) is the second safety layer: even an unexpected on-disk symlink at a restore destination is removed before writing, so bytes never land on a link target.
+
+### `csb resume` preflight
+
+Before launching `claude --resume`, csb (v0.3.15+) validates that the on-disk JSONL is a real transcript (its first non-empty line parses as a JSON object). A session whose transcript is empty, a stub, or corrupt gets an honest message pointing at `csb search --session <uuid>` and the logger sesslogs -- instead of Claude Code's opaque "No conversation found". This catches sessions that were never properly JSONL-backed (the real conversation lives only in the logger's `.sesslog`/`.convo` channels).
+
 ### Concurrency
 
 `csb restore` acquires `backup_lock` for the duration of the multi-file write. A concurrent `csb backup` cannot snapshot a half-restored state. The same lock is used by `csb update *` so all maintenance / recovery operations are mutually exclusive.

@@ -30,7 +30,20 @@
       "Bash(git check-ignore *)",
       "Skill(prepcommit)",
       "Bash(csb search *)",
-      "Bash(csb show *)"
+      "Bash(csb show *)",
+      "Bash(schtasks /create /tn csb-sched-probe /tr '\"C:\\\\Python312\\\\python.exe\" \"C:\\\\code\\\\claude-projects\\\\Claude-Session-Backup\\\\tests\\\\one-offs\\\\sched_probe_target.py\"' /sc once /st 23:59 /f)",
+      "Bash(schtasks /run /tn \"csb-sched-probe\")",
+      "Skill(github-release)",
+      "Bash(gh run *)",
+      "WebFetch(domain:pypi.org)",
+      "Skill(merge-3-way-split)",
+      "Bash(csb --db C:/code/claude-projects/claude-session-backup__restore-shoring-up/private/revisions/db-snapshots/2026-06-02__working-copy.db update backfill-deleted)",
+      "Read(//c/code/claude-projects/claude-session-backup__restore-shoring-up/**)",
+      "Bash(python -c \"import claude_session_backup; print\\(claude_session_backup.__version__\\)\")",
+      "Read(//c/Users/Extreme/.claude/**)",
+      "Bash(tee /tmp/state-D2.txt)",
+      "Read(//tmp/**)",
+      "Bash(preserve VERIFY --dst \"C:/tmp/csb-restore-test-7fb868dc\")"
     ]
   }
 }

@@ -20,6 +20,7 @@ The restore path is byte-pure end to end:
     commits never receive autocrlf normalization regardless of host config
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -578,6 +579,33 @@ def git_ls_tree_for_uuid(
         Empty list means either the commit is unknown or no matching
         SESSION-HISTORY files exist at that commit.
     """
+    return [rel for rel, _is_symlink
+            in _git_ls_tree_scoped_entries(claude_dir, commit, slug, uuid)]
+
+
+# Git's symlink tree mode. A blob stored with this mode is a symlink whose
+# *content* is the link target path -- restoring it as a regular file (or,
+# worse, writing it THROUGH an existing on-disk link) corrupts data. See the
+# v0.3.15 symlink-clobber DWP.
+_GIT_SYMLINK_MODE = "120000"
+
+
+def _git_ls_tree_scoped_entries(
+    claude_dir: str,
+    commit: str,
+    slug: str,
+    uuid: str,
+) -> list[tuple[str, bool]]:
+    """Core enumerator behind :func:`git_ls_tree_for_uuid` and
+    :func:`git_ls_tree_symlinks_for_uuid`.
+
+    Returns a sorted list of ``(claude_dir_relative_path, is_symlink)`` for
+    every SESSION-HISTORY path keyed to ``uuid`` at ``commit``. One git call.
+
+    Unlike the pre-v0.3.15 implementation, this parses the FULL ``git
+    ls-tree`` output (``<mode> <type> <object>\\t<path>``) instead of
+    ``--name-only`` so the symlink mode (120000) is available to callers.
+    """
     if not uuid or not slug:
         return []
 
@@ -589,7 +617,7 @@ def git_ls_tree_for_uuid(
 
     result = run_git(
         claude_dir,
-        "ls-tree", "-r", "--name-only", commit,
+        "ls-tree", "-r", commit,   # NOTE: no --name-only; we need the mode column
         "--",
         *pathspecs,
         check=False,
@@ -597,20 +625,41 @@ def git_ls_tree_for_uuid(
     if result.returncode != 0:
         return []
 
-    paths = set()
+    entries: dict[str, bool] = {}
     for line in result.stdout.splitlines():
-        s = line.strip()
-        if not s:
+        # Format: "<mode> SP <type> SP <object> TAB <path>"
+        if "\t" not in line:
             continue
-        normalized = _normalize_git_path(s)
+        meta, raw_path = line.split("\t", 1)
+        mode = meta.split(" ", 1)[0] if meta else ""
+        normalized = _normalize_git_path(raw_path.strip())
         # Git emits repo-relative paths; translate to claude_dir-relative
         # so downstream operations (Path / git_show_file_bytes which
         # also uses -C claude_dir) interpret them correctly.
         rel = _to_claude_dir_relative(claude_dir, normalized)
         # Match against the scope table -- if ANY spec matches, include.
         if any(spec.matches(rel, slug, uuid) for spec in SESSION_HISTORY_SCOPES):
-            paths.add(rel)
-    return sorted(paths)
+            entries[rel] = (mode == _GIT_SYMLINK_MODE)
+    return sorted(entries.items())
+
+
+def git_ls_tree_symlinks_for_uuid(
+    claude_dir: str,
+    commit: str,
+    slug: str,
+    uuid: str,
+) -> set[str]:
+    """Return the subset of in-scope paths that are git symlinks (mode 120000).
+
+    These must NOT be restored as files: a symlink blob's content is the
+    link-target path, and writing it (especially through an existing on-disk
+    link) corrupts the target. claude-session-logger regenerates its own
+    ``transcript.jsonl`` symlink on session activity, so skipping it loses
+    nothing. See the v0.3.15 symlink-clobber DWP.
+    """
+    return {rel for rel, is_symlink
+            in _git_ls_tree_scoped_entries(claude_dir, commit, slug, uuid)
+            if is_symlink}
 
 
 def git_find_deleted_file(claude_dir: str, file_path: Union[str, Path]) -> Optional[str]:
@@ -678,8 +727,43 @@ def git_restore_file(
 
     dest = Path(dest_path)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    # Write-guard (S1c, v0.3.15): never write THROUGH an existing symlink or
+    # junction. `Path.write_bytes` follows symlinks, so if `dest` is a link,
+    # the bytes would land on the link TARGET -- the exact mechanism that
+    # clobbered a restored 2 MB transcript via a dangling transcript.jsonl
+    # symlink. Remove the link first so we write a regular file AT the path.
+    # Defense-in-depth: discovery already skips git-tracked symlinks, but this
+    # guard also protects against on-disk links that aren't in the restore set.
+    if _is_link_or_junction(dest):
+        try:
+            dest.unlink()
+        except OSError:
+            # As a last resort, a directory junction may need os.rmdir; if we
+            # can't remove it, refuse rather than write through.
+            try:
+                os.rmdir(dest)
+            except OSError:
+                return False
     dest.write_bytes(content)
     return True
+
+
+def _is_link_or_junction(p: Path) -> bool:
+    """True if `p` is a symlink (any OS) or a Windows directory junction.
+
+    `os.path.islink` covers symlinks on all platforms. Windows junctions are
+    not symlinks; `os.path.isjunction` detects them but only exists on Python
+    3.12+. On older Pythons junctions fall through (rare for csb's file paths).
+    """
+    if os.path.islink(p):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    if isjunction is not None:
+        try:
+            return isjunction(p)
+        except OSError:
+            return False
+    return False
 
 
 # ── .gitattributes self-maintenance ─────────────────────────────────

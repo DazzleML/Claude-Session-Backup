@@ -35,6 +35,7 @@ from .git_ops import (
     git_find_deleted_file,
     git_find_jsonl_by_uuid,
     git_ls_tree_for_uuid,
+    git_ls_tree_symlinks_for_uuid,
     git_restore_file,
     git_status,
     is_git_repo,
@@ -806,6 +807,12 @@ def cmd_restore(args) -> int:
             print(f"Would preserve {np_} present file{pplural} (use --force to overwrite from git):")
             for p in result.preserve_list:
                 print(f"  {p}")
+        if result.skipped_symlinks:
+            ns = len(result.skipped_symlinks)
+            print(f"Would skip {ns} symlink{'s' if ns != 1 else ''} "
+                  f"(links are not restored; the logger recreates them):")
+            for p in result.skipped_symlinks:
+                print(f"  {p}")
         if session is None:
             print("Source: git history (no DB row -- fallback mode)")
         return 0
@@ -838,6 +845,12 @@ def cmd_restore(args) -> int:
         print(
             f"Preserved {np_} present file{pplural} (kept on-disk content; "
             f"use --force to overwrite from git)."
+        )
+    if result.skipped_symlinks:
+        ns = len(result.skipped_symlinks)
+        print(
+            f"Skipped {ns} symlink{'s' if ns != 1 else ''} "
+            f"(not restored; claude-session-logger recreates them)."
         )
     if session is None:
         print("(restored via git-history fallback -- DB had no row for this UUID)")
@@ -873,6 +886,7 @@ class RestoreResult:
     failed: list[str] = field(default_factory=list)
     write_list: list[str] = field(default_factory=list)     # files that needed writing
     preserve_list: list[str] = field(default_factory=list)  # files preserved (already on disk)
+    skipped_symlinks: list[str] = field(default_factory=list)  # git symlinks NOT restored (v0.3.15)
     commit_short: str = ""            # short hash for output
     error: Optional[str] = None       # set on unrecoverable errors (e.g. bad slug)
 
@@ -925,10 +939,19 @@ def _restore_session(
     # Discovery: enumerate every SESSION-HISTORY path at this commit via
     # the table-driven `git_ls_tree_for_uuid` (or just the JSONL when the
     # caller wants pre-v0.3.12 jsonl-only behavior).
+    symlink_paths: set[str] = set()
     if jsonl_only:
         paths_to_restore = [jsonl_path]
     else:
         paths_to_restore = git_ls_tree_for_uuid(
+            claude_dir, commit, slug, full_uuid
+        )
+        # Symlinks (git mode 120000) must NOT be restored: a symlink blob's
+        # content is the link-target path, and writing it -- especially
+        # through an existing on-disk link -- clobbers the target. The
+        # logger regenerates its own transcript.jsonl symlink, so skipping
+        # loses nothing. See the v0.3.15 symlink-clobber DWP.
+        symlink_paths = git_ls_tree_symlinks_for_uuid(
             claude_dir, commit, slug, full_uuid
         )
         if not paths_to_restore:
@@ -942,12 +965,22 @@ def _restore_session(
         paths_to_restore = sorted(set(paths_to_restore))
 
     # Per-file overwrite policy:
+    #   - Symlink entry        -> SKIP (never restore; report it).
     #   - File missing on disk  -> restore from git (the whole point)
     #   - File present on disk  -> PRESERVE by default; --force opts in.
     write_list: list[str] = []
     preserve_list: list[str] = []
+    skipped_symlinks: list[str] = []
     for p in paths_to_restore:
-        if (Path(claude_dir) / p).exists():
+        if p in symlink_paths:
+            skipped_symlinks.append(p)
+            continue
+        full = Path(claude_dir) / p
+        # A dangling on-disk symlink reads as "missing" via exists() (which
+        # follows the link to a non-existent target). Treat present-as-link
+        # as present so the overwrite policy + write-guard apply.
+        present = full.exists() or os.path.islink(full)
+        if present:
             if force:
                 write_list.append(p)
             else:
@@ -958,6 +991,7 @@ def _restore_session(
     result = RestoreResult(
         write_list=write_list,
         preserve_list=preserve_list,
+        skipped_symlinks=skipped_symlinks,
         commit_short=commit[:8],
     )
 
@@ -1891,6 +1925,49 @@ def _resolve_pruned_resume_decision(args, session: dict, name: str) -> str:
     return "abort"
 
 
+def _transcript_is_resumable(jsonl_full_path: Path) -> tuple[bool, str]:
+    """Preflight for `claude --resume`: confirm the on-disk JSONL looks like
+    a real Claude Code transcript (first non-empty line is a JSON object),
+    not garbage -- e.g. a symlink-target path string left by a broken restore,
+    or a 0-byte / stub file from a session that was never JSONL-backed.
+
+    Returns ``(ok, reason)``; ``reason`` is ``""`` when ok. Kept deliberately
+    lenient: the JSON-object gate catches the real failure modes (bare path
+    strings, truncated stubs) without rejecting minimal-but-valid transcripts.
+    """
+    if not jsonl_full_path.exists():
+        return False, "transcript file is not on disk"
+    try:
+        if jsonl_full_path.stat().st_size == 0:
+            return False, "transcript is empty (0 bytes)"
+    except OSError as e:
+        return False, f"cannot stat transcript ({e})"
+    try:
+        with open(jsonl_full_path, "r", encoding="utf-8", errors="replace") as f:
+            first = ""
+            for line in f:
+                if line.strip():
+                    first = line.strip()
+                    break
+    except OSError as e:
+        return False, f"cannot read transcript ({e})"
+    if not first:
+        return False, "transcript has no content lines"
+    try:
+        obj = json.loads(first)
+    except (json.JSONDecodeError, ValueError):
+        return False, (
+            "transcript's first line isn't valid JSON "
+            "(looks like a stub or corrupt file)"
+        )
+    if not isinstance(obj, dict):
+        return False, (
+            "transcript's first line isn't a JSON object "
+            "(not a Claude Code transcript)"
+        )
+    return True, ""
+
+
 def cmd_resume(args) -> int:
     """Launch claude --resume with the full session UUID."""
     from .pathkit import derive_start_at
@@ -1960,12 +2037,45 @@ def cmd_resume(args) -> int:
                 file=sys.stderr,
             )
             return 1
+        if restore_result.skipped_symlinks:
+            ns = len(restore_result.skipped_symlinks)
+            print(
+                f"  (skipped {ns} symlink{'s' if ns != 1 else ''} -- "
+                f"the logger recreates them)"
+            )
         print(
             f"Restored {restore_result.wrote} file"
             f"{'s' if restore_result.wrote != 1 else ''} from commit "
             f"{restore_result.commit_short}. Proceeding with resume."
         )
         print()
+
+    # Preflight (v0.3.15): Claude Code can only resume from a real JSONL
+    # transcript. If the on-disk JSONL is empty/corrupt/a stub -- e.g. a
+    # session that was never properly JSONL-backed, or one left broken by a
+    # past restore -- refuse to launch `claude --resume` against it (which
+    # would just print "No conversation found") and point the user at where
+    # the conversation actually lives.
+    resume_jsonl = session.get("jsonl_path")
+    if resume_jsonl:
+        ok, reason = _transcript_is_resumable(
+            Path(config["claude_dir"]) / resume_jsonl
+        )
+        if not ok:
+            print(f"Cannot resume '{name}': {reason}.", file=sys.stderr)
+            print(
+                "Claude Code resumes from the JSONL transcript, and this one "
+                "isn't usable. If the session was logged by "
+                "claude-session-logger, the conversation may still be readable:",
+                file=sys.stderr,
+            )
+            print(f"  csb search <term> --session {full_id}", file=sys.stderr)
+            print(
+                f"  (or browse ~/.claude/sesslogs/ for a dir containing "
+                f"{full_id})",
+                file=sys.stderr,
+            )
+            return 1
 
     # Resolve cd target via pathkit (slug-decoded path = the only cwd whose
     # slug matches the JSONL's parent directory; per the upstream-source audit,

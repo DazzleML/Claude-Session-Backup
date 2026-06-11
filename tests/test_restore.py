@@ -30,6 +30,7 @@ from claude_session_backup.git_ops import (
     git_find_deleted_file,
     git_find_jsonl_by_uuid,
     git_ls_tree_for_uuid,
+    git_ls_tree_symlinks_for_uuid,
     git_restore_file,
     git_show_file,
     git_show_file_bytes,
@@ -64,6 +65,59 @@ def _commit_file(claude: Path, rel_path: str, content: bytes, message: str = "ad
     _git(claude, "commit", "--no-gpg-sign", "-m", message)
     head = _git(claude, "rev-parse", "HEAD")
     return head.stdout.strip()
+
+
+def _commit_symlink(claude: Path, link_rel: str, target: str,
+                    message: str = "add symlink") -> str:
+    """Stage a git symlink ENTRY (tree mode 120000) whose blob content is
+    ``target``, WITHOUT needing real filesystem symlink privileges.
+
+    This is the fixture trick from the v0.3.15 DWP: hash the target-path
+    text as a blob, then `git update-index --cacheinfo 120000,...` to add
+    it to the index with symlink mode, then commit. The TREE carries mode
+    120000 regardless of whether the OS materializes it as a real link on
+    checkout -- which is exactly what we need to exercise the discovery /
+    skip / write-guard paths deterministically on any platform.
+
+    Returns the commit hash.
+    """
+    import subprocess as _sp
+    r = _sp.run(
+        ["git", "-C", str(claude), "hash-object", "-w", "--stdin"],
+        input=target.encode("utf-8"),
+        capture_output=True, env=_git_env(), check=True,
+    )
+    blob = r.stdout.decode().strip()
+    _git(claude, "update-index", "--add", "--cacheinfo", f"120000,{blob},{link_rel}")
+    _git(claude, "commit", "--no-gpg-sign", "-m", message)
+    return _git(claude, "rev-parse", "HEAD").stdout.strip()
+
+
+def _can_make_symlink(tmp: Path) -> bool:
+    """True if this OS/user can create real filesystem symlinks (Windows
+    needs Developer Mode or admin). Used to skip the write-through-guard
+    tests that genuinely need an on-disk symlink at the destination."""
+    probe = tmp / "_symlink_probe_link"
+    target = tmp / "_symlink_probe_target"
+    try:
+        target.write_text("x")
+        os.symlink(target, probe)
+        probe.unlink()
+        target.unlink()
+        return True
+    except (OSError, NotImplementedError):
+        # clean up partial state
+        try:
+            if probe.exists() or probe.is_symlink():
+                probe.unlink()
+        except OSError:
+            pass
+        try:
+            if target.exists():
+                target.unlink()
+        except OSError:
+            pass
+        return False
 
 
 # ── _normalize_git_path ─────────────────────────────────────────────────
@@ -2340,6 +2394,166 @@ def test_git_ls_tree_for_uuid_empty_slug_returns_empty(mock_claude_dir):
     assert git_ls_tree_for_uuid(str(mock_claude_dir), "HEAD", "", uuid) == []
 
 
+# ── symlink-clobber fix (v0.3.15 -- DWP 2026-06-10) ─────────────────────
+
+def test_git_ls_tree_symlinks_for_uuid_detects_symlink(mock_claude_dir):
+    """The discovery helper must identify git symlink entries (mode 120000)
+    in the SESSION-HISTORY scope. This is the signal that drives the
+    skip-don't-restore policy. Pure git-tree test -- no filesystem symlink
+    privilege needed (uses the cacheinfo fixture trick)."""
+    uuid = "5117ec00-1111-2222-3333-444444444444"
+    slug = "C--proj-symlink"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    # The logger writes sesslogs/<dir>/transcript.jsonl as a SYMLINK whose
+    # target is the projects JSONL -- this is the exact incident shape.
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    target = f"/c/Users/x/.claude/projects/{slug}/{uuid}.jsonl"
+    # also a normal log file so the dir is a real session sesslog dir
+    log_rel = f"sesslogs/PROJ__name__{uuid}_Alice/.sesslog_bash.log"
+    _commit_file(mock_claude_dir, log_rel, b"shell log\n", "log")
+    commit = _commit_symlink(mock_claude_dir, link_rel, target, "transcript symlink")
+
+    symlinks = git_ls_tree_symlinks_for_uuid(str(mock_claude_dir), commit, slug, uuid)
+    assert link_rel in symlinks, f"symlink not detected: {symlinks}"
+    # the regular files must NOT be flagged as symlinks
+    assert jsonl_rel not in symlinks
+    assert log_rel not in symlinks
+
+
+def test_git_ls_tree_for_uuid_still_lists_symlink_path(mock_claude_dir):
+    """Back-compat: git_ls_tree_for_uuid keeps returning ALL in-scope paths
+    (including symlinks) as a flat list. The skip decision happens in the
+    restore layer, not here -- this function stays a pure enumerator."""
+    uuid = "5117ec01-1111-2222-3333-444444444444"
+    slug = "C--proj-symlink2"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid)
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    commit = _commit_symlink(mock_claude_dir, link_rel,
+                             f"projects/{slug}/{uuid}.jsonl", "tlink")
+
+    paths = set(git_ls_tree_for_uuid(str(mock_claude_dir), commit, slug, uuid))
+    assert jsonl_rel in paths
+    assert link_rel in paths  # listed, even though restore will skip it
+
+
+def test_restore_session_skips_symlinks_and_reports_them(mock_claude_dir, tmp_path):
+    """`_restore_session` must NOT restore symlink entries -- they go to a
+    skipped-symlinks list, not write_list. The logger regenerates its own
+    transcript.jsonl symlink; restoring it would (a) be pointless and
+    (b) risk the write-through clobber. Pure git-tree test."""
+    from claude_session_backup.commands import _restore_session
+    uuid = "5117ec02-1111-2222-3333-444444444444"
+    slug = "C--proj-symlink3"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid,
+                                    content=b'{"real":"transcript"}\n')
+    log_rel = f"sesslogs/PROJ__name__{uuid}_Alice/.sesslog_bash.log"
+    _commit_file(mock_claude_dir, log_rel, b"shell log\n", "log")
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    commit = _commit_symlink(mock_claude_dir, link_rel,
+                             f"projects/{slug}/{uuid}.jsonl", "tlink")
+    # Wipe the working tree copies so restore has something to do
+    for rel in (jsonl_rel, log_rel, link_rel):
+        full = mock_claude_dir / rel
+        if full.is_symlink() or full.exists():
+            full.unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir),
+        full_uuid=uuid,
+        jsonl_path=jsonl_rel,
+        commit=commit,
+    )
+    assert result is not None
+    # The symlink path must be reported as skipped, never written
+    assert link_rel in result.skipped_symlinks, (
+        f"symlink not in skipped list: {result.skipped_symlinks}"
+    )
+    assert link_rel not in result.write_list
+    # No file (regular OR link) should exist at the symlink path
+    link_full = mock_claude_dir / link_rel
+    assert not link_full.exists() and not link_full.is_symlink(), (
+        "restore materialized something at the symlink path"
+    )
+    # The real files WERE restored
+    assert (mock_claude_dir / jsonl_rel).read_bytes() == b'{"real":"transcript"}\n'
+    assert (mock_claude_dir / log_rel).exists()
+
+
+def test_git_restore_file_does_not_write_through_symlink(mock_claude_dir, tmp_path):
+    """Defense-in-depth (S1c): even if a symlink reaches git_restore_file, it
+    must NOT write through the link onto the target. It removes the link and
+    writes a regular file at the path instead. Needs a real on-disk symlink."""
+    if not _can_make_symlink(tmp_path):
+        pytest.skip("filesystem symlink creation not permitted on this OS/user")
+    # The 'target' is a precious file we must NOT clobber
+    target = tmp_path / "precious_transcript.jsonl"
+    target.write_bytes(b"PRECIOUS 2MB-analog real transcript content\n")
+    # 'dest' is a symlink pointing at the precious target
+    dest = tmp_path / "link_to_precious.jsonl"
+    os.symlink(target, dest)
+    # Commit some small "garbage" blob to restore through the link
+    commit = _commit_file(mock_claude_dir, "projects/x/garbage.jsonl",
+                          b"garbage 111\n", "garbage")
+
+    ok = git_restore_file(str(mock_claude_dir), commit,
+                          "projects/x/garbage.jsonl", str(dest))
+    assert ok
+    # The precious target MUST be untouched
+    assert target.read_bytes() == b"PRECIOUS 2MB-analog real transcript content\n", (
+        "write-guard failed -- wrote THROUGH the symlink and clobbered the target"
+    )
+    # dest is now a regular file with the garbage (link was removed first)
+    assert not dest.is_symlink()
+    assert dest.read_bytes() == b"garbage 111\n"
+
+
+def test_restore_session_full_does_not_clobber_via_dangling_symlink(
+    mock_claude_dir, tmp_path
+):
+    """The EXACT incident (b6a4929f): restore a session whose scope contains
+    the real 2MB-analog transcript AND a transcript.jsonl symlink pointing at
+    it, with the symlink present-but-dangling on disk (target purged). The
+    restore must end with the real transcript intact, NOT clobbered by the
+    symlink's 111-byte target-path content.
+
+    Needs a real on-disk symlink to reproduce the write-through path."""
+    from claude_session_backup.commands import _restore_session
+    if not _can_make_symlink(tmp_path):
+        pytest.skip("filesystem symlink creation not permitted on this OS/user")
+    uuid = "5117ec03-1111-2222-3333-444444444444"
+    slug = "C--proj-clobber"
+    real_content = b'{"event":1}\n' * 500  # multi-line "big" transcript analog
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=real_content)
+    log_rel = f"sesslogs/PROJ__name__{uuid}_Alice/.sesslog_bash.log"
+    _commit_file(mock_claude_dir, log_rel, b"shell\n", "log")
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    # the symlink blob content is the (claude-dir-relative) path of the jsonl
+    link_target_text = str((mock_claude_dir / jsonl_rel))
+    commit = _commit_symlink(mock_claude_dir, link_rel, link_target_text, "tlink")
+
+    # Simulate the purge: jsonl removed from disk; the on-disk symlink remains
+    # (dangling). This is the real-world pruned-session shape.
+    (mock_claude_dir / jsonl_rel).unlink()
+    link_full = mock_claude_dir / link_rel
+    link_full.parent.mkdir(parents=True, exist_ok=True)
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+    os.symlink(mock_claude_dir / jsonl_rel, link_full)  # dangling (target gone)
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir),
+        full_uuid=uuid,
+        jsonl_path=jsonl_rel,
+        commit=commit,
+    )
+    assert result is not None
+    # THE load-bearing assertion: the real transcript is intact, not 111-byte garbage
+    assert (mock_claude_dir / jsonl_rel).read_bytes() == real_content, (
+        "restore clobbered the transcript through the dangling symlink"
+    )
+    assert link_rel in result.skipped_symlinks
+
+
 # ── cmd_restore full-restore (v0.3.12 -- #32 + #33) ─────────────────────
 
 def _setup_full_session(claude_dir, slug, uuid, with_logger=True):
@@ -2925,6 +3139,78 @@ def test_cmd_resume_alive_session_unchanged_regression(
     rc = cmd_resume(args)
     assert rc == 0
     assert len(captured_runs) == 1
+
+
+# ── resume preflight (v0.3.15 -- don't launch claude against garbage) ───
+
+def test_transcript_is_resumable_accepts_valid_jsonl(mock_claude_dir):
+    from claude_session_backup.commands import _transcript_is_resumable
+    p = mock_claude_dir / "projects/x/good.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b'{"type":"user","sessionId":"abc"}\n{"type":"assistant"}\n')
+    ok, reason = _transcript_is_resumable(p)
+    assert ok and reason == ""
+
+
+def test_transcript_is_resumable_rejects_symlink_target_garbage(mock_claude_dir):
+    """The exact b6a4929f failure: the JSONL is a bare path string (the
+    content of a symlink blob), not JSON. Must be flagged not-resumable."""
+    from claude_session_backup.commands import _transcript_is_resumable
+    p = mock_claude_dir / "projects/x/garbage.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"C:/Users/x/.claude/projects/slug/uuid.jsonl")  # bare path, no newline
+    ok, reason = _transcript_is_resumable(p)
+    assert not ok
+    assert "json" in reason.lower()
+
+
+def test_transcript_is_resumable_rejects_empty_and_missing(mock_claude_dir):
+    from claude_session_backup.commands import _transcript_is_resumable
+    empty = mock_claude_dir / "projects/x/empty.jsonl"
+    empty.parent.mkdir(parents=True, exist_ok=True)
+    empty.write_bytes(b"")
+    ok, reason = _transcript_is_resumable(empty)
+    assert not ok and "empty" in reason.lower()
+
+    missing = mock_claude_dir / "projects/x/nope.jsonl"
+    ok2, reason2 = _transcript_is_resumable(missing)
+    assert not ok2 and "not on disk" in reason2.lower()
+
+
+def test_cmd_resume_refuses_garbage_transcript_does_not_launch_claude(
+    mock_claude_dir, tmp_path, capsys, monkeypatch
+):
+    """The headline v0.3.15 preflight: an alive session whose on-disk JSONL is
+    garbage (a symlink-target path string) must NOT invoke `claude --resume`
+    -- it should exit with an honest message pointing at csb search."""
+    from claude_session_backup.commands import cmd_resume
+    slug = "C--code-garbage-resume"
+    uuid = "abcd7777-aaaa-bbbb-cccc-888888888888"
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    # Write garbage at the transcript path (the 111-byte symlink-target shape)
+    full = mock_claude_dir / jsonl_path
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_bytes(b"C:/Users/x/.claude/projects/" + slug.encode() + b"/" + uuid.encode() + b".jsonl")
+    _populate_db_with_session(tmp_path / "fresh.db", slug, uuid, jsonl_path,
+                              deleted_at=None)
+
+    # claude must NEVER be invoked
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *a, **kw: pytest.fail("claude --resume should not be launched against garbage"),
+    )
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+    )
+    rc = cmd_resume(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    combined = (captured.out + captured.err).lower()
+    assert "cannot resume" in combined
+    assert "csb search" in combined
 
 
 # ── _restore_session helper (v0.3.14 extraction smoke test) ────────────

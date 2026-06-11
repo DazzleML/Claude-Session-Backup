@@ -9,6 +9,26 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.15] -- 2026-06-10 (prealpha)
+
+Critical fix: `csb restore` could **destroy the transcript it had just restored** by writing through a claude-session-logger `transcript.jsonl` symlink. When a session's restore scope included that symlink (a git blob whose content is the link-target path) AND the symlink still existed on disk (the real-world pruned-session shape -- Claude Code's purge deletes only the JSONL target, the logger's symlink survives), the restore wrote the symlink's 111-byte target-path content *through* the live link onto the freshly-restored 2 MB transcript. `claude --resume` then failed with "No conversation found", and the next `csb backup` re-indexed the garbage and cleared the session's `deleted_at`. Found via a real incident (session `b6a4929f`); the transcript was fully recoverable from git. 817/817 tests pass (was 808; +9 new). Refs the symlink-clobber DWP.
+
+### Fixed
+- **`csb restore` no longer writes through symlinks.** Two independent layers: (1) discovery now parses git tree **modes** and skips symlink entries (mode 120000) -- they're never restored, since the logger regenerates its own `transcript.jsonl` and a symlink blob's content is just a path string; (2) a write-guard in `git_restore_file` (the lowest restore primitive, covering every caller) removes any on-disk symlink/junction at the destination before writing, so bytes land on a regular file at the path -- never on the link target. Either layer alone prevents the data loss; both together are defense-in-depth.
+- **`csb resume` no longer launches `claude --resume` against an unusable transcript.** A preflight validates the on-disk JSONL is a real Claude Code transcript (first non-empty line parses as a JSON object) before invoking Claude Code. Sessions whose JSONL is empty / a stub / corrupt (e.g. never properly JSONL-backed, or left broken by a past restore) now get an honest message pointing at `csb search --session <uuid>` and the logger sesslogs, instead of Claude Code's opaque "No conversation found".
+
+### Added
+- **`git_ls_tree_symlinks_for_uuid(claude_dir, commit, slug, uuid) -> set[str]`** in `git_ops.py` -- returns the in-scope paths that are git symlinks. Shares a single mode-parsing ls-tree call with `git_ls_tree_for_uuid` via the new private `_git_ls_tree_scoped_entries` core.
+- **`_is_link_or_junction(path)`** helper + write-guard in `git_restore_file` -- detects symlinks (all OS) and Windows directory junctions (3.12+ `os.path.isjunction`).
+- **`_transcript_is_resumable(jsonl_path) -> (ok, reason)`** in `commands.py` -- the resume preflight gate. Deliberately lenient (JSON-object check) so minimal-but-valid transcripts pass while bare path-strings / stubs are caught.
+- **`RestoreResult.skipped_symlinks`** field + summary output: `csb restore` (and the `csb resume` restore path) now report `Skipped N symlink(s) (not restored; claude-session-logger recreates them)`.
+- **9 new automated tests**: 5 for the symlink fix (mode-aware discovery, back-compat path listing, restore-skips-and-reports, write-guard does-not-write-through (real on-disk symlink, skip-if-unprivileged), and the exact b6a4929f clobber regression via a dangling on-disk symlink), 4 for the preflight (valid passes, symlink-target-garbage rejected, empty/missing rejected, cmd_resume refuses garbage without launching claude). A test fixture trick (`git update-index --cacheinfo 120000,...`) fabricates symlink blobs without needing filesystem symlink privileges, so the discovery/skip paths are deterministic on any platform.
+
+### Notes
+- **Recovery for an already-clobbered session:** `csb restore <uuid> --jsonl-only --force` (scope is just the one path -- no symlink touched even by pre-fix code), then `claude --resume <uuid>`. The next `csb backup` re-indexes real metadata. If content search comes up empty afterward, `csb update build-fts5 --session-id <uuid>` refreshes the index (see #36).
+- **A separate, lower-severity search bug** surfaced during this investigation and is filed as #36: after a restore rewrites a transcript's mtime, FTS5 is falsely considered stale (the freshness check uses mtime, not the `last_content_hash` it already stores), and the dispatcher can stop at a shell-only `.sesslog` channel before reaching the `jsonl` source. Not addressed in v0.3.15.
+- **No changes to restore scope or overwrite policy** -- v0.3.13/v0.3.14 behavior preserved. This is purely the symlink-safety fix + resume preflight.
+
 ## [0.3.14] -- 2026-06-03 (prealpha)
 
 `csb resume <uuid>` now handles pruned (deleted_at-set) sessions gracefully -- prompts to restore from git before resuming on TTY, honors `--restore-pruned` / `--no-restore` flags non-TTY. Plus a refactor extracting `_restore_session()` from `cmd_restore` so the resume path reuses the exact same file-level restore policy as `csb restore` (consolidation discipline from #34's AC #1 + #2). 808/808 tests pass (was 801; +7 new). Refs #34 (resume half complete; view half awaits #14).
