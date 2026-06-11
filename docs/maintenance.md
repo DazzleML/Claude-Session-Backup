@@ -24,6 +24,15 @@ csb update backfill-deleted        # discover deleted sessions from git history
 
 Each target acquires the same `backup_lock` as `csb backup` and is safe to run on a live `~/.claude/` -- concurrent backups queue rather than race. No target deletes data on success; failures are recoverable (see each section).
 
+## Deleted-session knowledge is protected on every path
+
+csb treats "this session was deleted" as **knowledge that must survive** maintenance and backup operations. Two guards enforce it:
+
+- **`csb update rebuild-index`** (v0.3.11): snapshot-then-merge with `.bak` crash recovery (below) -- a rebuild never drops a deleted-session row.
+- **`csb backup`** (v0.3.16): the **restore-verify gate**. A previously-deleted session is only un-deleted (its `deleted_at` cleared) when the reappeared JSONL is a *genuine* transcript -- at least one parsed event. A stub / empty / garbage file (e.g. one left by a botched restore, or a session that was never properly JSONL-backed) does **not** count as a revival: the `deleted_at` marker is preserved and the session stays recoverable. `csb restore` also warns at restore time when git only had a stub blob for a transcript.
+
+This means a failed or partial recovery can never trick csb into thinking your deleted session came back empty. Once a real transcript is present (e.g. after `csb restore <uuid> --jsonl-only --force` from a healthy commit), the next `csb backup` correctly marks the session alive again.
+
 ## `csb update rebuild-index`
 
 Reconstruct the SQLite index without losing **deleted-session knowledge**.

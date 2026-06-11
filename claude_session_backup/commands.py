@@ -190,7 +190,15 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
             # backslash separators on Windows). Path operations downstream
             # accept either separator.
             rel_path = sf.jsonl_path.relative_to(claude_dir).as_posix()
-            upsert_session(conn, meta, rel_path, sf.jsonl_size, sf.jsonl_mtime, now)
+            # Restore-verify gate (v0.3.16): only let a reappeared JSONL
+            # clear an existing deleted_at if it's a genuine transcript
+            # (>=1 parsed event). A stub / garbage file (event_count == 0,
+            # e.g. left by a botched restore) preserves the deleted state
+            # instead of silently un-deleting the session.
+            upsert_session(
+                conn, meta, rel_path, sf.jsonl_size, sf.jsonl_mtime, now,
+                is_valid_transcript=(meta.event_count > 0),
+            )
 
             # Register searchable transcript sources for this session
             # (Phase 1 of #3 content search). Fails-soft -- a per-session
@@ -859,6 +867,17 @@ def cmd_restore(args) -> int:
         cats = _categorize_restored_paths(result.write_list, slug, resolved_uuid)
         for label, count in cats:
             print(f"  {label}: {count}")
+    # Restore-verify gate (v0.3.16): warn if the restored transcript is a stub.
+    if result.transcript_valid is False:
+        print(
+            f"Warning: the restored transcript looks like a stub "
+            f"({result.transcript_warning}). It may have been committed in a "
+            f"degraded state; the conversation -- if it was ever captured -- "
+            f"may only exist in claude-session-logger's sesslogs. "
+            f"This session will stay marked deleted until a real transcript "
+            f"is present.",
+            file=sys.stderr,
+        )
     print("Session should now be visible in Claude Code.")
     return 0
 
@@ -889,6 +908,11 @@ class RestoreResult:
     skipped_symlinks: list[str] = field(default_factory=list)  # git symlinks NOT restored (v0.3.15)
     commit_short: str = ""            # short hash for output
     error: Optional[str] = None       # set on unrecoverable errors (e.g. bad slug)
+    # Restore-verify gate (v0.3.16): after writing, did the main transcript
+    # come out as a real JSONL? None = not checked (dry-run / nothing written);
+    # True/False = checked. transcript_warning carries the reason when False.
+    transcript_valid: Optional[bool] = None
+    transcript_warning: str = ""
 
 
 def _restore_session(
@@ -1010,6 +1034,19 @@ def _restore_session(
                 result.wrote += 1
             else:
                 result.failed.append(p)
+
+    # Restore-verify gate (v0.3.16): confirm the main transcript came out as
+    # a real JSONL. If git only had a stub/garbage blob for it, the restore
+    # "succeeded" mechanically but the user should be told the recovered
+    # transcript isn't a real conversation (and the next backup will, per the
+    # upsert guard, keep the session marked deleted rather than un-delete it
+    # from a stub).
+    jsonl_full = Path(claude_dir) / jsonl_path
+    if jsonl_full.exists():
+        ok, reason = _transcript_is_resumable(jsonl_full)
+        result.transcript_valid = ok
+        if not ok:
+            result.transcript_warning = reason
     return result
 
 

@@ -9,6 +9,23 @@ Status: **prealpha**. Until the first alpha release, breaking changes may land b
 
 ## [Unreleased]
 
+## [0.3.16] -- 2026-06-10 (prealpha)
+
+Companion to v0.3.15 (ships in the same release): a **restore-verify gate** that generalizes the v0.3.11 "don't lose deleted-session knowledge" invariant from `rebuild-index` to the everyday `backup` path. A session must not be silently un-deleted from a stub or garbage JSONL -- only a genuine transcript (>=1 parsed event) counts as a revival. This closes the DB cascade that followed the b6a4929f symlink-clobber: after the garbage transcript landed, the next `csb backup` had cleared `deleted_at` and the session vanished from `--deleted` views. 827/827 tests pass (was 817; +10 new). Red-green verified.
+
+### Fixed
+- **`csb backup` no longer silently un-deletes a session from a garbage/stub JSONL.** `upsert_session` now takes `is_valid_transcript` and only clears an existing `deleted_at` when the reappeared JSONL is a real transcript. The scan loop passes `is_valid_transcript=(meta.event_count > 0)`, so a 0-event file (stub, symlink-target path string, empty) **preserves** the deleted state instead of marking the session alive-and-empty. The guard only ever preserves the existing value -- it never invents a `deleted_at` (the INSERT path still sets new rows NULL), and callers that manage `deleted_at` separately (e.g. `backfill-deleted`, which re-applies via `mark_deleted`) are unaffected by the `True` default.
+
+### Added
+- **`SessionMetadata.event_count`** -- total successfully-parsed JSON events from a transcript (any type, not just user/assistant messages). 0 = not a real transcript. Counted in the existing parse loop at zero extra cost; flows through both `extract_metadata` (file) and `extract_metadata_from_bytes` (git blob).
+- **Restore-side stub warning** -- `_restore_session` now post-verifies the restored main transcript (`RestoreResult.transcript_valid` / `transcript_warning`). `csb restore` prints a warning when git only had a stub blob: "the restored transcript looks like a stub ... This session will stay marked deleted until a real transcript is present." Informational -- restoring a stub is a legitimate (if unusual) outcome; rc stays 0.
+- **10 new automated tests**: 3 for `event_count` (garbage->0, empty->0, all-events-counted), 4 for the upsert guard (preserve-on-invalid, clear-on-genuine-revival, default-True-legacy-behavior, never-invents-deleted_at), 2 for the restore-side warning (stub flagged invalid, real flagged valid), and 1 end-to-end integration test (a deleted session whose on-disk JSONL is garbage stays deleted after `cmd_backup` -- the exact b6a4929f cascade, now blocked).
+
+### Notes
+- **The invariant, stated plainly:** the DB's record of "this session was deleted" is knowledge that must survive a botched revival. A stub reappearing is not a revival. Restore verifies; on doubt, the deleted-session marker is preserved.
+- **No schema change** -- the guard is a SQL `CASE` expression + bound parameter. No migration.
+- **Recovery after a real fix:** once a genuine transcript is restored (e.g. `csb restore <uuid> --jsonl-only --force` from a healthy commit), the next `csb backup` correctly un-deletes the session, because `event_count > 0`.
+
 ## [0.3.15] -- 2026-06-10 (prealpha)
 
 Critical fix: `csb restore` could **destroy the transcript it had just restored** by writing through a claude-session-logger `transcript.jsonl` symlink. When a session's restore scope included that symlink (a git blob whose content is the link-target path) AND the symlink still existed on disk (the real-world pruned-session shape -- Claude Code's purge deletes only the JSONL target, the logger's symlink survives), the restore wrote the symlink's 111-byte target-path content *through* the live link onto the freshly-restored 2 MB transcript. `claude --resume` then failed with "No conversation found", and the next `csb backup` re-indexed the garbage and cleared the session's `deleted_at`. Found via a real incident (session `b6a4929f`); the transcript was fully recoverable from git. 817/817 tests pass (was 808; +9 new). Refs the symlink-clobber DWP.
@@ -617,7 +634,9 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...HEAD
+[0.3.16]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.15...v0.3.16
+[0.3.15]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...v0.3.14
 [0.3.13]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...v0.3.13
 [0.3.12]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...v0.3.12

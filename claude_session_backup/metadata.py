@@ -24,6 +24,11 @@ class SessionMetadata:
     tool_call_count: int = 0
     claude_version: Optional[str] = None
     folder_usage: dict[str, int] = field(default_factory=dict)  # path -> count
+    # Total successfully-parsed JSON events (any type). 0 means the file
+    # parsed into nothing -- i.e. it's not a real transcript (e.g. a stub or
+    # a symlink-target path string). Used by the restore-verify gate (v0.3.16)
+    # to decide whether a reappeared JSONL is a genuine revival.
+    event_count: int = 0
 
 
 def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
@@ -40,6 +45,7 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     last_user_ts = None
     msg_count = 0
     tool_count = 0
+    event_count = 0
     version = None
     session_name = None
 
@@ -51,6 +57,9 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
             event = json.loads(line)
         except json.JSONDecodeError:
             continue
+        # Count every successfully-parsed JSON event. event_count == 0 after
+        # the loop means the file is not a real transcript (stub / garbage).
+        event_count += 1
 
         # Extract session name from custom-title event
         if event.get("type") == "custom-title":
@@ -99,6 +108,7 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     meta.last_user_at = last_user_ts
     meta.message_count = msg_count
     meta.tool_call_count = tool_count
+    meta.event_count = event_count
     meta.claude_version = version
 
     # Persist every cwd we saw, sorted by usage count descending so the

@@ -3240,3 +3240,99 @@ def test_restore_session_helper_returns_structured_result(mock_claude_dir, tmp_p
     # Files actually on disk byte-for-byte
     for rel, body in expected.items():
         assert (mock_claude_dir / rel).read_bytes() == body
+
+
+# ── restore-verify gate (v0.3.16): warn on stub + preserve deleted_at ───
+
+def test_restore_session_flags_invalid_transcript(mock_claude_dir, tmp_path):
+    """When git only has a STUB blob for the main transcript, _restore_session
+    restores it but flags transcript_valid=False so the caller can warn."""
+    from claude_session_backup.commands import _restore_session
+    slug = "C--code-stub"
+    uuid = "57b00001-1111-2222-3333-444444444444"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    # Commit a GARBAGE stub (a bare path string, the symlink-target shape)
+    _commit_file(mock_claude_dir, jsonl_rel,
+                 b"C:/Users/x/.claude/projects/" + slug.encode() + b"/" + uuid.encode() + b".jsonl",
+                 "stub")
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+    (mock_claude_dir / jsonl_rel).unlink()  # wipe so restore writes it
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir),
+        full_uuid=uuid,
+        jsonl_path=jsonl_rel,
+        commit=commit,
+        jsonl_only=True,
+    )
+    assert result is not None
+    assert result.wrote == 1
+    assert result.transcript_valid is False
+    assert result.transcript_warning  # non-empty reason
+
+
+def test_restore_session_marks_valid_transcript_valid(mock_claude_dir, tmp_path):
+    """A real transcript blob restores with transcript_valid=True."""
+    from claude_session_backup.commands import _restore_session
+    slug = "C--code-realtx"
+    uuid = "57b00002-1111-2222-3333-444444444444"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid,
+                                    content=b'{"type":"user","sessionId":"x"}\n')
+    commit = _git(mock_claude_dir, "rev-parse", "HEAD").stdout.strip()
+    (mock_claude_dir / jsonl_rel).unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir),
+        full_uuid=uuid,
+        jsonl_path=jsonl_rel,
+        commit=commit,
+        jsonl_only=True,
+    )
+    assert result.transcript_valid is True
+    assert result.transcript_warning == ""
+
+
+def test_cmd_backup_keeps_deleted_session_deleted_when_jsonl_is_garbage(
+    mock_claude_dir, tmp_path, monkeypatch
+):
+    """END-TO-END incident guard: a deleted session whose on-disk JSONL is
+    garbage must STAY deleted after `csb backup` re-indexes it -- the upsert
+    guard prevents the silent un-delete that broke b6a4929f."""
+    from claude_session_backup.commands import cmd_backup
+    from claude_session_backup.index import open_db, init_schema, get_session, mark_deleted
+    slug = "C--code-staydeleted"
+    uuid = "57b00003-1111-2222-3333-444444444444"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    # The on-disk JSONL is garbage (event_count will be 0)
+    full = mock_claude_dir / jsonl_rel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_bytes(b"C:/Users/x/.claude/projects/slug/uuid.jsonl")
+
+    db = tmp_path / "fresh.db"
+    conn = open_db(str(db)); init_schema(conn)
+    # Seed the session as KNOWN-deleted
+    from claude_session_backup.metadata import SessionMetadata
+    from claude_session_backup.index import upsert_session
+    meta = SessionMetadata(session_id=uuid, project=slug, session_name="staydeleted",
+                           start_folder="C:/x", started_at="2026-03-01T00:00:00Z",
+                           last_active_at="2026-03-01T01:00:00Z")
+    upsert_session(conn, meta, jsonl_rel, 100, 0.0, "t0")
+    mark_deleted(conn, uuid, "2026-05-31T00:00:00Z")
+    conn.close()
+
+    args = _make_args_namespace(
+        claude_dir=str(mock_claude_dir), db=str(db),
+    )
+    # cmd_backup needs a no_commit flag etc. -- use getattr defaults; add what's needed
+    args.no_commit = True
+    args.no_folder_search = False
+    cmd_backup(args)
+
+    conn = open_db(str(db)); init_schema(conn)
+    row = get_session(conn, uuid)
+    conn.close()
+    # The session must STILL be marked deleted (garbage didn't revive it)
+    assert row is not None
+    assert row["deleted_at"] == "2026-05-31T00:00:00Z", (
+        "garbage JSONL silently un-deleted the session (the b6a4929f cascade)"
+    )

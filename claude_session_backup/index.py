@@ -144,13 +144,26 @@ def init_schema(conn: sqlite3.Connection, quiet: bool = False):
 
 def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
                    jsonl_path: str = "", jsonl_size: int = 0,
-                   jsonl_mtime: float = 0.0, scanned_at: str = ""):
+                   jsonl_mtime: float = 0.0, scanned_at: str = "",
+                   is_valid_transcript: bool = True):
     """Insert or update a session in the index.
 
     Every successful upsert sets ``metadata_validated_at = scanned_at``
     because we just re-extracted metadata from source-of-truth (a live
     JSONL or a historical git blob). The display surfaces this as
     ``val: YY-MM-DD`` so users can tell verified-recent rows from stale.
+
+    **Restore-verify gate (v0.3.16):** ``is_valid_transcript`` controls
+    whether a *reappeared* JSONL counts as a genuine revival. When False
+    (the on-disk JSONL parsed into zero events -- a stub, garbage, or a
+    symlink-target path string), the existing ``deleted_at`` is PRESERVED
+    instead of cleared, so a botched restore can't silently un-delete a
+    session. When True (default -- a real >=1-event transcript), a
+    previously-deleted session correctly un-deletes. The guard only ever
+    PRESERVES the existing value; it never invents a deleted_at (the INSERT
+    path still sets it NULL for brand-new rows). Callers that manage
+    deleted_at separately (e.g. backfill, which re-applies via
+    ``mark_deleted``) leave this at the default.
     """
     conn.execute("""
         INSERT INTO sessions (
@@ -171,7 +184,7 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
             jsonl_size = excluded.jsonl_size,
             jsonl_mtime = excluded.jsonl_mtime,
             last_scanned_at = excluded.last_scanned_at,
-            deleted_at = NULL,
+            deleted_at = CASE WHEN ? THEN NULL ELSE sessions.deleted_at END,
             metadata_validated_at = excluded.metadata_validated_at
     """, (
         meta.session_id, meta.project, meta.session_name, meta.start_folder,
@@ -179,6 +192,7 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
         meta.message_count, meta.tool_call_count,
         meta.claude_version, jsonl_path, jsonl_size, jsonl_mtime, scanned_at,
         scanned_at,  # metadata_validated_at == scanned_at: we just re-extracted
+        1 if is_valid_transcript else 0,  # restore-verify gate (v0.3.16)
     ))
 
     # Update folder usage
