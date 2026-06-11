@@ -815,10 +815,16 @@ def cmd_restore(args) -> int:
             print(f"Would preserve {np_} present file{pplural} (use --force to overwrite from git):")
             for p in result.preserve_list:
                 print(f"  {p}")
+        if result.recreated_symlinks:
+            nr = len(result.recreated_symlinks)
+            print(f"Would recreate {nr} symlink{'s' if nr != 1 else ''} "
+                  f"(transcript.jsonl -> the restored transcript):")
+            for p in result.recreated_symlinks:
+                print(f"  {p}")
         if result.skipped_symlinks:
             ns = len(result.skipped_symlinks)
             print(f"Would skip {ns} symlink{'s' if ns != 1 else ''} "
-                  f"(links are not restored; the logger recreates them):")
+                  f"(not a transcript link; left for the logger):")
             for p in result.skipped_symlinks:
                 print(f"  {p}")
         if session is None:
@@ -854,11 +860,18 @@ def cmd_restore(args) -> int:
             f"Preserved {np_} present file{pplural} (kept on-disk content; "
             f"use --force to overwrite from git)."
         )
+    if result.recreated_symlinks:
+        nr = len(result.recreated_symlinks)
+        print(
+            f"Recreated {nr} symlink{'s' if nr != 1 else ''} "
+            f"(transcript.jsonl -> the restored transcript)."
+        )
     if result.skipped_symlinks:
         ns = len(result.skipped_symlinks)
         print(
             f"Skipped {ns} symlink{'s' if ns != 1 else ''} "
-            f"(not restored; claude-session-logger recreates them)."
+            f"(could not recreate -- no symlink privilege?; "
+            f"claude-session-logger will recreate on next activity)."
         )
     if session is None:
         print("(restored via git-history fallback -- DB had no row for this UUID)")
@@ -906,6 +919,7 @@ class RestoreResult:
     write_list: list[str] = field(default_factory=list)     # files that needed writing
     preserve_list: list[str] = field(default_factory=list)  # files preserved (already on disk)
     skipped_symlinks: list[str] = field(default_factory=list)  # git symlinks NOT restored (v0.3.15)
+    recreated_symlinks: list[str] = field(default_factory=list)  # transcript.jsonl symlinks recreated (#38, v0.3.17)
     commit_short: str = ""            # short hash for output
     error: Optional[str] = None       # set on unrecoverable errors (e.g. bad slug)
     # Restore-verify gate (v0.3.16): after writing, did the main transcript
@@ -989,15 +1003,17 @@ def _restore_session(
         paths_to_restore = sorted(set(paths_to_restore))
 
     # Per-file overwrite policy:
-    #   - Symlink entry        -> SKIP (never restore; report it).
+    #   - Symlink entry        -> NEVER written byte-wise. The logger's
+    #     transcript.jsonl symlinks are RECREATED as real links after the
+    #     write loop (#38); any other symlink is skipped-and-reported.
     #   - File missing on disk  -> restore from git (the whole point)
     #   - File present on disk  -> PRESERVE by default; --force opts in.
     write_list: list[str] = []
     preserve_list: list[str] = []
-    skipped_symlinks: list[str] = []
+    symlink_candidates: list[str] = []
     for p in paths_to_restore:
         if p in symlink_paths:
-            skipped_symlinks.append(p)
+            symlink_candidates.append(p)
             continue
         full = Path(claude_dir) / p
         # A dangling on-disk symlink reads as "missing" via exists() (which
@@ -1015,11 +1031,17 @@ def _restore_session(
     result = RestoreResult(
         write_list=write_list,
         preserve_list=preserve_list,
-        skipped_symlinks=skipped_symlinks,
         commit_short=commit[:8],
     )
 
     if dry_run:
+        # Classify symlink candidates without acting: transcript.jsonl links
+        # would be recreated; anything else would be skipped.
+        for p in symlink_candidates:
+            if _is_transcript_symlink(p, full_uuid):
+                result.recreated_symlinks.append(p)
+            else:
+                result.skipped_symlinks.append(p)
         return result
 
     # Real restore: acquire backup_lock for the whole multi-file write so
@@ -1035,6 +1057,20 @@ def _restore_session(
             else:
                 result.failed.append(p)
 
+        # Symlink handling (#38, v0.3.17): the transcript is now on disk, so
+        # recreate the logger's transcript.jsonl symlink pointing at it. We
+        # NEVER restore a symlink's blob (that was the v0.3.15 clobber); we
+        # recreate it as a real link via dazzle_filekit (cross-platform,
+        # graceful no-privilege fallback). Anything that isn't a transcript
+        # symlink is skipped-and-reported as before.
+        for p in symlink_candidates:
+            if _is_transcript_symlink(p, full_uuid) and _recreate_transcript_symlink(
+                claude_dir, p, slug, full_uuid
+            ):
+                result.recreated_symlinks.append(p)
+            else:
+                result.skipped_symlinks.append(p)
+
     # Restore-verify gate (v0.3.16): confirm the main transcript came out as
     # a real JSONL. If git only had a stub/garbage blob for it, the restore
     # "succeeded" mechanically but the user should be told the recovered
@@ -1048,6 +1084,64 @@ def _restore_session(
         if not ok:
             result.transcript_warning = reason
     return result
+
+
+def _is_transcript_symlink(rel_path: str, uuid: str) -> bool:
+    """True if ``rel_path`` is the logger's per-session transcript.jsonl
+    symlink for this UUID: ``sesslogs/<dir-containing-uuid>/transcript.jsonl``.
+
+    The caller has already confirmed the path is an in-scope git symlink for
+    this session; this just gates the recreate to the known transcript pattern
+    (the only symlink the logger makes), leaving any other symlink to the
+    conservative skip path.
+    """
+    norm = rel_path.replace("\\", "/")
+    parts = norm.split("/")
+    return (
+        len(parts) == 3
+        and parts[0] == "sesslogs"
+        and parts[2] == "transcript.jsonl"
+        and f"__{uuid}_" in parts[1]
+    )
+
+
+def _recreate_transcript_symlink(
+    claude_dir: str, link_rel: str, slug: str, uuid: str
+) -> bool:
+    """Recreate the logger's transcript.jsonl symlink as a real filesystem
+    link pointing at the restored transcript (#38).
+
+    Target is an ABSOLUTE path on the CURRENT machine (not the foreign,
+    possibly-stale path stored in the git symlink blob), so the link is valid
+    here and matches the logger's own absolute form. Uses
+    ``dazzle_filekit.create_symlink`` (os.symlink -> dazzlelink -> mklink with
+    graceful fallback; ``force=True`` removes any blocking regular file or old
+    link first -- which also heals the logger-blocked-stub state). Returns the
+    library's success bool; ``False`` (e.g. Windows without symlink privilege)
+    routes the caller to skip-and-report. Never raises, never writes a regular
+    file -- so it can never reintroduce the v0.3.15 clobber.
+    """
+    try:
+        from dazzle_filekit import create_symlink
+    except ImportError:
+        return False
+    link_path = Path(claude_dir) / link_rel
+    target_abs = (Path(claude_dir) / "projects" / slug / f"{uuid}.jsonl").resolve()
+    # Skip work if a correct symlink already exists (idempotent, no churn).
+    try:
+        if link_path.is_symlink() and Path(os.readlink(link_path)).resolve() == target_abs:
+            return True
+    except OSError:
+        pass
+    try:
+        return bool(create_symlink(
+            str(target_abs), str(link_path),
+            force=True, target_is_directory=False,
+        ))
+    except Exception:
+        # create_symlink is documented to return False rather than raise, but
+        # guard anyway -- a symlink failure must never abort or corrupt a restore.
+        return False
 
 
 def _extract_slug_from_jsonl_path(jsonl_path: str) -> str:
@@ -2074,11 +2168,17 @@ def cmd_resume(args) -> int:
                 file=sys.stderr,
             )
             return 1
+        if restore_result.recreated_symlinks:
+            nr = len(restore_result.recreated_symlinks)
+            print(
+                f"  (recreated {nr} symlink{'s' if nr != 1 else ''} -> "
+                f"the restored transcript)"
+            )
         if restore_result.skipped_symlinks:
             ns = len(restore_result.skipped_symlinks)
             print(
                 f"  (skipped {ns} symlink{'s' if ns != 1 else ''} -- "
-                f"the logger recreates them)"
+                f"the logger recreates them on next activity)"
             )
         print(
             f"Restored {restore_result.wrote} file"

@@ -5,9 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
-Status: **prealpha**. Until the first alpha release, breaking changes may land between patch versions. Each entry that changes observable behavior is flagged accordingly.
+Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 content search, and end-to-end session restore -- is complete and proven. Breaking changes may still land between minor versions until beta. Each entry that changes observable behavior is flagged accordingly.
 
 ## [Unreleased]
+
+## [0.3.17] -- 2026-06-11 (alpha)
+
+**The project graduates to alpha.** End-to-end restore is proven (#13 closed), content search works (FTS5), and the recovery path is hardened (v0.3.15/v0.3.16). The two remaining roadmap items (#12 distilled layer, #14 in-csb viewer) are convenience features, not core function -- #12 is an alternate form of what claude-session-logger already produces, and #14 is served externally by `dz claudeview`. Also: `csb restore` now **recreates** the logger's `transcript.jsonl` symlink instead of skipping it (#38). 832/832 tests pass (was 827; +5 new). Red-green verified.
+
+### Changed
+- **Project status: prealpha -> alpha.** README banner, `PROJECT_PHASE`, and the PyPI `Development Status` classifier (`2 - Pre-Alpha` -> `3 - Alpha`) updated. Display version is now `ALPHA 0.3.17`.
+- **`csb restore` recreates the `transcript.jsonl` symlink** (#38) rather than skipping it (the v0.3.15 behavior). The logger writes `sesslogs/<dir>/transcript.jsonl` as a symlink to the session's transcript; restore now reproduces it as a real filesystem link pointing at the restored transcript (an absolute path on the current machine, so it's valid here and matches the logger's own form). This also **heals the logger-blocked-stub state**: if a regular file is sitting where the symlink should be (e.g. a leftover from a pre-v0.3.15 restore), the logger refuses to recreate the link -- restore now replaces the stub with a proper symlink. Reported as `Recreated N symlink(s)`.
+
+### Added
+- **`dazzle-filekit>=0.2.4`** runtime dependency -- provides cross-platform `create_symlink` (tries `os.symlink` -> `dazzlelink` -> `mklink`, returns `False` rather than raising when symlink creation isn't permitted, and `force=` removes a blocking file first). The same helper claude-session-logger uses. On Windows without Developer Mode / admin, symlink recreation gracefully **falls back to skip-and-report** -- never fails the restore, never materializes the target-path as a regular file (which would reintroduce the v0.3.15 clobber).
+- **`RestoreResult.recreated_symlinks`** + summary output (`Recreated N symlink(s)` / `Skipped N symlink(s)`), in `csb restore`, its dry-run, and the `csb resume` restore path.
+- **5 new automated tests**: `_is_transcript_symlink` pattern recognition, recreate-or-skip-never-writes-blob (privilege-aware), fallback-to-skip when `create_symlink` returns False (no regular file materialized), heal-blocking-regular-file, idempotent-when-correct-link-exists, and non-transcript-symlink-still-skipped. Plus the two v0.3.15 symlink tests updated to the recreate behavior; the clobber regression still holds.
+
+### Notes
+- **Recreate is never a write-through.** A symlink's git blob (its target-path text) is NEVER written to disk; `create_symlink` makes a real link via `os.symlink`/`mklink`. The v0.3.15 clobber regression test still passes.
+- **Cross-machine limitation:** the recreated link uses an absolute target on the restoring machine. After relocating `~/.claude` to a different box, the link may briefly point at the old path until the logger heals it on next session activity -- the link is convenience-only (not load-bearing for resume or logger append).
+- **Verified on real data:** the two leftover 107-byte stubs from earlier empirical-walk testing (sessions 7fb868dc, 4d7565f3) were healed into proper symlinks by `csb restore`; zero regular-file `transcript.jsonl` remain in `~/.claude/sesslogs/`.
 
 ## [0.3.16] -- 2026-06-10 (prealpha)
 
@@ -634,7 +652,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...HEAD
+[0.3.17]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...v0.3.15
 [0.3.14]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...v0.3.14

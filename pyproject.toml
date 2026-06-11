@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["claude", "claude-code", "session", "backup", "restore", "git", "archive", "conversation"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
@@ -30,6 +30,10 @@ classifiers = [
 
 dependencies = [
     "rich>=13.0.0",
+    # Cross-platform symlink creation (os.symlink -> dazzlelink -> mklink with
+    # graceful no-privilege fallback). Used to recreate claude-session-logger's
+    # transcript.jsonl symlink on restore (#38). Same helper the logger uses.
+    "dazzle-filekit>=0.2.4",
 ]
 
 [project.optional-dependencies]

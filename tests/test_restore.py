@@ -2436,11 +2436,14 @@ def test_git_ls_tree_for_uuid_still_lists_symlink_path(mock_claude_dir):
     assert link_rel in paths  # listed, even though restore will skip it
 
 
-def test_restore_session_skips_symlinks_and_reports_them(mock_claude_dir, tmp_path):
-    """`_restore_session` must NOT restore symlink entries -- they go to a
-    skipped-symlinks list, not write_list. The logger regenerates its own
-    transcript.jsonl symlink; restoring it would (a) be pointless and
-    (b) risk the write-through clobber. Pure git-tree test."""
+def test_restore_session_recreates_or_skips_transcript_symlink_never_writes_blob(
+    mock_claude_dir, tmp_path
+):
+    """`_restore_session` must NEVER restore a symlink's BLOB content (that was
+    the v0.3.15 clobber). For the transcript.jsonl symlink it instead RECREATES
+    a real link (#38, v0.3.17) when the OS permits, or skips-and-reports when it
+    doesn't. Either way the path is never a regular file holding the blob's
+    target-path string, and the symlink is never in write_list."""
     from claude_session_backup.commands import _restore_session
     uuid = "5117ec02-1111-2222-3333-444444444444"
     slug = "C--proj-symlink3"
@@ -2451,7 +2454,6 @@ def test_restore_session_skips_symlinks_and_reports_them(mock_claude_dir, tmp_pa
     link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
     commit = _commit_symlink(mock_claude_dir, link_rel,
                              f"projects/{slug}/{uuid}.jsonl", "tlink")
-    # Wipe the working tree copies so restore has something to do
     for rel in (jsonl_rel, log_rel, link_rel):
         full = mock_claude_dir / rel
         if full.is_symlink() or full.exists():
@@ -2464,19 +2466,153 @@ def test_restore_session_skips_symlinks_and_reports_them(mock_claude_dir, tmp_pa
         commit=commit,
     )
     assert result is not None
-    # The symlink path must be reported as skipped, never written
-    assert link_rel in result.skipped_symlinks, (
-        f"symlink not in skipped list: {result.skipped_symlinks}"
-    )
-    assert link_rel not in result.write_list
-    # No file (regular OR link) should exist at the symlink path
+    assert link_rel not in result.write_list  # never byte-restored
+    # It's handled exactly one way: recreated OR skipped (privilege-dependent).
+    assert link_rel in (result.recreated_symlinks + result.skipped_symlinks)
     link_full = mock_claude_dir / link_rel
-    assert not link_full.exists() and not link_full.is_symlink(), (
-        "restore materialized something at the symlink path"
-    )
-    # The real files WERE restored
+    if link_rel in result.recreated_symlinks:
+        # Recreated as a real symlink resolving to the restored transcript.
+        assert link_full.is_symlink()
+        assert link_full.resolve() == (mock_claude_dir / jsonl_rel).resolve()
+    else:
+        # Skipped: nothing materialized (NOT a regular file with the blob text).
+        assert not link_full.exists() and not link_full.is_symlink()
+    # The real files were restored regardless.
     assert (mock_claude_dir / jsonl_rel).read_bytes() == b'{"real":"transcript"}\n'
     assert (mock_claude_dir / log_rel).exists()
+
+
+def test_is_transcript_symlink_recognizes_pattern():
+    from claude_session_backup.commands import _is_transcript_symlink
+    uuid = "abc12345-1111-2222-3333-444444444444"
+    assert _is_transcript_symlink(f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl", uuid)
+    # wrong basename
+    assert not _is_transcript_symlink(f"sesslogs/PROJ__{uuid}_Alice/other.jsonl", uuid)
+    # wrong depth (nested baks/)
+    assert not _is_transcript_symlink(f"sesslogs/PROJ__{uuid}_Alice/baks/transcript.jsonl", uuid)
+    # wrong uuid in dir
+    assert not _is_transcript_symlink("sesslogs/PROJ__other-uuid_Alice/transcript.jsonl", uuid)
+    # not under sesslogs
+    assert not _is_transcript_symlink(f"projects/slug/{uuid}.jsonl", uuid)
+
+
+def test_restore_session_falls_back_to_skip_when_symlink_creation_fails(
+    mock_claude_dir, tmp_path, monkeypatch
+):
+    """When create_symlink returns False (e.g. Windows without symlink
+    privilege), the transcript.jsonl link is SKIPPED -- never materialized as a
+    regular file holding the blob's target-path string, never fails the restore."""
+    from claude_session_backup import commands as cmds
+    from claude_session_backup.commands import _restore_session
+    uuid = "57c00001-1111-2222-3333-444444444444"
+    slug = "C--proj-nopriv"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    commit = _commit_symlink(mock_claude_dir, link_rel,
+                             f"projects/{slug}/{uuid}.jsonl", "tlink")
+    for rel in (jsonl_rel, link_rel):
+        full = mock_claude_dir / rel
+        if full.is_symlink() or full.exists():
+            full.unlink()
+
+    # Simulate "no symlink privilege": create_symlink returns False.
+    monkeypatch.setattr("dazzle_filekit.create_symlink", lambda *a, **k: False)
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert link_rel in result.skipped_symlinks
+    assert link_rel not in result.recreated_symlinks
+    link_full = mock_claude_dir / link_rel
+    # CRITICAL: no regular file (the v0.3.15 bug) and no link materialized.
+    assert not link_full.exists() and not link_full.is_symlink()
+    # Restore otherwise succeeded.
+    assert (mock_claude_dir / jsonl_rel).read_bytes() == b'{"x":1}\n'
+
+
+def test_restore_session_recreate_heals_blocking_regular_file(
+    mock_claude_dir, tmp_path
+):
+    """A 107-byte-style regular file sitting where the transcript.jsonl symlink
+    should be BLOCKS the logger from ever recreating the link. Restore must
+    replace it with a real symlink (privileged) -- healing that dead state."""
+    from claude_session_backup.commands import _restore_session
+    if not _can_make_symlink(tmp_path):
+        pytest.skip("symlink creation not permitted")
+    uuid = "57c00002-1111-2222-3333-444444444444"
+    slug = "C--proj-heal"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    commit = _commit_symlink(mock_claude_dir, link_rel,
+                             f"projects/{slug}/{uuid}.jsonl", "tlink")
+    # Pre-place a blocking REGULAR FILE at the link path (the leftover stub).
+    link_full = mock_claude_dir / link_rel
+    link_full.parent.mkdir(parents=True, exist_ok=True)
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+    link_full.write_bytes(b"C:/some/old/path/transcript.jsonl")  # blocking stub
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert link_rel in result.recreated_symlinks
+    assert link_full.is_symlink()  # the stub was healed into a real link
+    assert link_full.resolve() == (mock_claude_dir / jsonl_rel).resolve()
+
+
+def test_restore_session_recreate_is_idempotent(mock_claude_dir, tmp_path):
+    """If the correct transcript.jsonl symlink already exists, recreate is a
+    no-op success (no churn)."""
+    from claude_session_backup.commands import _restore_session
+    if not _can_make_symlink(tmp_path):
+        pytest.skip("symlink creation not permitted")
+    uuid = "57c00003-1111-2222-3333-444444444444"
+    slug = "C--proj-idem"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    link_rel = f"sesslogs/PROJ__name__{uuid}_Alice/transcript.jsonl"
+    commit = _commit_symlink(mock_claude_dir, link_rel,
+                             f"projects/{slug}/{uuid}.jsonl", "tlink")
+    # Pre-create the CORRECT symlink already.
+    link_full = mock_claude_dir / link_rel
+    link_full.parent.mkdir(parents=True, exist_ok=True)
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+    target_abs = (mock_claude_dir / jsonl_rel).resolve()
+    os.symlink(target_abs, link_full)
+    mtime_before = link_full.lstat().st_mtime
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert link_rel in result.recreated_symlinks
+    assert link_full.is_symlink()
+    assert link_full.resolve() == target_abs
+
+
+def test_restore_session_non_transcript_symlink_still_skipped(mock_claude_dir, tmp_path):
+    """A non-transcript.jsonl symlink in scope is conservatively skipped (we
+    don't know its correct target), never recreated."""
+    from claude_session_backup.commands import _restore_session
+    uuid = "57c00004-1111-2222-3333-444444444444"
+    slug = "C--proj-other"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    # A symlink that is NOT transcript.jsonl (some other link in the sesslog dir)
+    other_link = f"sesslogs/PROJ__name__{uuid}_Alice/weird-link.log"
+    commit = _commit_symlink(mock_claude_dir, other_link, "/somewhere/else.log", "olink")
+    for rel in (jsonl_rel, other_link):
+        full = mock_claude_dir / rel
+        if full.is_symlink() or full.exists():
+            full.unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert other_link in result.skipped_symlinks
+    assert other_link not in result.recreated_symlinks
 
 
 def test_git_restore_file_does_not_write_through_symlink(mock_claude_dir, tmp_path):
@@ -2551,7 +2687,14 @@ def test_restore_session_full_does_not_clobber_via_dangling_symlink(
     assert (mock_claude_dir / jsonl_rel).read_bytes() == real_content, (
         "restore clobbered the transcript through the dangling symlink"
     )
-    assert link_rel in result.skipped_symlinks
+    # v0.3.17: the transcript.jsonl symlink is recreated (privileged) or
+    # skipped (unprivileged) -- never byte-restored, never clobbering.
+    assert link_rel in (result.recreated_symlinks + result.skipped_symlinks)
+    # If recreated, the link must point at the (intact) restored transcript.
+    link_full = mock_claude_dir / link_rel
+    if link_rel in result.recreated_symlinks:
+        assert link_full.is_symlink()
+        assert link_full.resolve() == (mock_claude_dir / jsonl_rel).resolve()
 
 
 # ── cmd_restore full-restore (v0.3.12 -- #32 + #33) ─────────────────────
