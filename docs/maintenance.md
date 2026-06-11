@@ -239,8 +239,24 @@ claude-session-logger writes `sesslogs/<dir>/transcript.jsonl` as a **symlink** 
 
 - **The symlink blob is NEVER written to disk.** A write-guard in the lowest restore primitive (`git_restore_file`, v0.3.15) removes any on-disk symlink/junction at a destination before writing, so bytes never land on a link target.
 - **The `transcript.jsonl` symlink is RECREATED** (v0.3.17, #38) as a real filesystem link pointing at the restored transcript, via `dazzle_filekit.create_symlink` (the same helper the logger uses; tries `os.symlink` -> `dazzlelink` -> `mklink`). Reported as `Recreated N symlink(s)`. This also heals a stuck state: if a regular file is sitting where the symlink should be, the logger *refuses* to recreate the link -- csb replaces the stub with a proper symlink.
-- **On Windows without symlink privilege** (no Developer Mode / admin), recreation gracefully falls back to skip-and-report (`Skipped N symlink(s)`) -- never failing the restore, never materializing the target-path as a regular file. The logger will recreate the link on next session activity.
-- **Any non-`transcript.jsonl` symlink** in scope is conservatively skipped (csb only knows the correct target for the transcript link).
+- **Every OTHER symlink entry is recreated VERBATIM** (v0.3.18, #39) from its blob's target-path text. Same-machine restores (the dominant case) get an exact link; a cross-machine restore may yield a dangling link -- harmless, and strictly better than no link or a stub. Directory-vs-file is inferred from the on-disk target when it exists.
+- **On Windows without symlink privilege** (no Developer Mode / admin), recreation gracefully falls back to skip-and-report (`Skipped N symlink(s)`) -- never failing the restore, never materializing the target-path as a regular file. The logger will recreate its own transcript link on next session activity.
+- **What git cannot represent at all:** git's tree-mode vocabulary (`100644`/`100755`/`120000`/`160000`/`040000`) has no encoding for **hardlinks, Windows junctions, or NTFS alternate data streams** -- those relationships were never captured at backup time, so no git-based restore can reproduce them. (Future home: manifest-based external recovery, #8.)
+
+### Timestamps are restored, not recovery-stamped
+
+Git stores content + tree mode only -- no mtime/atime/creation-time -- so a naive restore stamps every recovered file with recovery time, and the session floats to the top of any filesystem-time sort despite being logically old. csb restore (v0.3.18, #40) reapplies each written file's **derived original timestamps**, making recovery byte+metadata-exact:
+
+| Source (in order) | Used for |
+|---|---|
+| Index `jsonl_mtime` (recorded at last scan; survives deletion) | mtime of the main transcript |
+| Last event timestamp in the JSONL content | mtime of any JSONL without an index value |
+| Author date of the last git commit touching the path | mtime of non-JSONL footprint files |
+| First event timestamp in the JSONL content | Windows creation (birth) time |
+
+Because the sources are content-internal (git-stored bytes + the rebuildable index), restoration is **retroactive for every session already in git history**. Reported as `Applied original timestamps to N file(s)`; preserved (present) files are never touched.
+
+Platform notes: mtime/atime go through `os.utime` -- portable across Linux, macOS, BSD, and Windows. The creation-time layer is Windows-only and optional (pywin32 via `dazzle_filekit`; gracefully skipped elsewhere -- Linux/BSD have no settable birth time, and Unix ctime cannot be set by any API). atime is best-effort (modern OSes largely disable atime updates). Side benefit: a timestamp-faithful restore no longer trips the FTS5 mtime-freshness check (#36's most common trigger) or changed-detection.
 
 ### `csb resume` preflight
 
