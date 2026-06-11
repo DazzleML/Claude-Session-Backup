@@ -359,6 +359,35 @@ def git_show_file_bytes(
     return None
 
 
+def git_last_commit_time(
+    claude_dir: str, commit: str, file_path: Union[str, Path]
+) -> Optional[float]:
+    """Author time (epoch) of the last commit touching ``file_path`` at or
+    before ``commit``.
+
+    Used by the restore timestamp-fidelity layer (#40) as the mtime fallback
+    for files with no internal timestamps (session-states, file-history,
+    todos, logger text channels): the backup nearest the last modification
+    is a principled stand-in for the file's true mtime, which git does not
+    store.
+    """
+    norm = _to_repo_relative(claude_dir, _normalize_git_path(file_path))
+    result = run_git(
+        claude_dir,
+        "log", "-1", "--format=%at", commit, "--", norm,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    out = result.stdout.strip()
+    if not out:
+        return None
+    try:
+        return float(out.splitlines()[0].strip())
+    except ValueError:
+        return None
+
+
 def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
     """
     Find every distinct path under ``projects/*/<uuid>.jsonl`` that git has

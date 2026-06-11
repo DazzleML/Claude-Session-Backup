@@ -9,6 +9,23 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.3.18] -- 2026-06-11 (alpha)
+
+**Restore fidelity: links and timestamps.** Two restore-completeness features ship together: `csb restore` now recreates **every** git symlink entry, not just the logger's `transcript.jsonl` (#39), and restored files get their **original timestamps** back -- a restore is now byte+metadata-exact, not just byte-exact (#40). Timestamp sources are content-internal (index mtime, transcript event timestamps, git commit dates), so fidelity is **retroactive for every session already in git history** -- including sessions deleted long before this release. 842/842 tests pass (was 832; +10 new). Both features red-green verified.
+
+### Changed
+- **`csb restore` recreates ALL mode-120000 symlink entries** (#39), not only the recognized `transcript.jsonl` pattern (v0.3.17 behavior). Recognized transcript links keep their recomputed current-machine target (relocation-robust); any other symlink is recreated VERBATIM from its blob target text -- exactly right on the same machine, possibly dangling cross-machine (harmless, and strictly better than no link). Directory-vs-file is inferred from the on-disk target. Creation failure (no symlink privilege) still falls back to skip-and-report, and a symlink blob is still NEVER written to disk as file bytes (the v0.3.15 clobber class stays closed).
+
+### Added
+- **Content-derived timestamp restoration** (#40). After writing, restore reapplies each file's derived original times: mtime from the index's recorded `jsonl_mtime` (survives deletion) for the main transcript, else the last event timestamp in the JSONL content, else the author date of the last git commit touching the path; Windows creation (birth) time from the first event timestamp via `dazzle_filekit` `SetFileTime` (graceful skip without pywin32); atime set alongside mtime (best-effort). Reported as `Applied original timestamps to N file(s)`; `--dry-run` reports what would be applied. Preserved (present) files are never touched. **Cross-platform:** mtime/atime via `os.utime` everywhere (Linux/macOS/BSD/Windows); the Windows creation-time layer is optional and gated -- nothing assumes Windows. Unix ctime is not settable (no OS API; documented limitation).
+- **`git_last_commit_time`** helper (git_ops): author epoch of the last commit touching a path at-or-before a commit -- the mtime stand-in for footprint files with no internal timestamps.
+- **10 new automated tests**: 4 for #39 (verbatim recreate resolving to a live target, dangling/foreign-target recreate, directory-symlink inference, fallback-to-skip never materializes a file) and 7 for #40 minus 1 rewritten (index-mtime preferred, last-event fallback, git-commit-date for non-JSONL, Windows birth time, preserved-files-untouched, changed-detection interaction, FTS5-freshness interaction) -- the v0.3.17 "non-transcript symlinks skipped" test was rewritten to the recreate behavior.
+
+### Notes
+- **#36 root-cause relief:** the FTS5 false-stale trigger ("restore rewrites mtime, freshness check false-fires") is removed for timestamp-faithful restores -- the restored mtime equals the indexed mtime, so `last_jsonl_mtime >= jsonl_mtime` holds. The `last_content_hash` robustness work and the sesslog-dispatcher fix remain in #36.
+- **Changed-detection stays honest:** a restored-old mtime no longer makes a freshly-recovered session look like it has un-backed-up changes, and `--sort expiration` keys on a truthful old mtime after the next scan.
+- A latent test-fixture bug surfaced and fixed: `_populate_db_with_session` was passing an ISO string into the positional `jsonl_mtime` slot (it meant `scanned_at`); production now also defensively coerces non-numeric DB mtimes to None.
+
 ## [0.3.17] -- 2026-06-11 (alpha)
 
 **The project graduates to alpha.** End-to-end restore is proven (#13 closed), content search works (FTS5), and the recovery path is hardened (v0.3.15/v0.3.16). The two remaining roadmap items (#12 distilled layer, #14 in-csb viewer) are convenience features, not core function -- #12 is an alternate form of what claude-session-logger already produces, and #14 is served externally by `dz claudeview`. Also: `csb restore` now **recreates** the logger's `transcript.jsonl` symlink instead of skipping it (#38). 832/832 tests pass (was 827; +5 new). Red-green verified.
@@ -652,7 +669,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...HEAD
+[0.3.18]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.15...v0.3.16
 [0.3.15]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...v0.3.15

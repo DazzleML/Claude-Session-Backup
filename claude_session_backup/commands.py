@@ -34,9 +34,11 @@ from .git_ops import (
     git_commit_user,
     git_find_deleted_file,
     git_find_jsonl_by_uuid,
+    git_last_commit_time,
     git_ls_tree_for_uuid,
     git_ls_tree_symlinks_for_uuid,
     git_restore_file,
+    git_show_file_bytes,
     git_status,
     is_git_repo,
 )
@@ -799,6 +801,7 @@ def cmd_restore(args) -> int:
         force=getattr(args, "force", False),
         quiet=getattr(args, "quiet", False),
         dry_run=args.dry_run,
+        db_mtime=(session.get("jsonl_mtime") or None) if session else None,
     )
     if result is None:
         return 1  # error already printed by helper
@@ -818,15 +821,24 @@ def cmd_restore(args) -> int:
         if result.recreated_symlinks:
             nr = len(result.recreated_symlinks)
             print(f"Would recreate {nr} symlink{'s' if nr != 1 else ''} "
-                  f"(transcript.jsonl -> the restored transcript):")
+                  f"(transcript.jsonl -> the restored transcript; "
+                  f"others verbatim from git):")
             for p in result.recreated_symlinks:
                 print(f"  {p}")
-        if result.skipped_symlinks:
-            ns = len(result.skipped_symlinks)
-            print(f"Would skip {ns} symlink{'s' if ns != 1 else ''} "
-                  f"(not a transcript link; left for the logger):")
-            for p in result.skipped_symlinks:
-                print(f"  {p}")
+        if result.write_list:
+            nt = len(result.write_list)
+            line = (f"Would apply derived original timestamps to {nt} "
+                    f"file{'s' if nt != 1 else ''} (mtime from index/"
+                    f"transcript events/git history; Windows creation time "
+                    f"from the first event).")
+            try:
+                db_mt = float(session.get("jsonl_mtime") or 0) if session else 0.0
+            except (TypeError, ValueError):
+                db_mt = 0.0
+            if db_mt:
+                iso = datetime.fromtimestamp(db_mt).strftime("%Y-%m-%d %H:%M:%S")
+                line += f" Transcript mtime would be {iso} (from index)."
+            print(line)
         if session is None:
             print("Source: git history (no DB row -- fallback mode)")
         return 0
@@ -864,14 +876,19 @@ def cmd_restore(args) -> int:
         nr = len(result.recreated_symlinks)
         print(
             f"Recreated {nr} symlink{'s' if nr != 1 else ''} "
-            f"(transcript.jsonl -> the restored transcript)."
+            f"(transcript.jsonl -> the restored transcript; others verbatim)."
         )
     if result.skipped_symlinks:
         ns = len(result.skipped_symlinks)
         print(
             f"Skipped {ns} symlink{'s' if ns != 1 else ''} "
-            f"(could not recreate -- no symlink privilege?; "
-            f"claude-session-logger will recreate on next activity)."
+            f"(could not recreate -- no symlink privilege?)."
+        )
+    if result.times_applied:
+        nt = result.times_applied
+        print(
+            f"Applied original timestamps to {nt} file{'s' if nt != 1 else ''} "
+            f"(derived from index, transcript events, and git history)."
         )
     if session is None:
         print("(restored via git-history fallback -- DB had no row for this UUID)")
@@ -927,6 +944,10 @@ class RestoreResult:
     # True/False = checked. transcript_warning carries the reason when False.
     transcript_valid: Optional[bool] = None
     transcript_warning: str = ""
+    # Timestamp fidelity (#40, v0.3.19): how many restored files got their
+    # derived original timestamps reapplied (mtime always; Windows creation
+    # time when pywin32 is available).
+    times_applied: int = 0
 
 
 def _restore_session(
@@ -939,6 +960,7 @@ def _restore_session(
     force: bool = False,
     quiet: bool = False,
     dry_run: bool = False,
+    db_mtime: Optional[float] = None,
 ) -> Optional[RestoreResult]:
     """Core restore logic shared by cmd_restore / cmd_resume / future cmd_view.
 
@@ -961,6 +983,9 @@ def _restore_session(
         quiet: passed through to `backup_lock` for quieter output.
         dry_run: if True, populate write_list/preserve_list but don't
             actually write anything (returns RestoreResult with wrote=0).
+        db_mtime: the index's recorded ``jsonl_mtime`` for this session
+            (survives deletion), used as the preferred mtime source for
+            the main transcript (#40). None -> derive from content.
 
     The per-file overwrite policy (v0.3.12+): missing files always
     restored; present files preserved unless --force.
@@ -1003,9 +1028,10 @@ def _restore_session(
         paths_to_restore = sorted(set(paths_to_restore))
 
     # Per-file overwrite policy:
-    #   - Symlink entry        -> NEVER written byte-wise. The logger's
-    #     transcript.jsonl symlinks are RECREATED as real links after the
-    #     write loop (#38); any other symlink is skipped-and-reported.
+    #   - Symlink entry        -> NEVER written byte-wise. ALL symlinks are
+    #     RECREATED as real links after the write loop (#38 transcript-with-
+    #     recomputed-target, #39 everything-else-verbatim); creation failure
+    #     (no privilege) falls back to skip-and-report.
     #   - File missing on disk  -> restore from git (the whole point)
     #   - File present on disk  -> PRESERVE by default; --force opts in.
     write_list: list[str] = []
@@ -1035,13 +1061,10 @@ def _restore_session(
     )
 
     if dry_run:
-        # Classify symlink candidates without acting: transcript.jsonl links
-        # would be recreated; anything else would be skipped.
-        for p in symlink_candidates:
-            if _is_transcript_symlink(p, full_uuid):
-                result.recreated_symlinks.append(p)
-            else:
-                result.skipped_symlinks.append(p)
+        # Every symlink candidate would be recreated (#39): transcript links
+        # with a recomputed target, anything else verbatim from its blob.
+        # (Whether creation succeeds -- privilege -- is only knowable live.)
+        result.recreated_symlinks.extend(symlink_candidates)
         return result
 
     # Real restore: acquire backup_lock for the whole multi-file write so
@@ -1057,19 +1080,37 @@ def _restore_session(
             else:
                 result.failed.append(p)
 
-        # Symlink handling (#38, v0.3.17): the transcript is now on disk, so
-        # recreate the logger's transcript.jsonl symlink pointing at it. We
-        # NEVER restore a symlink's blob (that was the v0.3.15 clobber); we
-        # recreate it as a real link via dazzle_filekit (cross-platform,
-        # graceful no-privilege fallback). Anything that isn't a transcript
-        # symlink is skipped-and-reported as before.
+        # Symlink handling (#38 + #39): we NEVER restore a symlink's blob
+        # (that was the v0.3.15 clobber); every mode-120000 entry is
+        # RECREATED as a real link via dazzle_filekit (cross-platform,
+        # graceful no-privilege fallback). The logger's transcript.jsonl
+        # gets a recomputed current-machine target (relocation-robust);
+        # any other link is recreated verbatim from its blob target text.
+        # Creation failure (no privilege) -> skip-and-report.
         for p in symlink_candidates:
-            if _is_transcript_symlink(p, full_uuid) and _recreate_transcript_symlink(
-                claude_dir, p, slug, full_uuid
-            ):
+            if _is_transcript_symlink(p, full_uuid):
+                ok = _recreate_transcript_symlink(claude_dir, p, slug, full_uuid)
+            else:
+                ok = _recreate_symlink_verbatim(claude_dir, p, commit)
+            if ok:
                 result.recreated_symlinks.append(p)
             else:
                 result.skipped_symlinks.append(p)
+
+        # Timestamp fidelity (#40): a restore should be byte+METADATA-exact.
+        # Reapply each written file's derived original times so the recovered
+        # session is indistinguishable from never-deleted in any
+        # filesystem-time view (and so the FTS5 mtime-freshness check doesn't
+        # false-fire on recovery -- the #36 root cause). Derived sources only
+        # (index mtime, transcript event timestamps, git commit dates) --
+        # content-internal, so this works retroactively for all git history.
+        result.times_applied = _apply_restored_times(
+            claude_dir=claude_dir,
+            written=[p for p in write_list if p not in result.failed],
+            jsonl_path=jsonl_path,
+            commit=commit,
+            db_mtime=db_mtime,
+        )
 
     # Restore-verify gate (v0.3.16): confirm the main transcript came out as
     # a real JSONL. If git only had a stub/garbage blob for it, the restore
@@ -1142,6 +1183,210 @@ def _recreate_transcript_symlink(
         # create_symlink is documented to return False rather than raise, but
         # guard anyway -- a symlink failure must never abort or corrupt a restore.
         return False
+
+
+def _recreate_symlink_verbatim(claude_dir: str, link_rel: str, commit: str) -> bool:
+    """Recreate a non-transcript git symlink entry as a real filesystem link
+    using the VERBATIM target stored in the symlink blob (#39).
+
+    A symlink blob's content IS the link-target path text. For links csb
+    doesn't recognize (anything that isn't the logger's transcript.jsonl),
+    that stored target is the best information available: on the same machine
+    (the dominant restore case) it is exactly right; cross-machine it may
+    dangle -- harmless, and strictly better than no link or a stub.
+
+    Dir-vs-file: the blob doesn't record whether the target is a directory,
+    so infer from the on-disk target when it exists (relative targets resolve
+    against the link's parent, per symlink semantics); default to file.
+
+    Same safety contract as the transcript recreate: never raises, never
+    writes the target-path text as a regular file (the v0.3.15 clobber class
+    stays closed). Returns False -> caller skips-and-reports.
+    """
+    try:
+        from dazzle_filekit import create_symlink
+    except ImportError:
+        return False
+    raw = git_show_file_bytes(claude_dir, commit, link_rel)
+    if not raw:
+        return False
+    target = raw.decode("utf-8", errors="replace").strip()
+    if not target:
+        return False
+    link_path = Path(claude_dir) / link_rel
+    t = Path(target)
+    probe = t if t.is_absolute() else (link_path.parent / t)
+    try:
+        is_dir = probe.is_dir()
+    except OSError:
+        is_dir = False
+    # Idempotent: a link already pointing at this target is a no-op success.
+    # Windows os.readlink returns absolute targets in extended-length form
+    # (\\?\C:\...), so compare Path-normalized with the prefix stripped.
+    try:
+        if link_path.is_symlink():
+            existing = os.readlink(str(link_path))
+            if existing.startswith("\\\\?\\"):
+                existing = existing[4:]
+            if existing == target or Path(existing) == Path(target):
+                return True
+    except OSError:
+        pass
+    try:
+        return bool(create_symlink(
+            target, str(link_path),
+            force=True, target_is_directory=is_dir,
+        ))
+    except Exception:
+        return False
+
+
+# ── Timestamp fidelity (#40): the restore metadata-apply layer ──────────────
+#
+# Restore should bring back WHEN, not just bytes. Git stores content + tree
+# mode only -- no mtime/atime/creation-time -- so a naive restore stamps every
+# recovered file with recovery time and the session floats to the top of any
+# filesystem-time sort despite being logically old. These helpers derive each
+# file's true times from data csb already holds and reapply them:
+#
+#   mtime ladder:  index jsonl_mtime (main transcript; survives deletion)
+#                  -> last event timestamp in the JSONL content
+#                  -> author date of the last git commit touching the path
+#   birth (Win):   first event timestamp, via filekit SetFileTime
+#   atime:         set alongside mtime (best-effort; modern OSes neuter atime)
+#
+# This is the extensible fidelity layer: future recorded-value sources (e.g.
+# a preservelib manifest with exact mtimes/ACLs, Track C of the preservelib
+# DWP) plug in as higher-priority rungs of the same ladder -- the apply
+# plumbing does not change. Unix ctime is not settable (no OS API).
+
+
+def _iso_to_epoch(ts: str) -> Optional[float]:
+    """Parse a Claude Code event timestamp (ISO 8601, usually Z-suffixed)
+    to an epoch float. Python 3.10's fromisoformat can't take 'Z'."""
+    if not ts or not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _line_event_time(line: bytes) -> Optional[float]:
+    """Epoch time of one JSONL event line's ``timestamp`` field, or None."""
+    s = line.strip()
+    if not s or not s.startswith(b"{"):
+        return None
+    try:
+        obj = json.loads(s)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(obj, dict):
+        return None
+    return _iso_to_epoch(obj.get("timestamp"))
+
+
+def _jsonl_event_time_bounds(
+    full: Path, head_lines: int = 50, tail_bytes: int = 65536
+) -> tuple[Optional[float], Optional[float]]:
+    """(first_event_time, last_event_time) of a JSONL transcript, derived
+    cheaply: scan up to ``head_lines`` forward for the first timestamped
+    event, and a ``tail_bytes`` block backward for the last. Avoids a full
+    parse of 100MB+ transcripts; returns (None, None) on any failure."""
+    first = last = None
+    try:
+        with open(full, "rb") as f:
+            for i, line in enumerate(f):
+                if i >= head_lines:
+                    break
+                ts = _line_event_time(line)
+                if ts is not None:
+                    first = ts
+                    break
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - tail_bytes))
+            tail = f.read().splitlines()
+        for line in reversed(tail):
+            ts = _line_event_time(line)
+            if ts is not None:
+                last = ts
+                break
+    except OSError:
+        return None, None
+    return first, last
+
+
+def _apply_restored_times(
+    *,
+    claude_dir: str,
+    written: list[str],
+    jsonl_path: str,
+    commit: str,
+    db_mtime: Optional[float] = None,
+) -> int:
+    """Reapply derived original timestamps to freshly-restored files (#40).
+
+    Returns the number of files that received at least one timestamp.
+    Never raises and never fails the restore -- a file whose times can't be
+    derived or applied simply keeps recovery-time stamps.
+    """
+    # Defensive: the DB's jsonl_mtime SHOULD be a float (REAL column), but
+    # SQLite's dynamic typing happily stores anything -- treat non-numeric
+    # values as "no recorded mtime" rather than blowing up os.utime.
+    try:
+        db_mtime = float(db_mtime) if db_mtime else None
+    except (TypeError, ValueError):
+        db_mtime = None
+    try:
+        from dazzle_filekit.metadata import (
+            is_win32_available,
+            restore_windows_creation_time,
+        )
+        can_birth = is_win32_available()
+    except ImportError:
+        restore_windows_creation_time = None
+        can_birth = False
+
+    count = 0
+    for p in written:
+        full = Path(claude_dir) / p
+        try:
+            if not full.is_file():
+                continue
+        except OSError:
+            continue
+        mtime: Optional[float] = None
+        birth: Optional[float] = None
+        if p.replace("\\", "/").endswith(".jsonl"):
+            birth, mtime = _jsonl_event_time_bounds(full)
+        if p == jsonl_path and db_mtime:
+            # The index's recorded filesystem mtime is exact -- prefer it
+            # over the last-event approximation for the main transcript.
+            mtime = db_mtime
+        if mtime is None:
+            mtime = git_last_commit_time(claude_dir, commit, p)
+        if mtime is None and birth is None:
+            continue
+        applied = False
+        # Creation time FIRST (SetFileTime), then utime -- so mtime/atime
+        # land last and cannot be perturbed by the creation-time write.
+        if birth is not None and can_birth and restore_windows_creation_time:
+            try:
+                applied = bool(
+                    restore_windows_creation_time(str(full), birth)
+                ) or applied
+            except Exception:
+                pass
+        if mtime is not None:
+            try:
+                os.utime(str(full), (mtime, mtime))
+                applied = True
+            except OSError:
+                pass
+        if applied:
+            count += 1
+    return count
 
 
 def _extract_slug_from_jsonl_path(jsonl_path: str) -> str:
@@ -2158,6 +2403,7 @@ def cmd_resume(args) -> int:
             full_uuid=full_id,
             jsonl_path=jsonl_path_for_restore,
             commit=commit_for_restore,
+            db_mtime=session.get("jsonl_mtime") or None,
             quiet=getattr(args, "quiet", False),
         )
         if restore_result is None or restore_result.failed:
@@ -2171,14 +2417,19 @@ def cmd_resume(args) -> int:
         if restore_result.recreated_symlinks:
             nr = len(restore_result.recreated_symlinks)
             print(
-                f"  (recreated {nr} symlink{'s' if nr != 1 else ''} -> "
-                f"the restored transcript)"
+                f"  (recreated {nr} symlink{'s' if nr != 1 else ''})"
             )
         if restore_result.skipped_symlinks:
             ns = len(restore_result.skipped_symlinks)
             print(
                 f"  (skipped {ns} symlink{'s' if ns != 1 else ''} -- "
-                f"the logger recreates them on next activity)"
+                f"could not recreate; no symlink privilege?)"
+            )
+        if restore_result.times_applied:
+            nt = restore_result.times_applied
+            print(
+                f"  (applied original timestamps to {nt} "
+                f"file{'s' if nt != 1 else ''})"
             )
         print(
             f"Restored {restore_result.wrote} file"

@@ -2592,20 +2592,124 @@ def test_restore_session_recreate_is_idempotent(mock_claude_dir, tmp_path):
     assert link_full.resolve() == target_abs
 
 
-def test_restore_session_non_transcript_symlink_still_skipped(mock_claude_dir, tmp_path):
-    """A non-transcript.jsonl symlink in scope is conservatively skipped (we
-    don't know its correct target), never recreated."""
+def test_restore_session_non_transcript_symlink_recreated_verbatim(
+    mock_claude_dir, tmp_path
+):
+    """#39: a non-transcript symlink in scope is recreated VERBATIM from its
+    blob target text (recreated when privileged; skipped without privilege --
+    NEVER materialized as a regular file holding the target path)."""
     from claude_session_backup.commands import _restore_session
     uuid = "57c00004-1111-2222-3333-444444444444"
     slug = "C--proj-other"
     jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
-    # A symlink that is NOT transcript.jsonl (some other link in the sesslog dir)
+    # A symlink that is NOT transcript.jsonl, with a relative target that
+    # exists on disk (so the link resolves after recreate).
     other_link = f"sesslogs/PROJ__name__{uuid}_Alice/weird-link.log"
-    commit = _commit_symlink(mock_claude_dir, other_link, "/somewhere/else.log", "olink")
-    for rel in (jsonl_rel, other_link):
-        full = mock_claude_dir / rel
-        if full.is_symlink() or full.exists():
-            full.unlink()
+    real_target = mock_claude_dir / f"sesslogs/PROJ__name__{uuid}_Alice/real.log"
+    real_target.parent.mkdir(parents=True, exist_ok=True)
+    real_target.write_bytes(b"real log content\n")
+    commit = _commit_symlink(mock_claude_dir, other_link, "real.log", "olink")
+    link_full = mock_claude_dir / other_link
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    if _can_make_symlink(tmp_path):
+        assert other_link in result.recreated_symlinks
+        assert link_full.is_symlink()
+        assert os.readlink(str(link_full)) == "real.log"
+        # The link resolves to the real on-disk target's content.
+        assert link_full.read_bytes() == b"real log content\n"
+    else:
+        assert other_link in result.skipped_symlinks
+        # CRITICAL: never a regular file holding the target-path text.
+        assert not link_full.exists() or link_full.is_symlink()
+
+
+def test_restore_session_verbatim_recreate_dangling_target(
+    mock_claude_dir, tmp_path
+):
+    """#39: an unrecognized symlink whose blob target doesn't exist on this
+    machine is still recreated (dangling link -- harmless, and strictly
+    better than nothing). Privilege-aware."""
+    from claude_session_backup.commands import _restore_session
+    if not _can_make_symlink(tmp_path):
+        pytest.skip("symlink creation not permitted")
+    uuid = "57c00005-1111-2222-3333-444444444444"
+    slug = "C--proj-dangle"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    other_link = f"sesslogs/PROJ__name__{uuid}_Alice/foreign-link.log"
+    foreign_target = "C:/nonexistent/foreign/machine/path.log"
+    commit = _commit_symlink(mock_claude_dir, other_link, foreign_target, "flink")
+    link_full = mock_claude_dir / other_link
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert other_link in result.recreated_symlinks
+    assert link_full.is_symlink()
+    # Windows os.readlink returns absolute targets in extended-length form
+    # (\\?\C:\...); strip the prefix and compare Path-normalized.
+    raw = os.readlink(str(link_full))
+    if raw.startswith("\\\\?\\"):
+        raw = raw[4:]
+    assert Path(raw) == Path(foreign_target)
+    assert not link_full.exists()  # dangling: link present, target absent
+
+
+def test_restore_session_verbatim_dir_symlink_inference(
+    mock_claude_dir, tmp_path
+):
+    """#39: when the blob target is an existing DIRECTORY, recreation passes
+    target_is_directory so Windows gets a proper directory symlink."""
+    from claude_session_backup.commands import _restore_session
+    if not _can_make_symlink(tmp_path):
+        pytest.skip("symlink creation not permitted")
+    uuid = "57c00006-1111-2222-3333-444444444444"
+    slug = "C--proj-dirlink"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    dir_link = f"sesslogs/PROJ__name__{uuid}_Alice/data-dir"
+    real_dir = mock_claude_dir / f"sesslogs/PROJ__name__{uuid}_Alice/actual-dir"
+    real_dir.mkdir(parents=True, exist_ok=True)
+    (real_dir / "inside.txt").write_bytes(b"inside\n")
+    commit = _commit_symlink(mock_claude_dir, dir_link, "actual-dir", "dlink")
+    link_full = mock_claude_dir / dir_link
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert dir_link in result.recreated_symlinks
+    assert link_full.is_symlink()
+    # Resolves as a directory; contents reachable through the link.
+    assert (link_full / "inside.txt").read_bytes() == b"inside\n"
+
+
+def test_restore_session_verbatim_falls_back_when_create_fails(
+    mock_claude_dir, tmp_path, monkeypatch
+):
+    """#39: when create_symlink returns False for an unrecognized link, it is
+    skipped-and-reported -- never materialized as a regular file (the v0.3.15
+    clobber class stays closed for the verbatim path too)."""
+    from claude_session_backup.commands import _restore_session
+    uuid = "57c00007-1111-2222-3333-444444444444"
+    slug = "C--proj-vfail"
+    jsonl_rel = _make_session_jsonl(mock_claude_dir, slug, uuid, content=b'{"x":1}\n')
+    other_link = f"sesslogs/PROJ__name__{uuid}_Alice/cant-make.log"
+    commit = _commit_symlink(mock_claude_dir, other_link, "/somewhere/else.log", "clink")
+    link_full = mock_claude_dir / other_link
+    if link_full.is_symlink() or link_full.exists():
+        link_full.unlink()
+
+    monkeypatch.setattr("dazzle_filekit.create_symlink", lambda *a, **k: False)
 
     result = _restore_session(
         claude_dir=str(mock_claude_dir), full_uuid=uuid,
@@ -2613,6 +2717,9 @@ def test_restore_session_non_transcript_symlink_still_skipped(mock_claude_dir, t
     )
     assert other_link in result.skipped_symlinks
     assert other_link not in result.recreated_symlinks
+    assert not link_full.exists() and not link_full.is_symlink()
+    # Restore otherwise succeeded.
+    assert (mock_claude_dir / jsonl_rel).read_bytes() == b'{"x":1}\n'
 
 
 def test_git_restore_file_does_not_write_through_symlink(mock_claude_dir, tmp_path):
@@ -2746,7 +2853,11 @@ def _populate_db_with_session(db_path, slug, uuid, jsonl_path, deleted_at="2026-
         claude_version="2.1.81",
         folder_usage={"C:\\code\\test": 5},
     )
-    upsert_session(conn, meta, jsonl_path, 100, "2026-03-23T10:30:00Z")
+    # NOTE: positional arg 5 is jsonl_mtime (float); scanned_at is keyword.
+    # (This fixture used to pass the ISO string into jsonl_mtime by mistake,
+    # which #40's numeric consumption surfaced.)
+    upsert_session(conn, meta, jsonl_path, 100, 0.0,
+                   scanned_at="2026-03-23T10:30:00Z")
     if deleted_at:
         mark_deleted(conn, uuid, deleted_at)
     conn.close()
@@ -3479,3 +3590,207 @@ def test_cmd_backup_keeps_deleted_session_deleted_when_jsonl_is_garbage(
     assert row["deleted_at"] == "2026-05-31T00:00:00Z", (
         "garbage JSONL silently un-deleted the session (the b6a4929f cascade)"
     )
+
+
+# ── #40: content-derived timestamp restoration (byte+metadata-exact) ────────
+#
+# Restore must bring back WHEN, not just bytes: mtime from the index /
+# transcript events / git history, Windows creation time from the first
+# event. Sources are content-internal, so restoration is retroactive for
+# everything already in git history.
+
+_TS_FIRST_ISO = "2026-05-01T10:00:00.000Z"
+_TS_LAST_ISO = "2026-05-02T18:30:00.000Z"
+_TS_JSONL = (
+    b'{"type":"user","timestamp":"2026-05-01T10:00:00.000Z",'
+    b'"message":{"role":"user","content":"hi"}}\n'
+    b'{"type":"assistant","timestamp":"2026-05-02T18:30:00.000Z",'
+    b'"message":{"role":"assistant","content":"yo"}}\n'
+)
+
+
+def _iso_epoch(iso: str) -> float:
+    from datetime import datetime
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+
+
+def test_restore_applies_db_mtime_to_transcript(mock_claude_dir):
+    """#40: the index's recorded jsonl_mtime (exact filesystem mtime at last
+    scan, survives deletion) is the preferred mtime source for the main
+    transcript."""
+    from claude_session_backup.commands import _restore_session
+    uuid = "70400001-1111-2222-3333-444444444444"
+    slug = "C--proj-ts-db"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    commit = _commit_file(mock_claude_dir, jsonl_rel, _TS_JSONL, "add ts jsonl")
+    (mock_claude_dir / jsonl_rel).unlink()
+    db_mtime = 1700000000.0  # a known, clearly-old mtime
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit, db_mtime=db_mtime,
+    )
+    assert result.times_applied >= 1
+    assert abs(os.path.getmtime(mock_claude_dir / jsonl_rel) - db_mtime) < 2.0, (
+        "restored transcript did not get the index-recorded mtime back"
+    )
+
+
+def test_restore_derives_mtime_from_last_event_when_no_db_mtime(mock_claude_dir):
+    """#40: without an index mtime (e.g. git-history fallback restore), the
+    transcript's LAST EVENT timestamp is the mtime -- a transcript's mtime IS
+    its last write IS its last event. Retroactive for all git history."""
+    from claude_session_backup.commands import _restore_session
+    uuid = "70400002-1111-2222-3333-444444444444"
+    slug = "C--proj-ts-ev"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    commit = _commit_file(mock_claude_dir, jsonl_rel, _TS_JSONL, "add ts jsonl")
+    (mock_claude_dir / jsonl_rel).unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit, db_mtime=None,
+    )
+    assert result.times_applied >= 1
+    expected = _iso_epoch(_TS_LAST_ISO)
+    assert abs(os.path.getmtime(mock_claude_dir / jsonl_rel) - expected) < 2.0
+
+
+def test_restore_non_jsonl_file_gets_commit_date(mock_claude_dir):
+    """#40: footprint files with no internal timestamps (session-states,
+    file-history, logger text channels) get the author date of the last git
+    commit touching them -- the backup nearest the last modification."""
+    from claude_session_backup.commands import _restore_session
+    uuid = "70400003-1111-2222-3333-444444444444"
+    slug = "C--proj-ts-git"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    _commit_file(mock_claude_dir, jsonl_rel, _TS_JSONL, "add ts jsonl")
+    state_rel = f"session-states/{uuid}.json"
+    commit = _commit_file(
+        mock_claude_dir, state_rel, b'{"session_id":"x"}\n', "add state"
+    )
+    expected = float(_git(
+        mock_claude_dir, "log", "-1", "--format=%at", commit, "--", state_rel
+    ).stdout.strip())
+    for rel in (jsonl_rel, state_rel):
+        (mock_claude_dir / rel).unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert result.times_applied >= 2  # transcript AND the state file
+    assert abs(os.path.getmtime(mock_claude_dir / state_rel) - expected) < 2.0
+
+
+def test_restore_sets_windows_birth_time(mock_claude_dir):
+    """#40: Windows creation (birth) time is set from the FIRST event
+    timestamp via filekit SetFileTime. Windows + pywin32 only."""
+    if sys.platform != "win32":
+        pytest.skip("Windows-only: creation-time restore")
+    try:
+        from dazzle_filekit.metadata import is_win32_available
+    except ImportError:
+        pytest.skip("dazzle_filekit not installed")
+    if not is_win32_available():
+        pytest.skip("pywin32 not available")
+    from claude_session_backup.commands import _restore_session
+    uuid = "70400004-1111-2222-3333-444444444444"
+    slug = "C--proj-ts-birth"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    commit = _commit_file(mock_claude_dir, jsonl_rel, _TS_JSONL, "add ts jsonl")
+    (mock_claude_dir / jsonl_rel).unlink()
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit,
+    )
+    assert result.times_applied >= 1
+    st = os.stat(mock_claude_dir / jsonl_rel)
+    expected = _iso_epoch(_TS_FIRST_ISO)
+    assert abs(st.st_ctime - expected) < 2.0, (
+        "restored transcript did not get its birth time back "
+        f"(st_ctime={st.st_ctime}, expected~{expected})"
+    )
+
+
+def test_restore_preserved_files_keep_their_times(mock_claude_dir):
+    """#40: present files are preserved (not rewritten) by default -- their
+    LIVE timestamps must not be touched by the fidelity layer."""
+    import time
+    from claude_session_backup.commands import _restore_session
+    uuid = "70400005-1111-2222-3333-444444444444"
+    slug = "C--proj-ts-keep"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    commit = _commit_file(mock_claude_dir, jsonl_rel, _TS_JSONL, "add ts jsonl")
+    # File stays ON DISK with a distinctive live mtime.
+    live_mtime = time.time() - 12345
+    os.utime(mock_claude_dir / jsonl_rel, (live_mtime, live_mtime))
+
+    result = _restore_session(
+        claude_dir=str(mock_claude_dir), full_uuid=uuid,
+        jsonl_path=jsonl_rel, commit=commit, db_mtime=1700000000.0,
+    )
+    assert jsonl_rel in result.preserve_list
+    assert result.times_applied == 0
+    assert abs(os.path.getmtime(mock_claude_dir / jsonl_rel) - live_mtime) < 2.0
+
+
+def test_find_unbacked_not_fooled_by_restored_old_mtime(mock_claude_dir, tmp_path):
+    """#40 interaction: after a timestamp-faithful restore, the file's mtime
+    EQUALS the index-recorded mtime, so changed-detection does NOT flag the
+    session as having un-backed-up changes. (Without #40 the recovery-time
+    mtime would false-flag it.) Also pins the expiration-display source:
+    the recorded jsonl_mtime stays the truthful old value."""
+    import time
+    from claude_session_backup.commands import find_unbacked_sessions
+    from claude_session_backup.index import (
+        get_indexed_mtime, init_schema, open_db, upsert_session,
+    )
+    from claude_session_backup.metadata import SessionMetadata
+    uuid = "70400006-1111-2222-3333-444444444444"
+    slug = "C--proj-ts-scan"
+    jsonl_rel = f"projects/{slug}/{uuid}.jsonl"
+    full = mock_claude_dir / jsonl_rel
+    full.parent.mkdir(parents=True, exist_ok=True)
+    full.write_bytes(_TS_JSONL)
+    t_old = _iso_epoch(_TS_LAST_ISO)
+    os.utime(full, (t_old, t_old))  # the #40-restored state: old mtime back
+
+    conn = open_db(tmp_path / "scan.db")
+    init_schema(conn)
+    upsert_session(
+        conn, SessionMetadata(session_id=uuid),
+        jsonl_path=jsonl_rel, jsonl_size=len(_TS_JSONL),
+        jsonl_mtime=t_old, scanned_at="2026-05-02T18:30:00Z",
+    )
+    # Restored-old mtime == recorded mtime -> NOT flagged.
+    stale = find_unbacked_sessions(conn, str(mock_claude_dir))
+    assert [s for s, _ in stale if s.session_id == uuid] == []
+    # Expiration source stays truthful: recorded mtime is the old value.
+    assert abs(get_indexed_mtime(conn, uuid) - t_old) < 2.0
+    # Sanity contrast: a recovery-time mtime WOULD be flagged.
+    now = time.time()
+    os.utime(full, (now, now))
+    stale = find_unbacked_sessions(conn, str(mock_claude_dir))
+    assert [s for s, _ in stale if s.session_id == uuid] != []
+    conn.close()
+
+
+def test_fts5_freshness_with_restored_old_mtime(tmp_path):
+    """#40 interaction (the #36 root-cause scenario): a restored-old mtime
+    satisfies the FTS5 freshness check, so content search does not falsely
+    consider the session stale after a faithful restore."""
+    import time
+    from claude_session_backup.fts5_db import (
+        is_session_indexed, mark_session_indexed, open_fts5_db,
+    )
+    uuid = "70400007-1111-2222-3333-444444444444"
+    t_old = _iso_epoch(_TS_LAST_ISO)
+    conn = open_fts5_db(tmp_path / "fts.db", quiet=True)
+    mark_session_indexed(conn, uuid, t_old, "hash123", "2026-05-02T18:30:00Z")
+    # Faithful restore: on-disk mtime == indexed mtime -> fresh.
+    assert is_session_indexed(conn, uuid, t_old) is True
+    # Without #40: recovery-time mtime -> falsely stale (the #36 trigger).
+    assert is_session_indexed(conn, uuid, time.time()) is False
+    conn.close()
