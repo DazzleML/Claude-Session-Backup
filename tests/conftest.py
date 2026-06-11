@@ -1,8 +1,50 @@
 """Shared test fixtures for claude-session-backup."""
 
 import json
+import os
+import tempfile
+
 import pytest
 from pathlib import Path
+
+
+@pytest.fixture(scope="session", autouse=True)
+def hermetic_git_config():
+    """No test git subprocess may read the developer's REAL git config.
+
+    A developer's global config can carry ``commit.gpgsign`` /
+    ``tag.gpgsign`` / ``gpg.program`` (e.g. Kleopatra) -- any git call
+    in the suite that misses an explicit ``--no-gpg-sign`` would pop a
+    real signing dialog mid-run (observed 2026-06-11). Pointing
+    ``GIT_CONFIG_GLOBAL`` at a minimal test config and setting
+    ``GIT_CONFIG_NOSYSTEM`` makes EVERY git subprocess hermetic --
+    fixtures, production code under test (``csb backup`` commits), and
+    helpers alike. Per-repo configs written by tests still apply.
+
+    The minimal config provides a user identity because some production
+    commit paths exercised by tests rely on config-level identity
+    rather than GIT_AUTHOR_* env vars.
+    """
+    fd, cfg_path = tempfile.mkstemp(prefix="csb-test-gitconfig-")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(
+            "[user]\n"
+            "\tname = csb-test\n"
+            "\temail = csb-test@test.local\n"
+            "[commit]\n"
+            "\tgpgsign = false\n"
+            "[tag]\n"
+            "\tgpgsign = false\n"
+        )
+    os.environ["GIT_CONFIG_GLOBAL"] = cfg_path
+    os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+    yield
+    # Session teardown: env restoration is moot (process exits), but
+    # remove the temp file politely.
+    try:
+        os.unlink(cfg_path)
+    except OSError:
+        pass
 
 
 @pytest.fixture

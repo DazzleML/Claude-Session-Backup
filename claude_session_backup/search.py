@@ -356,8 +356,40 @@ def _pick_source_for_session(
             if handle is not None:
                 return ("fts5", handle)
         elif source_type in file_sources:
+            # Sesslog probe (#36): a shell-only .sesslog (commands +
+            # output, ZERO conversation blocks) can never satisfy a
+            # conversation search -- picking it would dead-end the
+            # dispatch while the jsonl next in preference HAS the
+            # content. Treat block-less sesslogs as unavailable and
+            # keep walking. Explicit `--source sesslog` keeps today's
+            # behavior (the user asked for that channel specifically).
+            if source_type == "sesslog" and not explicit_choice:
+                if not _sesslog_has_conversation_blocks(
+                    file_sources[source_type]["source_path"]
+                ):
+                    continue
             return (source_type, file_sources[source_type])
     return (None, None)
+
+
+def _sesslog_has_conversation_blocks(source_path: str) -> bool:
+    """True if the .sesslog file contains at least one USER/AI/AGENT
+    conversation block (#36).
+
+    Early-exits on the first block opener, so convo-bearing sesslogs
+    (the normal case) cost a few lines of scanning. The full-file scan
+    only happens for the pathological shell-only logs this probe
+    exists to skip. Unreadable/missing -> False (skip; the next source
+    in preference gets its chance).
+    """
+    try:
+        with open(source_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if _OPEN_RE.match(line.rstrip("\n")):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _fts5_handle_for_session(
@@ -397,6 +429,7 @@ def _fts5_handle_for_session(
         encoded_slug,
         session_row["session_id"],
         jsonl_mtime,
+        jsonl_abs=Path(claude_dir) / jsonl_rel,
     )
 
 
@@ -493,12 +526,21 @@ def _fts5_path_if_indexed(
     encoded_slug: str,
     session_id: str,
     jsonl_mtime: Optional[float] = None,
+    jsonl_abs: Optional[Path] = None,
 ) -> Optional[Path]:
     """Return the FTS5 DB path IF this session has an indexed row.
 
     When ``jsonl_mtime`` is provided, also requires the index to be
     fresh: ``indexed_sessions.last_jsonl_mtime >= jsonl_mtime``. This
     is the "auto" smart-fallback contract -- stale -> grep fallback.
+
+    **Content-hash rescue (#36):** an mtime-stale verdict gets a second
+    opinion when ``jsonl_abs`` is provided -- if the CURRENT file's
+    SHA-256 equals ``indexed_sessions.last_content_hash``, the index IS
+    fresh (the bytes it indexed are the bytes on disk; only the mtime
+    moved -- e.g. a restore, ``rsync``, or any byte-identical rewrite).
+    The hash is computed ONLY on the mtime-stale path, so the common
+    fresh case stays cheap.
 
     When ``jsonl_mtime`` is None, returns the path as long as the
     session is in ``indexed_sessions`` at all -- regardless of staleness.
@@ -520,8 +562,8 @@ def _fts5_path_if_indexed(
         probe = sqlite3.connect(str(fts_path))
         probe.row_factory = sqlite3.Row
         row = probe.execute(
-            "SELECT last_jsonl_mtime FROM indexed_sessions "
-            "WHERE session_id = ?",
+            "SELECT last_jsonl_mtime, last_content_hash "
+            "FROM indexed_sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         probe.close()
@@ -530,6 +572,12 @@ def _fts5_path_if_indexed(
     if row is None:
         return None
     if jsonl_mtime is not None and row["last_jsonl_mtime"] < jsonl_mtime:
+        # mtime says stale -- second opinion via content hash (#36).
+        stored_hash = row["last_content_hash"]
+        if stored_hash and jsonl_abs is not None and jsonl_abs.is_file():
+            from .fts5_importer import _content_hash
+            if _content_hash(jsonl_abs) == stored_hash:
+                return fts_path
         return None
     return fts_path
 

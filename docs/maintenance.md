@@ -73,6 +73,17 @@ If `csb` crashes mid-rebuild (power loss, killed mid-write, etc.), the next invo
 
 Build or refresh the per-project FTS5 content indexes that `csb search` consults. Each project (`~/.claude/projects/<slug>/`) gets its own `~/.claude/csb-fts/<project>__<hash>_<user>.db`. Idempotent: skips sessions whose JSONL `mtime` hasn't changed since the last indexer pass.
 
+### FTS5 freshness semantics (v0.3.22, #36)
+
+At search time, auto-dispatch only uses FTS5 when the index is FRESH for the session. Freshness is two-tier:
+
+1. **mtime fast path**: `indexed_sessions.last_jsonl_mtime >= live jsonl mtime` -> fresh, no further work.
+2. **Content-hash rescue**: when the mtime says stale, the CURRENT file's SHA-256 is compared against `indexed_sessions.last_content_hash` -- a match means the indexed bytes ARE the on-disk bytes (only the mtime moved: a restore, `rsync`, any byte-identical rewrite) and FTS5 is used. The hash is computed only on the mtime-stale path, so the common case stays cheap.
+
+Explicit `--source fts5` skips freshness entirely (you asked for the index, stale or not).
+
+Relatedly, auto-dispatch **probes `.sesslog` sources for conversation blocks** before picking them: a shell-only `.sesslog` (commands + output, zero USER/AI/AGENT blocks) can never satisfy a conversation search, so the dispatcher falls through to the next source (typically the raw `jsonl`) instead of dead-ending at zero matches. Explicit `--source sesslog` keeps the old behavior.
+
 ### Flags
 
 ```bash

@@ -9,6 +9,23 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.3.22] -- 2026-06-11 (alpha)
+
+**FTS5 false-stale fixed at the search layer (#36).** Two robustness fixes close the search false-negative that surfaced in the b6a4929f incident: a byte-identical rewrite (restore, rsync) no longer makes auto-search abandon a perfectly current FTS5 index, and a shell-only `.sesslog` no longer dead-ends the dispatch before the `jsonl` that has the content. Verified LIVE against the original incident session: with its mtime forward-bumped, `csb search qwen --session b6a4929f` now finds content where it previously returned "No content matches". 884/884 tests pass (was 880; +4 new). Red-green verified. Closes #36.
+
+### Fixed
+- **Content-hash freshness rescue**: when the mtime check says the FTS5 index is stale, the current file's SHA-256 is compared against `indexed_sessions.last_content_hash` -- a match means the indexed bytes ARE the on-disk bytes, so FTS5 is used. The hash is computed only on the mtime-stale path (the common fresh case stays cheap); a genuine content change (hash mismatch) still falls through to grep, pinned by the pre-existing stale test (whose stored `deadbeef` hash now doubles as the mismatch case).
+- **Sesslog conversation probe**: auto-dispatch now checks that a `.sesslog` source contains at least one USER/AI/AGENT conversation block before picking it; block-less (shell-only) sesslogs are treated as unavailable and the dispatch walks on to `jsonl`. Early-exits on the first block, so convo-bearing sesslogs cost a few scanned lines. Explicit `--source sesslog` keeps the old behavior (contract pinned by test).
+
+### Added
+- **4 new automated tests**: hash-rescue keeps FTS5 fresh on byte-identical rewrite (and grep does NOT run); shell-only sesslog falls through to jsonl under auto-dispatch; convo-bearing sesslog is NOT over-skipped; explicit `--source sesslog` on a shell-only log returns empty without fall-through.
+- `docs/maintenance.md`: "FTS5 freshness semantics" section (two-tier freshness + the sesslog probe).
+- **Hermetic git config for the test suite**: a session-scoped autouse fixture points `GIT_CONFIG_GLOBAL` at a minimal test config (+ `GIT_CONFIG_NOSYSTEM`), so no test git subprocess can ever read the developer's real config -- signing dialogs (Kleopatra et al.) become impossible from the suite, on any machine.
+- README: standard footer completed (expanded Contributing block, Buy Me A Coffee, Related Projects section); Related Projects and Acknowledgements deduplicated -- runtime-ecosystem entries (with author credit) live in Related Projects, inspiration-only credits in Acknowledgements.
+
+### Notes
+- #40 (v0.3.18) removed this bug's most common trigger by restoring original mtimes; v0.3.22 fixes the search layer itself so ANY mtime-forward byte-identical path (rsync --times asymmetries, manual copies, pre-v0.3.18 restores) is also covered.
+
 ## [0.3.21] -- 2026-06-11 (alpha)
 
 **`csb resume` accepts everything `csb view` accepts -- including the session NAME (#42).** `csb resume MAKING-LIBS_...__finalizing-libraries-...` now works: csb resolves the name via its index and hands `claude --resume` the full UUID -- the one format that is unconditionally direct. csb's identifier surface is now a strict SUPERSET of Claude Code's native one (verified against the `/resume` source: Claude accepts full UUID or exact custom-title; csb adds prefixes/suffixes, paths, folders, sesslog names, and keywords on top). 880/880 tests pass (was 874; +6 new). Red-green verified.
@@ -714,7 +731,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...HEAD
+[0.3.22]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...v0.3.19
