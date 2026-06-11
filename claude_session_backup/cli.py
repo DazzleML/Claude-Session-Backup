@@ -228,7 +228,12 @@ def build_parser():
     # resume
     p_resume = sub.add_parser("resume", help="Launch claude --resume with full UUID")
     _add_common_flags(p_resume)
-    p_resume.add_argument("session_id", help="Session ID (prefix match supported)")
+    p_resume.add_argument(
+        "session_id", metavar="query",
+        help="Session UUID/prefix, exact session NAME, .jsonl path, folder, "
+             "sesslog dir name, or keyword (#42 -- every format csb view "
+             "accepts; a superset of claude --resume's native surface)",
+    )
     # Pruned-session handling (v0.3.14, #34): if the session has deleted_at
     # set, Claude Code can't resume it (JSONL missing). These flags control
     # whether we auto-restore from git before resuming. Default (no flag)

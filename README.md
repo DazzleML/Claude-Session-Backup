@@ -91,7 +91,8 @@ csb search "X" --source convo         # Force a source channel; auto = convo > s
 csb search "X" --session <uuid>       # Constrain to one session by UUID prefix
 csb search "X" --json                 # NDJSON output for piping into jq
 csb restore <session-id>              # Restore deleted session from git history
-csb resume <session-id>               # Launch claude --resume with full UUID
+csb resume <query>                    # Launch claude --resume (UUID/prefix, session NAME,
+                                      #   path, folder, sesslog name, or keyword)
 csb view [query]                      # Open a session in Claude Code History Viewer
                                       #   (UUID/prefix, .jsonl path, folder, sesslog name, or keyword)
 csb update rebuild-index              # Safely reconstruct SQLite (preserves deleted-session metadata)

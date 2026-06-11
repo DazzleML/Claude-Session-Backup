@@ -9,6 +9,19 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.3.21] -- 2026-06-11 (alpha)
+
+**`csb resume` accepts everything `csb view` accepts -- including the session NAME (#42).** `csb resume MAKING-LIBS_...__finalizing-libraries-...` now works: csb resolves the name via its index and hands `claude --resume` the full UUID -- the one format that is unconditionally direct. csb's identifier surface is now a strict SUPERSET of Claude Code's native one (verified against the `/resume` source: Claude accepts full UUID or exact custom-title; csb adds prefixes/suffixes, paths, folders, sesslog names, and keywords on top). 880/880 tests pass (was 874; +6 new). Red-green verified.
+
+### Added
+- **`csb resume <query>` multi-modal resolution**: UUID/prefix (historical surface, unchanged -- ambiguity still exits 2), exact session name, absolute `.jsonl` path, directory, sesslog folder name, free-text keyword. Multi-match shows the candidates timeline and exits 1 (more helpful than Claude's "Found N sessions" error). A plain ID no-match now FALLS THROUGH to the multi-modal resolver instead of erroring -- hex-ish strings can be name keywords too (`_resolve_session_or_exit` gains `miss_ok=`).
+- **Exact-name rung in the shared resolver** (`_resolve_view_query` promoted to `_resolve_session_query`; `csb view` inherits): an exact `session_name` match WINS over substring results -- Claude Code's own `/resume` semantics (`searchSessionsByCustomTitle exact:true`). The parity is by construction: csb's `session_name` IS the JSONL `customTitle` field Claude matches.
+- **6 new automated tests**: exact-name resolve, exact-beats-substring, resume-by-name launches `claude --resume <full-uuid>` (never the name), keyword multi-match candidates without launching, UUID-prefix regression pin, nonsense-query clean error. Red-green verified by disabling the miss_ok fall-through (both name tests fail).
+
+### Notes
+- Investigation (AC#1, verified empirically against `claude --help` and the `/resume` source): Claude Code natively resolves a FULL UUID (strict 8-4-4-4-12 -- no prefix support) or an exact custom-title match (feature-gated); anything else seeds the interactive picker. csb resolving name->UUID sidesteps both the feature gate and the no-prefix limitation.
+- csb's pruned-detection, restore-first, preflight, and cd-to-start-folder all continue to run regardless of which identifier form was used -- resolution happens before that pipeline.
+
 ## [0.3.20] -- 2026-06-11 (alpha)
 
 **`csb view` -- the "just show me the conversation" one-liner (#14, Alpha #3).** Resolves any session identifier (UUID/prefix, transcript path, folder, sesslog dir name, or keyword) and opens it in Claude Code History Viewer, detached. Repatriated from dazzlecmd's `dz claudeview` (which was written against csb's own API); csb stays a launcher, never a renderer. Pruned sessions restore-in-place first via the same policy and flags as `csb resume` -- closing #34's view-half, with v0.3.18's restore fidelity (symlinks + original timestamps) riding along. 874/874 tests pass (was 850; +24 new). Closes #14, closes #34.
@@ -701,7 +714,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...HEAD
+[0.3.21]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...v0.3.21
 [0.3.20]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...v0.3.18
