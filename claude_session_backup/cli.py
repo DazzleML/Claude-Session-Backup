@@ -62,6 +62,30 @@ def _add_common_flags(parser):
         parser.add_argument(*args, **kwargs)
 
 
+def add_deleted_flag(parser, verb: str, with_all_alias: bool = False):
+    """Attach the canonical two-valued ``--deleted [only|all]`` flag (#41).
+
+    One definition for every command that filters on deletion state
+    (`list`, `search`, `scan`) -- the grammar `csb <cmd> --deleted [only|all]`
+    is identical everywhere. ``verb`` parameterizes the help text ("show",
+    "search", "scan"). ``with_all_alias`` additionally attaches a HIDDEN
+    deprecated ``--all`` boolean (scan's pre-#41 spelling); it maps to
+    ``--deleted all`` in ``commands.deleted_mode`` with a one-time warning,
+    and is slated for removal at 0.4.
+    """
+    parser.add_argument(
+        "--deleted", nargs="?", choices=["only", "all"], const="only",
+        default=None,
+        help=f"Include deleted sessions. 'only' (bare or explicit) -- {verb} "
+             f"deleted exclusively. 'all' -- {verb} live AND deleted. "
+             f"Omit the flag for live-only (default).",
+    )
+    if with_all_alias:
+        parser.add_argument(
+            "--all", action="store_true", help=argparse.SUPPRESS,
+        )
+
+
 def _hoist_common_flags(argv):
     """
     Move common flags from before the subcommand to after it.
@@ -154,16 +178,8 @@ def build_parser():
         help="Sort order: last-used (default), expiration (soonest purge first), "
              "started (newest first), oldest (oldest first), messages, size",
     )
-    # ``--deleted`` is two-valued in v0.3.5: bare or ``only`` shows only
-    # deleted; ``all`` shows live + deleted (replaces the old ``--all``).
-    # Default (flag absent) -> live only, same as before.
-    p_list.add_argument(
-        "--deleted", nargs="?", choices=["only", "all"], const="only",
-        default=None,
-        help="Include deleted sessions. 'only' (bare or explicit) -- show "
-             "deleted exclusively. 'all' -- show live AND deleted. "
-             "Omit the flag for live-only (default).",
-    )
+    # ``--deleted`` is two-valued since v0.3.5; shared definition since #41.
+    add_deleted_flag(p_list, "show")
     p_list.add_argument("--json", action="store_true", help="Output as JSON")
     p_list.add_argument(
         "--shortid", "-sid", action="store_true",
@@ -280,18 +296,10 @@ def build_parser():
         help="Path-strict: only match sessions whose start_folder is this folder + descendants. "
              "Skips folder_usage entirely. Useful for 'what sessions originated from here?'",
     )
-    # --deleted / --all mutually exclusive: deletion-filter scope
-    p_scan_del = p_scan.add_mutually_exclusive_group()
-    p_scan_del.add_argument(
-        "--deleted", action="store_true",
-        help="Show only deleted sessions (DB-flagged via deleted_at). "
-             "Combine with -d / --restore to discover and recover sessions "
-             "purged from a specific folder.",
-    )
-    p_scan_del.add_argument(
-        "--all", action="store_true",
-        help="Show both active AND deleted sessions in the scoped folder.",
-    )
+    # Deletion-filter scope: the canonical --deleted [only|all] grammar
+    # (#41 -- scan finally matches list/search). The old boolean --all
+    # remains as a hidden deprecated alias for --deleted all (removal: 0.4).
+    add_deleted_flag(p_scan, "scan", with_all_alias=True)
     # --restore: bulk restoration of matching deleted sessions
     p_scan.add_argument(
         "--restore", action="store_true",
@@ -385,13 +393,7 @@ def build_parser():
              "first), messages, size. Matches 'csb list --sort' choices.",
     )
     # Same two-valued ``--deleted`` shape as ``csb list``. See p_list above.
-    p_search.add_argument(
-        "--deleted", nargs="?", choices=["only", "all"], const="only",
-        default=None,
-        help="Include deleted sessions. 'only' (bare or explicit) -- search "
-             "only deleted. 'all' -- search live AND deleted. Omit the flag "
-             "for live-only (default).",
-    )
+    add_deleted_flag(p_search, "search")
     p_search.add_argument(
         "--limit", type=int, default=20,
         help="Stop after N matches (default: 20)",

@@ -235,6 +235,7 @@ When Claude Code purges a session you wanted to keep, csb can recover it from yo
 csb list --deleted                  # Every session csb has flagged deleted, all projects
 csb list amd --deleted              # Filtered: only deleted sessions matching "amd"
 csb scan --deleted                  # Deleted sessions touching cwd (or any folder)
+csb scan --deleted all              # Live AND deleted together (same grammar as list/search)
 csb scan -d /path/to/proj --deleted # Scoped to a specific folder (folder + descendants)
 csb scan --deleted --all-folders    # Don't truncate the per-session folder list
 ```

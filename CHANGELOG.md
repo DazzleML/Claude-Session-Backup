@@ -9,6 +9,23 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.3.19] -- 2026-06-11 (alpha)
+
+**One `--deleted` grammar everywhere.** `csb scan` finally adopts the two-valued `--deleted [only|all]` flag that `list` and `search` have used since v0.3.5, and the flag's definition + interpretation now live in exactly one place each. 850/850 tests pass (was 842; +9 new, 1 updated). Red-green verified. Closes #41.
+
+### Changed
+- **`csb scan --deleted` accepts `only`/`all`** (BEHAVIOR): `csb scan --deleted` (bare, deleted-only -- unchanged meaning), `csb scan --deleted only` (explicit), and `csb scan --deleted all` (live AND deleted -- previously spelled `--all`) now match `list`/`search` exactly. Token-order caveat (the same tradeoff list/search accepted in v0.3.5): `csb scan --deleted <term>` is now a parse error -- write `csb scan <term> --deleted`. All documented invocations (`csb scan -d <pattern> --deleted --restore`, bare `--deleted` before another flag) are unaffected.
+- **`csb scan --all` is deprecated** (hidden alias): still works, maps to `--deleted all`, warns once per process (`--all is deprecated; use --deleted all`). Removal planned for 0.4.
+
+### Added
+- **`cli.add_deleted_flag(parser, verb, with_all_alias=False)`** -- the single definition of the `--deleted` grammar, attached by `list`, `search`, and `scan`.
+- **`commands.deleted_mode(args) -> "live"|"only"|"all"`** -- the single interpretation point; absorbs the deprecated alias. (The pair is split across the two modules only to avoid a cli->commands import cycle.) `cmd_list`, `cmd_search`, and `cmd_scan` all consume it; `--restore`'s implies-deleted precedence is applied after normalization and is unchanged.
+- **9 new automated tests**: scan grammar (bare/only/all/invalid-choice/alias-parses), list+search regression pins, normalizer unit coverage, alias-maps-and-warns-once. Red-green verified by reverting the two production files to HEAD (3 tests fail: `--deleted only` is an argparse error on the old grammar).
+
+### Notes
+- The one pre-existing Namespace-built test using the retired boolean contract (`deleted=True`) was updated to `deleted="only"`.
+- `add_deleted_flag` is the intended migration seam for the #11 CLI grammar redesign (`--state` etc.).
+
 ## [0.3.18] -- 2026-06-11 (alpha)
 
 **Restore fidelity: links and timestamps.** Two restore-completeness features ship together: `csb restore` now recreates **every** git symlink entry, not just the logger's `transcript.jsonl` (#39), and restored files get their **original timestamps** back -- a restore is now byte+metadata-exact, not just byte-exact (#40). Timestamp sources are content-internal (index mtime, transcript event timestamps, git commit dates), so fidelity is **retroactive for every session already in git history** -- including sessions deleted long before this release. 842/842 tests pass (was 832; +10 new). Both features red-green verified.
@@ -669,7 +686,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...HEAD
+[0.3.19]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...v0.3.17
 [0.3.16]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.15...v0.3.16

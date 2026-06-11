@@ -634,3 +634,78 @@ def test_check_subcommand_has_description(capsys):
     out = capsys.readouterr().out
     assert "health check" in out.lower()
     assert "csb status" in out
+
+
+# == #41: unified --deleted [only|all] grammar across list / search / scan ==
+#
+# One attach helper (cli.add_deleted_flag) + one normalizer
+# (commands.deleted_mode). scan's old boolean --deleted + --all migrated;
+# --all survives as a hidden deprecated alias until 0.4.
+
+
+def test_parse_scan_deleted_bare_means_only():
+    parser = build_parser()
+    args = parser.parse_args(["scan", "--deleted"])
+    assert args.deleted == "only"
+
+
+def test_parse_scan_deleted_only_explicit():
+    parser = build_parser()
+    args = parser.parse_args(["scan", "--deleted", "only"])
+    assert args.deleted == "only"
+
+
+def test_parse_scan_deleted_all():
+    parser = build_parser()
+    args = parser.parse_args(["scan", "--deleted", "all"])
+    assert args.deleted == "all"
+
+
+def test_parse_scan_deleted_invalid_choice_rejected():
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["scan", "--deleted", "bogus"])
+
+
+def test_parse_scan_all_alias_still_parses():
+    parser = build_parser()
+    args = parser.parse_args(["scan", "--all"])
+    assert args.all is True
+    assert args.deleted is None
+
+
+def test_parse_list_and_search_grammar_unchanged():
+    parser = build_parser()
+    for cmd, extra in (("list", []), ("search", ["q"])):
+        args = parser.parse_args([cmd] + extra + ["--deleted"])
+        assert args.deleted == "only"
+        args = parser.parse_args([cmd] + extra + ["--deleted", "all"])
+        assert args.deleted == "all"
+        # The deprecated --all ALIAS attribute exists only on scan; list and
+        # search never define it (note: bare `--all` on list still prefix-
+        # matches argparse's --all-folders -- unrelated, pre-existing).
+        assert not hasattr(args, "all")
+
+
+def test_deleted_mode_normalizer():
+    import argparse as ap
+    from claude_session_backup import commands as cmds
+    assert cmds.deleted_mode(ap.Namespace(deleted=None)) == "live"
+    assert cmds.deleted_mode(ap.Namespace(deleted="only")) == "only"
+    assert cmds.deleted_mode(ap.Namespace(deleted="all")) == "all"
+    assert cmds.deleted_mode(ap.Namespace()) == "live"  # flag not even defined
+
+
+def test_deleted_mode_all_alias_maps_and_warns_once(capsys):
+    import argparse as ap
+    from claude_session_backup import commands as cmds
+    cmds._warned_all_deprecated = False  # reset the once-guard for the test
+    try:
+        assert cmds.deleted_mode(ap.Namespace(deleted=None, all=True)) == "all"
+        err1 = capsys.readouterr().err
+        assert "deprecated" in err1 and "--deleted all" in err1
+        # Second call: mapped, but silent.
+        assert cmds.deleted_mode(ap.Namespace(deleted=None, all=True)) == "all"
+        assert "deprecated" not in capsys.readouterr().err
+    finally:
+        cmds._warned_all_deprecated = False
