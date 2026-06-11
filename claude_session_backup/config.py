@@ -26,6 +26,11 @@ DEFAULT_CONFIG = {
     # index is behind, run csb backup", not a wall of ids. Tweak in
     # session-backup-config.json.
     "status_unbacked_limit": 20,
+    # ``csb view`` (#14): explicit path to the Claude Code History Viewer
+    # binary (or a dev-mode project directory). None -> auto-discovery
+    # ($CLAUDEVIEW_BIN env var first, then platform install locations).
+    # Set persistently via: csb config viewer_path "C:/path/to/viewer.exe"
+    "viewer_path": None,
 }
 
 # Environment variable overrides (CLI flag > env var > config file > default)

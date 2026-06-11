@@ -11,6 +11,7 @@ Usage:
     csb show <session-id>                # detailed session info with folder analysis
     csb restore <session-id>             # restore deleted session from git history
     csb resume <session-id>              # launch claude --resume with full UUID
+    csb view [query]                     # open a session in Claude Code History Viewer
     csb scan [path]                      # find sessions in current dir and children
     csb search "query"                   # search session metadata
     csb update rebuild-index             # safely reconstruct SQLite (preserves deleted)
@@ -245,6 +246,46 @@ def build_parser():
         help="Refuse to restore; exit with an error and a hint to run "
              "`csb restore` separately. Useful for scripts that want to "
              "detect pruned sessions instead of recovering them.",
+    )
+
+    # view (#14): open a session in Claude Code History Viewer
+    p_view = sub.add_parser(
+        "view",
+        help="Open a session in Claude Code History Viewer",
+        description=(
+            "Open a session's conversation in Claude Code History Viewer.\n\n"
+            "  csb view <uuid-or-prefix>      open by session id\n"
+            "  csb view <abs-path.jsonl>      open by transcript path\n"
+            "  csb view <dir-or-.>            open the session that used a folder\n"
+            "  csb view <sesslog-dir-name>    open by logger folder name\n"
+            "  csb view <keyword>             open by name/project keyword\n"
+            "  csb view                       list recent sessions\n\n"
+            "Viewer discovery: $CLAUDEVIEW_BIN, then the `viewer_path` config\n"
+            "key (csb config viewer_path <path>), then platform install\n"
+            "locations. Without a viewer, prints the transcript path.\n"
+            "Pruned sessions offer restore-from-git first (same flags as\n"
+            "`csb resume`)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_common_flags(p_view)
+    p_view.add_argument(
+        "query", nargs="?", default=None,
+        help="Session UUID/prefix, .jsonl path, folder, sesslog dir name, "
+             "or keyword. Omit to list recent sessions.",
+    )
+    view_pruned_group = p_view.add_mutually_exclusive_group()
+    view_pruned_group.add_argument(
+        "--restore-pruned",
+        action="store_true", dest="restore_pruned",
+        help="Auto-restore the session from git history before viewing, "
+             "without prompting. Required for non-TTY use.",
+    )
+    view_pruned_group.add_argument(
+        "--no-restore-pruned",
+        action="store_true", dest="no_restore_pruned",
+        help="Refuse to restore; exit with an error and a hint to run "
+             "`csb restore` separately.",
     )
 
     # scan
@@ -654,6 +695,9 @@ def main(argv=None):
     elif args.command == "resume":
         from .commands import cmd_resume
         return cmd_resume(args)
+    elif args.command == "view":
+        from .commands import cmd_view
+        return cmd_view(args)
     elif args.command == "scan":
         from .commands import cmd_scan
         return cmd_scan(args)

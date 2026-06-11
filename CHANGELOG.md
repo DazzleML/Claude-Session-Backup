@@ -9,6 +9,21 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.3.20] -- 2026-06-11 (alpha)
+
+**`csb view` -- the "just show me the conversation" one-liner (#14, Alpha #3).** Resolves any session identifier (UUID/prefix, transcript path, folder, sesslog dir name, or keyword) and opens it in Claude Code History Viewer, detached. Repatriated from dazzlecmd's `dz claudeview` (which was written against csb's own API); csb stays a launcher, never a renderer. Pruned sessions restore-in-place first via the same policy and flags as `csb resume` -- closing #34's view-half, with v0.3.18's restore fidelity (symlinks + original timestamps) riding along. 874/874 tests pass (was 850; +24 new). Closes #14, closes #34.
+
+### Added
+- **`csb view [query]`** -- multi-modal resolution, richest-match first: directory/`.` (folder-usage), absolute `.jsonl` path, UUID or prefix, sesslog folder name with embedded UUID, free-text name/project keyword. Unique hit launches the viewer; multi-match shows the timeline and exits 1; no query lists recent sessions.
+- **Viewer discovery**: `$CLAUDEVIEW_BIN` env var (dz-claudeview compatible) -> new **`viewer_path` config key** (`csb config viewer_path <path>`; accepts a binary OR a dev-mode project dir, launched via `pnpm tauri:dev`) -> platform install locations, with the standard Windows installer target (`%ProgramFiles%\CCHistoryViewer\`) probed first -- **the average user's zero-config path**, then per-user `%LOCALAPPDATA%\Programs` locations, macOS `/Applications`, Linux `/usr/bin` + `~/.local/bin`. **No viewer installed is not an error**: csb prints the resolved transcript path (the answer to "where is this conversation") plus setup pointers, exit 0.
+- **Pruned-session handling (#34 view-half)**: `--restore-pruned` / `--no-restore-pruned` flags, TTY prompt default -- the same `_resolve_pruned_decision` policy as `csb resume` (the resume-specific helper was generalized with a `verb` parameter; resume behavior unchanged). Restore-in-place is durable and byte+metadata-exact (v0.3.17/v0.3.18), which supersedes #34's "temporary resurrection" sandboxing designs.
+- **24 new automated tests**: 23 in `tests/test_view.py` -- viewer discovery (env/config/dev-dir/none/bad-env-falls-through/Program-Files-standard-install), all five resolution layers + multi-match + no-match, cmd_view flows (no-arg listing, unresolved, candidates, launch-with-full-UUID, no-viewer path fallback, transcript-missing, pruned refuse + pruned restore-then-launch with `db_mtime` fidelity asserted + restore-failure-aborts-launch), detached-launch arg construction -- plus the long-open #34 'restore failure mid-resume' gap test in `tests/test_restore.py` (failed restore never launches `claude --resume`). GUI launch itself is human-checklist territory.
+
+### Notes
+- Machine-specific dev paths from `dz claudeview`'s discovery list were deliberately dropped from the published package -- `$CLAUDEVIEW_BIN` or `viewer_path` cover those setups.
+- `docs/maintenance.md` documents the pruned view flow (#34 AC) alongside the resume flow, including the restore-in-place-not-temporary rationale.
+- dazzlecmd follow-up (not csb): thin `dz claudeview` to delegate to `csb view`.
+
 ## [0.3.19] -- 2026-06-11 (alpha)
 
 **One `--deleted` grammar everywhere.** `csb scan` finally adopts the two-valued `--deleted [only|all]` flag that `list` and `search` have used since v0.3.5, and the flag's definition + interpretation now live in exactly one place each. 850/850 tests pass (was 842; +9 new, 1 updated). Red-green verified. Closes #41.
@@ -686,7 +701,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...HEAD
+[0.3.20]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...v0.3.20
 [0.3.19]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...v0.3.19
 [0.3.18]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...v0.3.18
 [0.3.17]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...v0.3.17
