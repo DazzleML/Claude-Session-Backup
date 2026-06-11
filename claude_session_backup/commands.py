@@ -6,6 +6,7 @@ Each cmd_* function receives parsed args and returns an exit code.
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,6 +46,7 @@ from .git_ops import (
 from .lockfile import backup_lock
 from .index import (
     count_deleted_with_filter,
+    find_sessions_by_folder_usage,
     get_active_session_ids,
     get_all_known_session_ids,
     get_indexed_mtime,
@@ -811,7 +813,7 @@ def cmd_restore(args) -> int:
     # enumeration, per-file overwrite policy, lock acquisition, write
     # loop) to the shared `_restore_session` helper. cmd_restore is now
     # a thin wrapper that handles CLI arg parsing + DB/git resolution
-    # (above) and output formatting (below). cmd_resume + future cmd_view
+    # (above) and output formatting (below). cmd_resume + cmd_view
     # call the same helper, so the restore policy stays consistent across
     # callers.
     resolved_uuid = full_id or args.session_id
@@ -985,7 +987,7 @@ def _restore_session(
     dry_run: bool = False,
     db_mtime: Optional[float] = None,
 ) -> Optional[RestoreResult]:
-    """Core restore logic shared by cmd_restore / cmd_resume / future cmd_view.
+    """Core restore logic shared by cmd_restore / cmd_resume / cmd_view.
 
     Returns a RestoreResult, or None if the slug couldn't be extracted from
     jsonl_path (caller already printed an error and should return 1).
@@ -2267,11 +2269,15 @@ def _print_settings_keys_hint(config) -> None:
         )
 
 
-def _resolve_pruned_resume_decision(args, session: dict, name: str) -> str:
-    """Decide what to do when `csb resume <uuid>` targets a pruned session.
+def _resolve_pruned_decision(args, session: dict, name: str,
+                             verb: str = "resume") -> str:
+    """Decide what to do when `csb resume`/`csb view` targets a pruned session.
+
+    ``verb`` parameterizes the wording ("resume" or "view"); the decision
+    logic is identical for both callers (#34: one policy, two surfaces).
 
     Returns one of:
-      - "restore" -- caller should invoke _restore_session, then resume.
+      - "restore" -- caller should invoke _restore_session, then proceed.
       - "abort"   -- caller should exit 0 (user declined or asked not to).
       - "error"   -- caller should exit 1 (non-interactive without flags;
                      printed a hint already).
@@ -2279,22 +2285,23 @@ def _resolve_pruned_resume_decision(args, session: dict, name: str) -> str:
     Decision precedence: explicit flag (--restore-pruned / --no-restore-pruned)
     > TTY-interactive prompt > non-TTY safe default (error with hint).
     """
+    gerund = {"resume": "resuming", "view": "viewing"}.get(verb, verb + "ing")
     if getattr(args, "no_restore_pruned", False):
         print(
             f"Session '{name}' is pruned (deleted_at set). "
-            f"--no-restore-pruned set -- not resuming.",
+            f"--no-restore-pruned set -- not {gerund}.",
             file=sys.stderr,
         )
         print(
             f"Run `csb restore {session['session_id']}` to recover, then "
-            f"`csb resume {session['session_id']}` again.",
+            f"`csb {verb} {session['session_id']}` again.",
             file=sys.stderr,
         )
         return "error"
     if getattr(args, "restore_pruned", False):
         print(
             f"Session '{name}' is pruned (deleted_at: "
-            f"{session['deleted_at']}). Restoring from git before resuming."
+            f"{session['deleted_at']}). Restoring from git before {gerund}."
         )
         return "restore"
     # Interactive: prompt only on TTY. Non-TTY without a flag is an error
@@ -2306,7 +2313,7 @@ def _resolve_pruned_resume_decision(args, session: dict, name: str) -> str:
             file=sys.stderr,
         )
         print(
-            f"Re-run with --restore-pruned to restore + resume, "
+            f"Re-run with --restore-pruned to restore + {verb}, "
             f"or --no-restore-pruned to abort cleanly.",
             file=sys.stderr,
         )
@@ -2315,13 +2322,347 @@ def _resolve_pruned_resume_decision(args, session: dict, name: str) -> str:
         f"Session '{name}' is pruned (deleted_at: {session['deleted_at']})."
     )
     try:
-        ans = input("Restore from git before resuming? [Y/n] ").strip().lower()
+        ans = input(
+            f"Restore from git before {gerund}? [Y/n] "
+        ).strip().lower()
     except (EOFError, KeyboardInterrupt):
         print("\nAborted.")
         return "abort"
     if ans in ("", "y", "yes"):
         return "restore"
     return "abort"
+
+
+# ── csb view (#14): resolver + launcher for Claude Code History Viewer ──────
+#
+# Repatriated from dazzlecmd's `dz claudeview` (which was written against
+# csb's own API and shelled out to csb for everything but the launch).
+# csb stays a discovery/backup/restore tool that LAUNCHES readers, never
+# renders -- the viewer is the CCHV Tauri app; a readable text layer is
+# #12's territory. Pruned sessions restore-in-place via _restore_session
+# (#34) -- durable and byte+metadata-exact since v0.3.17/v0.3.18, which
+# supersedes #34's "temporary resurrection" sandboxing ideas.
+
+_VIEW_UUID_PREFIX_RE = re.compile(r"^[0-9a-fA-F-]{4,36}$")
+_SESSLOG_UUID_RE = re.compile(
+    r"__([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})_"
+)
+
+
+def _find_viewer(config) -> Optional[dict]:
+    """Locate the Claude Code History Viewer binary or dev-mode project dir.
+
+    Resolution order:
+      1. $CLAUDEVIEW_BIN env var (explicit binary path; dz-claudeview compat)
+      2. ``viewer_path`` config key (binary file OR dev-mode project dir)
+      3. Platform install locations
+      4. None -> caller prints the resolved transcript path instead.
+
+    Returns {"mode": "binary"|"dev", "path": str} or None.
+    """
+    import platform as _platform
+
+    def _classify(p: str) -> Optional[dict]:
+        if os.path.isfile(p):
+            return {"mode": "binary", "path": p}
+        if (os.path.isdir(p)
+                and os.path.isfile(os.path.join(p, "package.json"))
+                and os.path.isdir(os.path.join(p, "src-tauri"))):
+            return {"mode": "dev", "path": p}
+        return None
+
+    env_bin = os.environ.get("CLAUDEVIEW_BIN")
+    if env_bin:
+        found = _classify(env_bin)
+        if found:
+            return found
+
+    cfg_path = config.get("viewer_path")
+    if cfg_path:
+        found = _classify(os.path.expanduser(str(cfg_path)))
+        if found:
+            return found
+
+    candidates: list[str] = []
+    system = _platform.system()
+    if system == "Windows":
+        # System-wide installer target FIRST -- this is what the standard
+        # CCHV installer creates (C:\Program Files\CCHistoryViewer\) and
+        # what average users will have.
+        for pf_var in ("ProgramFiles", "ProgramFiles(x86)"):
+            pf = os.environ.get(pf_var, "")
+            if pf:
+                candidates.append(os.path.join(
+                    pf, "CCHistoryViewer", "claude-code-history-viewer.exe"))
+                candidates.append(os.path.join(
+                    pf, "Claude Code History Viewer",
+                    "Claude Code History Viewer.exe"))
+        # Per-user installer locations.
+        localappdata = os.environ.get("LOCALAPPDATA", "")
+        if localappdata:
+            for name in ("Claude Code History Viewer",
+                         "dazzle-claude-code-history-viewer"):
+                candidates.append(os.path.join(
+                    localappdata, "Programs", name, f"{name}.exe"))
+                candidates.append(os.path.join(
+                    localappdata, "Programs", "Claude Code History Viewer",
+                    "Claude Code History Viewer.exe"))
+    elif system == "Darwin":
+        candidates.append(
+            "/Applications/Claude Code History Viewer.app"
+            "/Contents/MacOS/claude-code-history-viewer")
+        candidates.append(os.path.expanduser(
+            "~/Applications/Claude Code History Viewer.app"
+            "/Contents/MacOS/claude-code-history-viewer"))
+    else:
+        candidates.append("/usr/bin/claude-code-history-viewer")
+        candidates.append(os.path.expanduser(
+            "~/.local/bin/claude-code-history-viewer"))
+
+    for p in candidates:
+        if os.path.isfile(p):
+            return {"mode": "binary", "path": p}
+    return None
+
+
+def _launch_viewer(viewer: dict, session_value: str) -> int:
+    """Launch CCHV focused on ``session_value`` (a full session UUID).
+
+    Binary mode launches DETACHED so the viewer outlives this shell.
+    Dev mode runs ``pnpm tauri:dev`` in the foreground (build output
+    visible; Ctrl-C stops it).
+    """
+    import platform as _platform
+    import subprocess
+
+    mode, path = viewer["mode"], viewer["path"]
+    if mode == "dev":
+        cmd = ["pnpm", "tauri:dev", "--", "--", "--session", session_value]
+        print(f"Launching in dev mode from: {path}")
+        print("  (Vite + cargo run -- Ctrl-C to stop)")
+        try:
+            return subprocess.run(cmd, cwd=path).returncode
+        except (OSError, FileNotFoundError) as exc:
+            print(f"Error launching dev mode: {exc}", file=sys.stderr)
+            print("  Is pnpm installed?", file=sys.stderr)
+            return 1
+
+    cmd = [path, "--session", session_value]
+    try:
+        if _platform.system() == "Windows":
+            subprocess.Popen(
+                cmd,
+                creationflags=(subprocess.DETACHED_PROCESS
+                               | subprocess.CREATE_NEW_PROCESS_GROUP),
+                close_fds=True,
+            )
+        else:
+            subprocess.Popen(cmd, start_new_session=True, close_fds=True)
+        return 0
+    except OSError as exc:
+        print(f"Error launching viewer: {exc}", file=sys.stderr)
+        return 1
+
+
+def _resolve_view_query(query: str, conn, claude_dir: str):
+    """Resolve a user query to a session row (multi-modal, #14).
+
+    Resolution order (richest-match first):
+      1. Directory path (incl ".") -> folder-usage lookup
+      2. Absolute .jsonl path -> UUID from the filename stem
+      3. UUID or UUID prefix -> shared get_session resolver
+      4. Sesslog folder NAME with embedded UUID
+      5. Free-text -> search_sessions (name/project/folder substring)
+
+    Returns (session_dict, method) on a unique hit,
+    (list_of_sessions, "candidates:<label>") on multi-match,
+    or (None, reason) on no match.
+    """
+    resolved_path = query if os.path.isabs(query) else os.path.realpath(query)
+
+    if os.path.isdir(resolved_path):
+        m = _SESSLOG_UUID_RE.search(os.path.basename(resolved_path))
+        if m:
+            session = get_session(conn, m.group(1))
+            if session:
+                return session, "sesslog-dir"
+        results = find_sessions_by_folder_usage(conn, resolved_path, limit=10)
+        if len(results) == 1:
+            return results[0], "folder"
+        if len(results) > 1:
+            return results, "candidates:folder"
+        return None, f"no sessions found that used directory: {resolved_path}"
+
+    if os.path.isabs(query) and os.path.exists(query):
+        real = os.path.realpath(query)
+        if real.endswith(".jsonl"):
+            stem = os.path.splitext(os.path.basename(real))[0]
+            session = get_session(conn, stem)
+            if session:
+                return session, "path"
+        return None, f"path exists but no matching session found: {query}"
+
+    if _VIEW_UUID_PREFIX_RE.match(query):
+        session = get_session(conn, query)
+        if session:
+            return session, "uuid"
+        # Fall through to free-text: short hex-ish strings can also be
+        # legitimate name keywords; only give up after the search.
+
+    m = _SESSLOG_UUID_RE.search(query)
+    if m:
+        session = get_session(conn, m.group(1))
+        if session:
+            return session, "sesslog-name"
+        return None, (f"UUID extracted from folder name ({m.group(1)}) "
+                      f"but no matching session")
+
+    results = search_sessions(conn, query, limit=10)
+    if len(results) == 1:
+        return results[0], "search"
+    if len(results) > 1:
+        return results, "candidates:search"
+    return None, f"no sessions match '{query}'"
+
+
+def _show_view_candidates(sessions, query: str, label: str) -> None:
+    """Display multi-match candidates via the timeline renderer."""
+    print(f"\n{len(sessions)} sessions match '{query}' (via {label}):\n")
+    if HAS_RICH:
+        render_timeline_rich(sessions)
+    else:
+        print(format_timeline(sessions))
+    print("\nRe-run with a UUID prefix to open a specific session.")
+
+
+def cmd_view(args) -> int:
+    """Open a session in Claude Code History Viewer (#14).
+
+    Resolves the query against the index, restores pruned sessions first
+    (same policy + flags as `csb resume`, #34), and launches the viewer
+    detached. With no viewer installed, prints the resolved transcript
+    path -- still the answer to "where is this conversation".
+    """
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+
+    query = getattr(args, "query", None)
+    if not query:
+        sessions = list_sessions(conn, limit=10)
+        conn.close()
+        if not sessions:
+            print("No sessions indexed yet. Run `csb backup` first.")
+            return 0
+        print("Recent sessions -- pass a UUID, path, folder, or keyword "
+              "to open one:\n")
+        if HAS_RICH:
+            render_timeline_rich(sessions)
+        else:
+            print(format_timeline(sessions))
+        return 0
+
+    result, method = _resolve_view_query(query, conn, config["claude_dir"])
+    if result is None:
+        print(f"Error: {method}", file=sys.stderr)
+        conn.close()
+        return 1
+    if isinstance(result, list):
+        label = method.split(":", 1)[1] if ":" in method else method
+        _show_view_candidates(result, query, label)
+        conn.close()
+        return 1
+    session = result
+    full_id = session["session_id"]
+    name = session.get("session_name") or "(unnamed)"
+
+    # Pruned session (#34): restore-in-place first, same policy as resume.
+    if session.get("deleted_at"):
+        decision = _resolve_pruned_decision(args, session, name, verb="view")
+        if decision == "abort":
+            conn.close()
+            return 0
+        if decision == "error":
+            conn.close()
+            return 1
+        jsonl_rel = session.get("jsonl_path")
+        if not jsonl_rel:
+            print(
+                f"Session '{name}' is pruned but has no jsonl_path in the "
+                f"DB row -- cannot auto-restore. Run `csb restore {full_id}` "
+                f"manually.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 1
+        commit = git_find_deleted_file(config["claude_dir"], jsonl_rel)
+        if not commit:
+            print(
+                f"Couldn't find '{jsonl_rel}' in git history -- nothing to "
+                f"restore.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 1
+        restore_result = _restore_session(
+            claude_dir=config["claude_dir"],
+            full_uuid=full_id,
+            jsonl_path=jsonl_rel,
+            commit=commit,
+            db_mtime=session.get("jsonl_mtime") or None,
+            quiet=getattr(args, "quiet", False),
+        )
+        if restore_result is None:
+            conn.close()
+            return 1
+        if restore_result.wrote == 0 and restore_result.failed:
+            print(
+                f"Restore failed for all {len(restore_result.failed)} "
+                f"file(s); not launching the viewer.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 1
+        print(
+            f"Restored {restore_result.wrote} file"
+            f"{'s' if restore_result.wrote != 1 else ''} from commit "
+            f"{restore_result.commit_short}."
+        )
+    conn.close()
+
+    # The transcript must exist on disk for the viewer to show anything.
+    jsonl_rel = session.get("jsonl_path") or ""
+    jsonl_full = Path(config["claude_dir"]) / jsonl_rel
+    if not jsonl_rel or not jsonl_full.exists():
+        print(
+            f"Transcript not on disk: {jsonl_full}",
+            file=sys.stderr,
+        )
+        print(
+            f"The index may be stale (`csb backup`) or the session needs "
+            f"`csb restore {full_id}`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    display = f"{name} ({full_id[:8]}...)" if name != "(unnamed)" else full_id
+    print(f"Opening: {display}")
+    if method != "uuid":
+        print(f"  Resolved via: {method}")
+    print(f"  Path: {jsonl_full}")
+
+    viewer = _find_viewer(config)
+    if viewer is None:
+        print("\nNo viewer found -- the transcript path above is the "
+              "session's full conversation (JSONL).")
+        print("To enable launching:")
+        print("  - set $CLAUDEVIEW_BIN to the viewer binary, or")
+        print("  - csb config viewer_path \"/path/to/viewer\", or")
+        print("  - install: https://github.com/jhlee0409/claude-code-history-viewer")
+        return 0
+
+    return _launch_viewer(viewer, full_id)
 
 
 def _transcript_is_resumable(jsonl_full_path: Path) -> tuple[bool, str]:
@@ -2394,7 +2735,7 @@ def cmd_resume(args) -> int:
     # can't resume it because the JSONL is gone. Offer to restore via git
     # first, then proceed with the resume.
     if session.get("deleted_at"):
-        decision = _resolve_pruned_resume_decision(args, session, name)
+        decision = _resolve_pruned_decision(args, session, name, verb="resume")
         if decision == "abort":
             return 0
         if decision == "error":

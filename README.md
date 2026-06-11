@@ -18,7 +18,7 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 > [!NOTE]
 > **Alpha software.** The core is complete and proven: backup, deletion detection, content search (FTS5), and end-to-end session restore (involving recovering a deleted session's full footprint from git with transcript, subagents, tool-results, logger sesslogs, and resuming in Claude Code). 
 >
-> Two convenience features remain on the roadmap but are *not* required for core function: a distilled/readable conversation layer ([#12](https://github.com/DazzleML/Claude-Session-Backup/issues/12) -- an alternate form of what [claude-session-logger](https://github.com/DazzleML/claude-session-logger/) already produces; content search works today regardless), and an in-`csb` history viewer ([#14](https://github.com/DazzleML/Claude-Session-Backup/issues/14) -- already served externally by `dz claudeview` from [dazzlecmd](https://github.com/DazzleTools/dazzlecmd/)). Expect occasional rough edges and breaking changes between minor versions until beta. By all means use it (and please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues)) but, as with any backup tool, keep a second copy of anything irreplaceable.
+> One convenience feature remains on the roadmap but is *not* required for core function: a distilled/readable conversation layer ([#12](https://github.com/DazzleML/Claude-Session-Backup/issues/12) -- an alternate form of what [claude-session-logger](https://github.com/DazzleML/claude-session-logger/) already produces; content search works today regardless). Expect occasional rough edges and breaking changes between minor versions until beta. By all means use it (and please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues)) but, as with any backup tool, keep a second copy of anything irreplaceable.
 
 ## Quick Start
 
@@ -92,6 +92,8 @@ csb search "X" --session <uuid>       # Constrain to one session by UUID prefix
 csb search "X" --json                 # NDJSON output for piping into jq
 csb restore <session-id>              # Restore deleted session from git history
 csb resume <session-id>               # Launch claude --resume with full UUID
+csb view [query]                      # Open a session in Claude Code History Viewer
+                                      #   (UUID/prefix, .jsonl path, folder, sesslog name, or keyword)
 csb update rebuild-index              # Safely reconstruct SQLite (preserves deleted-session metadata)
 csb update build-fts5                 # Build / refresh per-project FTS5 content index
 csb update backfill-deleted           # Discover culled sessions from git history; auto-repair sparse rows

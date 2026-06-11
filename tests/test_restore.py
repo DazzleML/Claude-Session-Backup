@@ -3292,6 +3292,53 @@ def test_cmd_resume_pruned_with_restore_pruned_flag_restores_then_attempts_resum
     assert cmd[2] == uuid
 
 
+def test_cmd_resume_pruned_restore_failure_does_not_launch_claude(
+    mock_claude_dir, tmp_path, capsys, monkeypatch
+):
+    """#34 AC6 (the long-open 'restore failure mid-resume' gap): when the
+    auto-restore does not complete cleanly, cmd_resume refuses to invoke
+    `claude --resume` against the incomplete restore. rc 1, no launch."""
+    from claude_session_backup.commands import RestoreResult, cmd_resume
+    slug = "C--code-pruned-fail"
+    uuid = "abcd7777-aaaa-bbbb-cccc-888888888888"
+    _setup_pruned_session_in_db(
+        tmp_path / "fresh.db", mock_claude_dir, slug, uuid
+    )
+
+    monkeypatch.setattr(
+        "claude_session_backup.commands._restore_session",
+        lambda **kw: RestoreResult(
+            wrote=0, failed=["projects/x/a.jsonl", "projects/x/b.json"],
+            commit_short="deadbeef",
+        ),
+    )
+    launched = []
+    real_run = subprocess.run
+
+    def _mock_run(*a, **kw):
+        cmd = a[0] if a else kw.get("args", [])
+        if cmd and cmd[0] == "claude":
+            launched.append(cmd)
+            class _R:
+                returncode = 0
+            return _R()
+        return real_run(*a, **kw)
+
+    monkeypatch.setattr("subprocess.run", _mock_run)
+
+    args = _make_resume_args(
+        session_id=uuid,
+        claude_dir=str(mock_claude_dir),
+        db=str(tmp_path / "fresh.db"),
+        restore_pruned=True,
+    )
+    rc = cmd_resume(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "did not complete cleanly" in captured.err
+    assert launched == [], "claude --resume must NOT run after a failed restore"
+
+
 def test_cmd_resume_pruned_tty_prompt_yes(mock_claude_dir, tmp_path, capsys, monkeypatch):
     """TTY + user types 'Y' (or empty) at the prompt -> restore + resume."""
     from claude_session_backup.commands import cmd_resume
