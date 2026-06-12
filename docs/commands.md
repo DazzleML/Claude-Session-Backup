@@ -2,6 +2,19 @@
 
 The complete command surface. The [README](../README.md) shows highlights; this is the full manual. Maintenance verbs (`csb update *`) have their own deep-dive in [maintenance.md](maintenance.md); automation setups (plugin, hooks, cron) live in [automation.md](automation.md).
 
+## Common workflows
+
+The day-to-day patterns, expanded from the README's quick list:
+
+| You're thinking... | Run | Notes |
+|---|---|---|
+| "What sessions touched THIS project?" | `cd <project>` then `csb scan .` | The `.` shortcut scopes to the cwd (folder + descendants) with no flags to remember; add a term (`csb scan . auth`) to filter within the folder, or `-s .` for "originated here" only |
+| "What was I working on before the reboot?" | `csb list -n 5` | Last-used order; each row shows start folder + the top working directories so you can tell sessions apart at a glance |
+| "Which session discussed X?" | `csb search "X"` -> `csb distill <hit>` | Search finds it, distill makes it readable |
+| "Pick up where I left off" | `csb resume <name-or-prefix-or-keyword>` | Accepts everything `claude --resume` does and more |
+| "Something got purged" | `csb list --deleted` -> `csb restore <id>` | Or bulk: `csb scan -d <path> --deleted --restore` |
+| "Show it to me in a GUI" | `csb view <query>` | Launches Claude Code History Viewer, detached |
+
 ## Full command list
 
 ```bash
@@ -47,6 +60,8 @@ csb config settings:cleanupPeriodDays 365     # Set the TTL (writes ~/.claude/se
 ```
 
 Common flags (`--quiet`, `--claude-dir`, `--db`) work before OR after the subcommand.
+
+**Relocated `~/.claude`?** csb follows Claude Code's `CLAUDE_CONFIG_DIR` automatically (container / host-mount / worktree-isolated setups need zero csb configuration). Precedence: `--claude-dir` > `CLAUDE_DIR` > `CLAUDE_CONFIG_DIR` > `claude_dir` config key > `~/.claude`; the default DB location follows the relocation too.
 
 ## Searching conversations
 
@@ -133,6 +148,7 @@ The default `csb list` and `csb scan` hide deleted sessions (active-only view); 
 ```bash
 csb restore <session-uuid>          # Full UUID required when DB has no row for it
 csb restore <prefix>                # Prefix works when the session IS in csb's DB
+csb restore <session-name>          # Names, paths, folders, keywords -- same surface as resume/view/distill
 csb restore <uuid> --dry-run        # Preview writes/preserves/symlinks/timestamps without writing
 csb restore <uuid> --force          # Overwrite present on-disk files from git
 csb restore <uuid> --jsonl-only     # Restore only the main transcript

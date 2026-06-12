@@ -303,3 +303,67 @@ def test_config_bare_dump_is_pure_json(tmp_path, capsys):
     parsed = json.loads(captured.out)  # raises if stdout isn't pure JSON
     assert "display_top_folders" in parsed
     assert "settings:cleanupPeriodDays" in captured.err
+
+
+
+# == #45: CLAUDE_CONFIG_DIR -- follow Claude Code's own directory relocation ==
+
+
+@pytest.fixture
+def _no_dir_env(monkeypatch):
+    """Baseline: neither csb's CLAUDE_DIR nor Claude Code's
+    CLAUDE_CONFIG_DIR set (the developer machine may have either)."""
+    monkeypatch.delenv("CLAUDE_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_SESSION_BACKUP_DB", raising=False)
+
+
+def test_claude_config_dir_alone_relocates_everything(_no_dir_env, monkeypatch, tmp_path):
+    """#45: relocating via Claude Code's OWN env var is enough -- csb
+    follows with zero configuration, including the DB default."""
+    moved = tmp_path / "relocated-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(moved))
+    cfg = config.load_config()
+    assert cfg["claude_dir"] == str(moved)
+    assert Path(cfg["index_path"]) == moved / "session-backup.db"
+
+
+def test_claude_dir_beats_claude_config_dir(_no_dir_env, monkeypatch, tmp_path):
+    """csb's own CLAUDE_DIR is the more specific override."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc-dir"))
+    monkeypatch.setenv("CLAUDE_DIR", str(tmp_path / "csb-dir"))
+    cfg = config.load_config()
+    assert cfg["claude_dir"] == str(tmp_path / "csb-dir")
+
+
+def test_cli_flag_beats_both_env_vars(_no_dir_env, monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc-dir"))
+    monkeypatch.setenv("CLAUDE_DIR", str(tmp_path / "csb-dir"))
+    cfg = config.load_config(claude_dir=str(tmp_path / "flag-dir"))
+    assert cfg["claude_dir"] == str(tmp_path / "flag-dir")
+    assert Path(cfg["index_path"]) == tmp_path / "flag-dir" / "session-backup.db"
+
+
+def test_explicit_db_env_not_overridden_by_relocation(_no_dir_env, monkeypatch, tmp_path):
+    """An explicit DB override always wins over the follow-the-dir default."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cc-dir"))
+    monkeypatch.setenv("CLAUDE_SESSION_BACKUP_DB", str(tmp_path / "elsewhere.db"))
+    cfg = config.load_config()
+    assert cfg["index_path"] == str(tmp_path / "elsewhere.db")
+
+
+def test_config_and_settings_paths_honor_claude_config_dir(_no_dir_env, monkeypatch, tmp_path):
+    """The chicken-and-egg corner: csb's own config file AND Claude Code's
+    settings.json must be read from the relocated dir."""
+    moved = tmp_path / "relocated-claude"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(moved))
+    assert config.get_config_path() == moved / "session-backup-config.json"
+    assert config.get_settings_path() == moved / "settings.json"
+
+
+def test_default_unchanged_without_relocation(_no_dir_env):
+    """Regression pin: no envs, no flag -> classic ~/.claude everywhere."""
+    cfg = config.load_config()
+    assert cfg["claude_dir"] == "~/.claude"
+    assert Path(cfg["index_path"]).name == "session-backup.db"
+    assert config.get_config_path() == Path.home() / ".claude" / "session-backup-config.json"

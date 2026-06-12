@@ -744,41 +744,37 @@ def cmd_restore(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    # Resolve the input against the DB. Three outcomes matter here:
-    #   - Success: use the DB row's jsonl_path.
-    #   - No match + input is a full UUID: fall through to git-history
-    #     fallback (#28). Don't exit -- the DB may be missing the row
-    #     (post-rebuild-index, fresh clone, etc.) while git still has the
-    #     JSONL.
-    #   - No match + input is a prefix/suffix: exit 1. Prefix matching
-    #     requires a DB row to disambiguate; without one we can't help.
-    #   - Ambiguous / invalid input: propagate the resolver's exit code.
-    from .ids import (
-        AmbiguousSessionID,
-        InvalidSessionIDInput,
-        NoSuchSessionID,
-        format_ambiguous_error,
-        resolve_session_id,
+    # Resolve the input (#44 -- restore was the last command without the
+    # shared multi-modal resolver). Order:
+    #   1. Strict ID resolver (prefix/suffix; ambiguity still exits 2).
+    #      A plain miss falls through silently (miss_ok) -- the input may
+    #      be a session NAME, path, folder, or keyword.
+    #   2. Shared multi-modal resolver (same surface as resume/view/
+    #      distill). Multi-match -> candidates timeline, exit 1.
+    #   3. Still nothing + input is a full UUID: git-history fallback
+    #      (#28) below -- the DB may be missing the row while git still
+    #      has the JSONL. Names can't use the fallback (filenames carry
+    #      UUIDs, not titles).
+    full_id, exit_code = _resolve_session_or_exit(
+        conn, args.session_id, miss_ok=True
     )
-    full_id: str | None = None
-    session = None
-    try:
-        full_id = resolve_session_id(conn, args.session_id)
-        session = get_session(conn, full_id)
-    except AmbiguousSessionID as e:
-        print(format_ambiguous_error(e), file=sys.stderr)
+    if full_id is None and exit_code:
         conn.close()
-        return 2
-    except InvalidSessionIDInput as e:
-        print(f"Error: {e}", file=sys.stderr)
-        conn.close()
-        return 2
-    except NoSuchSessionID:
-        # Don't print yet -- maybe git history can save us if the input is
-        # a full UUID.
-        pass
-    finally:
-        conn.close()
+        return exit_code
+    session = get_session(conn, full_id) if full_id else None
+    if session is None:
+        result, method = _resolve_session_query(
+            args.session_id, conn, claude_dir
+        )
+        if isinstance(result, list):
+            label = method.split(":", 1)[1] if ":" in method else method
+            _show_view_candidates(result, args.session_id, label)
+            conn.close()
+            return 1
+        if result is not None:
+            session = result
+            full_id = session["session_id"]
+    conn.close()
 
     # Resolve jsonl_path via DB row if present, otherwise via git history.
     jsonl_path: str | None = None
