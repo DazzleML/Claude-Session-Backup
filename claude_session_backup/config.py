@@ -44,14 +44,39 @@ DEFAULT_CONFIG = {
 
 # Environment variable overrides (CLI flag > env var > config file > default)
 ENV_CLAUDE_DIR = "CLAUDE_DIR"
+# Claude Code's OWN relocation variable (#45). Honoring it means csb
+# automatically follows setups that moved the data directory the way
+# Claude Code itself supports (multi-workspace containers, host-mounted
+# dirs, worktree-isolated agent environments) -- zero csb configuration.
+# csb's CLAUDE_DIR wins when both are set (the more specific override).
+ENV_CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
 ENV_DB_PATH = "CLAUDE_SESSION_BACKUP_DB"
 
 CONFIG_FILENAME = "session-backup-config.json"
 
 
+def _env_claude_dir():
+    """The effective env-var override for the Claude data directory:
+    csb's own CLAUDE_DIR first, then Claude Code's CLAUDE_CONFIG_DIR.
+    None when neither is set."""
+    return os.environ.get(ENV_CLAUDE_DIR) or os.environ.get(ENV_CLAUDE_CONFIG_DIR)
+
+
+def _default_claude_dir() -> Path:
+    """The default Claude directory when no explicit path is given:
+    env override (CLAUDE_DIR / CLAUDE_CONFIG_DIR) or ~/.claude.
+
+    The SINGLE place this default lives (#45) -- every fallback site
+    routes through here so relocated setups are followed everywhere,
+    including the chicken-and-egg reads of csb's own config file and
+    Claude Code's settings.json."""
+    env = _env_claude_dir()
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
 def get_config_path(claude_dir=None):
     """Return the config file path."""
-    base = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
+    base = Path(claude_dir).expanduser() if claude_dir else _default_claude_dir()
     return base / CONFIG_FILENAME
 
 
@@ -64,7 +89,7 @@ def get_settings_path(claude_dir=None):
     purge countdown and (via the ``settings:`` namespace in ``csb config``)
     can edit the TTL through it.
     """
-    base = Path(claude_dir).expanduser() if claude_dir else Path.home() / ".claude"
+    base = Path(claude_dir).expanduser() if claude_dir else _default_claude_dir()
     return base / "settings.json"
 
 
@@ -77,7 +102,7 @@ def load_config(claude_dir=None):
     config = dict(DEFAULT_CONFIG)
 
     # Apply env var overrides before config file (config file can still override)
-    env_claude_dir = os.environ.get(ENV_CLAUDE_DIR)
+    env_claude_dir = _env_claude_dir()  # CLAUDE_DIR, else CLAUDE_CONFIG_DIR (#45)
     env_db = os.environ.get(ENV_DB_PATH)
     if env_claude_dir:
         config["claude_dir"] = env_claude_dir
@@ -102,6 +127,16 @@ def load_config(claude_dir=None):
         config["claude_dir"] = env_claude_dir
     if env_db:
         config["index_path"] = env_db
+
+    # The DB lives INSIDE the claude_dir unless explicitly overridden
+    # (#45): when index_path is still the stock default but claude_dir
+    # was relocated (flag / CLAUDE_DIR / CLAUDE_CONFIG_DIR / config),
+    # follow the relocation -- otherwise sessions would scan from the
+    # new dir while the index silently pinned to ~/.claude.
+    if config["index_path"] == DEFAULT_CONFIG["index_path"]:
+        config["index_path"] = str(
+            Path(config["claude_dir"]).expanduser() / "session-backup.db"
+        )
 
     return config
 

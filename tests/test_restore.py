@@ -3842,3 +3842,84 @@ def test_fts5_freshness_with_restored_old_mtime(tmp_path):
     # Without #40: recovery-time mtime -> falsely stale (the #36 trigger).
     assert is_session_indexed(conn, uuid, time.time()) is False
     conn.close()
+
+
+# == #44: restore adopts the shared multi-modal resolver (restore-by-name) ==
+
+
+def test_cmd_restore_by_exact_session_name(mock_claude_dir, tmp_path, capsys):
+    """#44 headline: `csb restore <exact-session-name>` resolves via the
+    index and restores -- restore was the LAST command without the shared
+    resolver (resume/view/distill got it in v0.3.20-21 / v0.4.0)."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-byname"
+    uuid = "ee440001-aaaa-bbbb-cccc-dddddddddddd"
+    expected = _setup_full_session(mock_claude_dir, slug, uuid, with_logger=False)
+    jsonl_path = f"projects/{slug}/{uuid}.jsonl"
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(fresh_db, slug, uuid, jsonl_path)  # name: "session-name"
+
+    args = _make_args_namespace(
+        session_id="session-name",  # the NAME, not an id
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    captured = capsys.readouterr()
+    assert rc == 0, "stderr: " + captured.err
+    for rel, body in expected.items():
+        assert (mock_claude_dir / rel).exists(), "missing after restore: " + rel
+        assert (mock_claude_dir / rel).read_bytes() == body
+
+
+def test_cmd_restore_name_multimatch_shows_candidates(
+    mock_claude_dir, tmp_path, capsys
+):
+    """#44: an ambiguous name lists candidates (same UX as view/resume)
+    and restores nothing."""
+    from claude_session_backup.commands import cmd_restore
+    slug = "C--code-byname2"
+    uuid_a = "ee440002-aaaa-bbbb-cccc-dddddddddddd"
+    uuid_b = "ee440003-aaaa-bbbb-cccc-dddddddddddd"
+    expected_a = _setup_full_session(mock_claude_dir, slug, uuid_a, with_logger=False)
+    fresh_db = tmp_path / "fresh.db"
+    # Both rows share the fixture name "session-name" -> exact-name multi.
+    _populate_db_with_session(fresh_db, slug, uuid_a, f"projects/{slug}/{uuid_a}.jsonl")
+    _populate_db_with_session(fresh_db, slug, uuid_b, f"projects/{slug}/{uuid_b}.jsonl")
+
+    args = _make_args_namespace(
+        session_id="session-name",
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "2 sessions match" in out
+    for rel in expected_a:
+        assert not (mock_claude_dir / rel).exists(), (
+            "multimatch must not restore anything"
+        )
+
+
+def test_cmd_restore_nonsense_name_keeps_full_uuid_hint(
+    mock_claude_dir, tmp_path, capsys
+):
+    """#44 regression: a query matching nothing still gets the
+    git-fallback hint (names can't use the fallback -- filenames carry
+    UUIDs, not titles)."""
+    from claude_session_backup.commands import cmd_restore
+    fresh_db = tmp_path / "fresh.db"
+    _populate_db_with_session(
+        fresh_db, "C--code-x", "ee440004-aaaa-bbbb-cccc-dddddddddddd",
+        "projects/C--code-x/ee440004-aaaa-bbbb-cccc-dddddddddddd.jsonl",
+    )
+    args = _make_args_namespace(
+        session_id="zz-totally-unknown-zz",
+        claude_dir=str(mock_claude_dir),
+        db=str(fresh_db),
+    )
+    rc = cmd_restore(args)
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "full UUID" in err

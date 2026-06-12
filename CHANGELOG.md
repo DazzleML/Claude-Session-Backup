@@ -9,6 +9,17 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.2] -- 2026-06-12 (alpha)
+
+**Restore-by-name + follow relocated `~/.claude` setups.** Two gaps surfaced within hours of v0.4.1 -- one while writing README workflow examples, one from real-world container/worktree usage patterns. 913/913 tests pass (was 904; +9 new). Both red-green verified. Closes #44, closes #45.
+
+### Added
+- **`csb restore` adopts the shared multi-modal resolver** (#44) -- the LAST session command without it. `csb restore <exact-session-name>` now works, plus paths, folders, sesslog names, and keywords (same surface as resume/view/distill, same `miss_ok` fall-through pattern). Multi-match shows the candidates timeline and exits 1. UUID/fragment behavior and the full-UUID git-history fallback (#28) are unchanged; names can't use the git fallback (filenames carry UUIDs, not titles) and keep the full-UUID hint.
+- **`CLAUDE_CONFIG_DIR` honored** (#45) -- Claude Code's own directory-relocation env var. Setups that moved the data directory (multi-workspace containers, host-mounted dirs, worktree-isolated agent environments) now work with ZERO csb configuration. Precedence: `--claude-dir` flag > `CLAUDE_DIR` > `CLAUDE_CONFIG_DIR` > `claude_dir` config key > `~/.claude`, implemented as a single default helper -- including the chicken-and-egg corners (csb's own config file and Claude Code's settings.json are read from the relocated dir).
+- **The default DB follows the relocation**: when `index_path` is unset, it lives inside the (possibly relocated) claude_dir instead of pinning to `~/.claude` -- no more split-brain where sessions scan from the new dir but the index writes to the old one. Explicit `--db` / `CLAUDE_SESSION_BACKUP_DB` overrides still win.
+- **README "Common workflows" section** -- the daily patterns (`cd proj && csb scan .`, `csb list -n 5` after a reboot, search->distill, resume-by-name, list-deleted->restore-by-name) with an expanded table in `docs/commands.md`.
+- **9 new automated tests**: restore-by-name (exact-name restore, name-multimatch candidates, nonsense-keeps-full-UUID-hint) and the relocation matrix (CLAUDE_CONFIG_DIR alone relocates everything incl. the DB, CLAUDE_DIR beats it, flag beats both, explicit DB override wins, config/settings chicken-and-egg paths, no-relocation regression pin).
+
 ## [0.4.1] -- 2026-06-11 (alpha)
 
 Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines -- a storefront of highlights with examples, linking into a proper `docs/` manual:
@@ -764,7 +775,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0
 [0.3.22]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...v0.3.22

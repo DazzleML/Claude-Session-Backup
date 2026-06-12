@@ -79,7 +79,33 @@ csb restore <session-id>        # Recover a deleted session from git history
 csb status                      # Summary stats
 ```
 
-Every command, every flag, and the deep dives live in **[docs/commands.md](docs/commands.md)**.
+Every command, every flag, and the nitty-gritties live in **[docs/commands.md](docs/commands.md)**.
+
+### Common workflows
+
+The patterns that come up every day:
+
+```bash
+# "What sessions touched THIS project?" -- cd into any folder you were
+# working in and ask. The shortcut form needs no flags to remember.
+cd ~/code/my-project
+csb scan .
+
+# "What was I working on before the reboot / crash / weekend?"
+csb list -n 5
+
+# "I remember discussing it, but in WHICH session?" -- search by content,
+# then read the winner like a chat log.
+csb search "rate limiter backoff"
+csb distill <uuid-from-the-hit>
+
+# "Pick up exactly where I left off" -- by name, prefix, or keyword.
+csb resume MY-PROJECT__2026-6-6__that-refactor
+
+# "Claude Code purged something I needed."
+csb list --deleted
+csb restore MY-PROJECT__2025-5-25__redesign  #or <session-id / id-fragment>
+```
 
 ### Searching conversations
 
@@ -94,7 +120,7 @@ Full details (what's indexed, source channels, JSON output, freshness semantics)
 
 ### Reading conversations (distill)
 
-`csb search` finds the needle; `csb distill` lets you read the haystack comfortably -- an instant-messenger-style log with timestamped speaker turns (`<User>`, `<Claude>`, `<Agent:explore>`) and one-line tool calls instead of walls of tool output. Markdown-friendly (Typora) and editor-friendly (Vim).
+`csb search` finds the needle; `csb distill` lets you read the haystack comfortably, with an instant-messenger-style log with timestamped speaker turns (`<User>`, `<Claude>`, `<Agent:explore>`) and one-line tool calls instead of walls of tool output. Markdown-friendly (Typora) and editor-friendly (Vim / VSCode / etc).
 
 ```bash
 csb distill <anything-that-identifies-a-session>     # writes ~/.claude/distilled/<slug>/<uuid>.md
@@ -104,7 +130,7 @@ The distilled file is a *reading layer* -- the full JSONL remains the preserved 
 
 ### Recovery
 
-When Claude Code purges a session you wanted to keep, csb recovers it from git history **byte+metadata-exact**: the full footprint (transcript, subagents, tool-results, logger files), recreated symlinks, and original timestamps -- a recovered session is indistinguishable from one that was never deleted. `resume`/`view`/`distill` all offer the restore inline when they hit a pruned session.
+When Claude Code purges a session that you wanted to keep, csb recovers it from git history **byte+metadata-exact**. This includes the full footprint (transcript, subagents, tool-results, logger files), recreated symlinks, and original timestamps -- a recovered session is indistinguishable from one that was never deleted. `resume`/`view`/`distill` all offer the restore inline when they hit a pruned session.
 
 ```bash
 csb list --deleted                                   # what's gone?
@@ -148,6 +174,7 @@ The Claude Code plugin (from Quick Start above) covers most users: PreCompact fi
 - **Python 3.10+**
 - **Git** (for backup storage)
 - **`~/.claude/`** initialized as a git repository (`git -C ~/.claude init`)
+- Moved your Claude directory? csb follows `CLAUDE_CONFIG_DIR` automatically; `--claude-dir`, `CLAUDE_DIR`, and the `claude_dir` config key also work
 
 ## Installation
 
@@ -187,7 +214,7 @@ Like the project?
 
 ## Acknowledgements
 
-- [claude-vault](https://github.com/kuroko1t/claude-vault) by [@kuroko1t](https://github.com/kuroko1t) -- FTS5 search design, JSONL parsing patterns, Claude Code hook integration. Serendipitously started work on `csb` a week or so before [kuroko1t's blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500).
+- [claude-vault](https://github.com/kuroko1t/claude-vault) by [@kuroko1t](https://github.com/kuroko1t) -- FTS5 search design, JSONL parsing patterns, Claude Code hook integration. Serendipitously started development on `csb` a week or so before [kuroko1t's blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500) laying out the problem.
 - [claude-code-history-viewer](https://github.com/jhlee0409/claude-code-history-viewer) by [@jhlee0409](https://github.com/jhlee0409) - GUI session reader that `csb view` launches.
 
 ## License
