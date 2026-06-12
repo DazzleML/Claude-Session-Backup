@@ -49,7 +49,7 @@ csb backup
 ```
 
 > [!TIP]
-> **Pair with [claude-session-logger](https://github.com/DazzleML/claude-session-logger/)** for full searchable history. csb preserves Claude Code's session transcripts (`projects/<slug>/<uuid>.jsonl`). The logger captures the *richer* per-session data alongside them -- tool calls, shell commands, agent dispatches -- written to `~/.claude/sesslogs/`. csb backs up those logger files too (it backs up everything under `~/.claude/` via the noise commits), and `csb restore` brings the whole footprint back together: transcript + subagents + tool-results + logger state + sesslogs. The two projects are independent (csb works fine without the logger) but they're designed to complement each other.	
+> **Pair with [claude-session-logger](https://github.com/DazzleML/claude-session-logger/)** for full searchable history. csb preserves Claude Code's session transcripts (`projects/<slug>/<uuid>.jsonl`). The logger captures the *richer* per-session data alongside them -- tool calls, shell commands, agent dispatches -- written to `~/.claude/sesslogs/`. csb backs up those logger files too (it backs up everything under `~/.claude/` via the noise commits), and `csb restore` brings the whole footprint back together: transcript + subagents + tool-results + logger state + sesslogs. The two projects are independent (csb works fine without the logger) but they're designed to complement each other.
 
 ## Features
 
@@ -58,97 +58,61 @@ csb backup
 - **Folder analysis**: See where work actually happened -- the most-used folder is highlighted
 - **Deletion detection**: Know when Claude Code removes a session you previously tracked
 - **Session restore**: Recover deleted sessions from git history with `csb restore`
+- **Readable chat logs**: `csb distill` renders any session as an IM-style log -- the full JSONL stays preserved regardless
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
 - **Unattended operation**: `--no-gpg-sign`, `--quiet`, lock file -- designed for cron and Task Scheduler
 - **Cross-platform**: Works on Windows, Linux, macOS, BSD
 
 ## Commands
 
+The daily drivers:
+
 ```bash
-csb backup                            # Scan, index, git commit (noise + user)
-csb backup --no-commit                # Scan and index only
-csb list [-n 20]                      # Timeline view (default sort: last-used)
-csb list [keyword]                    # Filter by keyword in name/project/folders
-csb list --sort expiration            # Sort by soonest-to-purge first
-csb list --sort {last-used|expiration|started|oldest|messages|size}
-csb list --deleted                    # Show deleted sessions
-csb scan                              # Find sessions touching cwd (path-prefix)
-csb scan <term>                       # Filter by term: name, project, folder paths
-csb scan ./<dirname>                  # Shortcut: same as -d <dirname> (no flag to remember)
-csb scan -d <pattern>                 # Path-strict: folder + descendants
-csb scan -D <pattern>                 # Path-strict: this folder only, no descendants
-csb scan -s <pattern>                 # start_folder only ("what sessions originated here?")
-csb scan -d <pattern> <term>          # Scope-then-filter combined
-csb scan -d <pattern>* / -D <pattern>* / -s <pattern>*  # Trailing-* wildcard
-csb scan ... -NU                      # Skip folder-usage search (start_folder only)
-csb status                            # Summary stats
-csb show <session-id>                 # Detailed session info with folder analysis
-csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
-csb search -E "regex.*pattern"        # Regex mode (Python re)
-csb search "X" -C 3                   # Show 3 events of context before AND after each hit
-csb search "X" -A 5 -B 2              # Asymmetric context (5 after, 2 before)
-csb search "X" --source convo         # Force a source channel; auto = convo > sesslog > jsonl
-csb search "X" --session <uuid>       # Constrain to one session by UUID prefix
-csb search "X" --json                 # NDJSON output for piping into jq
-csb restore <session-id>              # Restore deleted session from git history
-csb resume <query>                    # Launch claude --resume (UUID/prefix, session NAME,
-                                      #   path, folder, sesslog name, or keyword)
-csb view [query]                      # Open a session in Claude Code History Viewer
-                                      #   (UUID/prefix, .jsonl path, folder, sesslog name, or keyword)
-csb update rebuild-index              # Safely reconstruct SQLite (preserves deleted-session metadata)
-csb update build-fts5                 # Build / refresh per-project FTS5 content index
-csb update backfill-deleted           # Discover culled sessions from git history; auto-repair sparse rows
-csb config [key] [value]              # View/edit csb's own configuration
-csb config settings:cleanupPeriodDays         # View Claude Code's session purge TTL
-csb config settings:cleanupPeriodDays 365     # Set the TTL (writes ~/.claude/settings.json)
+csb backup                      # Scan, index, git commit
+csb list                        # Timeline of sessions (filter, sort, --deleted)
+csb scan -d <path> --deleted    # Find (and bulk-restore) what was purged in a folder
+csb search "oauth callback"     # Full-text search across every conversation
+csb distill <query>             # Read a session as a chat log -> ~/.claude/distilled/
+csb resume <query>              # Reopen in Claude Code (UUID, prefix, name, keyword...)
+csb view <query>                # Open in Claude Code History Viewer
+csb restore <session-id>        # Recover a deleted session from git history
+csb status                      # Summary stats
 ```
+
+Every command, every flag, and the deep dives live in **[docs/commands.md](docs/commands.md)**.
 
 ### Searching conversations
 
-Use `csb search` to find old sessions by **what was discussed**, not just by folder or name. The query is a case-insensitive literal substring by default; `-E` switches to Python regex.
-
-Under the hood `csb search` consults per-project **FTS5** indexes (SQLite's built-in [full-text search engine](https://sqlite.org/fts5.html), the same one that powers many IDE/Mail search bars). Run `csb update build-fts5` once to build them; after that, searching tens of thousands of messages is sub-second because FTS5 is an inverted-index lookup, not a `LIKE '%word%'` linear scan. **What's indexed**: every USER prompt, AI/assistant response, and subagent (AGENT) sidechain transcript -- plus tool calls and outputs when the raw `<uuid>.jsonl` is the source (the `.convo*` / `.sesslog*` sources from [claude-session-logger](https://github.com/DazzleML/claude-session-logger) are USER/AI/AGENT-only by design). csb stores one FTS5 database per project (`~/.claude/csb-fts/<project>__<hash>_<user>.db`) so search stays fast even when individual projects accumulate years of history.
+`csb search` finds old sessions by **what was discussed**, not just by folder or name -- sub-second across tens of thousands of messages via per-project FTS5 indexes (run `csb update build-fts5` once to build them).
 
 ```bash
-# Find every session where you talked about OAuth callbacks
-csb search "oauth callback"
-
-# Regex with context (3 events above and below each hit)
-csb search -E "refresh.*token" -C 3
-
-# Constrain to one session and one source channel
-csb search "auth flow" --session 916441e6 --source convo
-
-# Pipe results into another tool
-csb search "rate limit" --json | jq -r '.session_id' | sort -u
+csb search "oauth callback"                 # literal substring, case-insensitive
+csb search -E "refresh.*token" -C 3         # regex, with 3 events of context
 ```
 
-Per-session source preference is `.convo*` (preferred, USER/AI/AGENT-only) -> `.sesslog*` (filtered to USER/AI/AGENT) -> `<uuid>.jsonl` (authoritative fallback). New sessions logged by [claude-session-logger](https://github.com/DazzleML/claude-session-logger) get the cleanest `.convo*` source; older sessions fall through to JSONL automatically. Hits are sorted by session last-used time, so the most recent matches surface first.
+Full details (what's indexed, source channels, JSON output, freshness semantics): **[docs/commands.md](docs/commands.md#searching-conversations)**.
 
-For metadata search (folder paths, project, session name), use `csb list <filter>` or `csb scan <term>` -- those are the right tools for "find sessions in this folder" rather than "find sessions about this topic."
+### Reading conversations (distill)
 
-### Finding sessions at risk of purge
-
-Claude Code auto-deletes sessions after `cleanupPeriodDays` (default 30). To see which of your sessions are closest to being purged:
+`csb search` finds the needle; `csb distill` lets you read the haystack comfortably -- an instant-messenger-style log with timestamped speaker turns (`<User>`, `<Claude>`, `<Agent:explore>`) and one-line tool calls instead of walls of tool output. Markdown-friendly (Typora) and editor-friendly (Vim).
 
 ```bash
-csb list --sort expiration -n 20
+csb distill <anything-that-identifies-a-session>     # writes ~/.claude/distilled/<slug>/<uuid>.md
 ```
 
-Sessions are sorted by the JSONL file's modification time, so active sessions (which refresh their mtime on every interaction) stay safe while dormant sessions surface to the top of the expiration list.
+The distilled file is a *reading layer* -- the full JSONL remains the preserved record. Filters, channels, and the `distill_policy` config: **[docs/commands.md](docs/commands.md#reading-conversations-distill)**.
 
-To **view or change the TTL itself** without hand-editing `settings.json`:
+### Recovery
+
+When Claude Code purges a session you wanted to keep, csb recovers it from git history **byte+metadata-exact**: the full footprint (transcript, subagents, tool-results, logger files), recreated symlinks, and original timestamps -- a recovered session is indistinguishable from one that was never deleted. `resume`/`view`/`distill` all offer the restore inline when they hit a pruned session.
 
 ```bash
-csb config settings:cleanupPeriodDays         # show current value + source + guidance
-csb config settings:cleanupPeriodDays 365     # keep transcripts for a year
-csb config settings:cleanupPeriodDays 36500   # effectively never purge (~100 years)
+csb list --deleted                                   # what's gone?
+csb restore <session-id>                             # bring one back
+csb scan -d <path> --deleted --restore --dry-run     # preview a bulk recovery
 ```
 
-The `settings:` prefix is a fully-qualified namespace: a bare key (e.g. `csb config display_top_folders`) addresses csb's own config, while a `settings:` key addresses Claude Code's `~/.claude/settings.json` -- the two never collide. The write is a read-merge-write that preserves your other settings and refuses to touch a malformed file.
-
-> [!CAUTION]
-> `cleanupPeriodDays` of **`0` does not mean "keep forever"** -- Claude Code treats it as *disable session persistence* and deletes all transcripts at its next startup. csb refuses to write `0` without `--force`. For "never purge", set a large number instead.
+Single + bulk recovery, guarantees and limits, purge-TTL management: **[docs/commands.md](docs/commands.md#recovery)**. Maintenance verbs (`csb update *`): **[docs/maintenance.md](docs/maintenance.md)**.
 
 ## How It Works
 
@@ -177,100 +141,7 @@ flowchart LR
 
 ## Automation
 
-### Claude Code Plugin (recommended)
-
-The repository ships as a Claude Code plugin that registers PreCompact and SessionEnd hooks automatically. You can install it straight from GitHub -- no clone required:
-
-```bash
-# Add the DazzleML marketplace (one-time)
-claude plugin marketplace add "DazzleML/Claude-Session-Backup"
-
-# Install the plugin
-claude plugin install claude-session-backup@dazzle-claude-session-backup
-```
-
-Alternatively, if you already have a clone for development:
-
-```bash
-# From a clone of this repo
-claude plugin marketplace add ./
-claude plugin install claude-session-backup@dazzle-claude-session-backup
-```
-
-The plugin uses a Node.js bootstrapper (`run-hook.mjs`) to find the correct Python binary on each platform, so it works reliably on Windows, Linux, and macOS without any shell quoting concerns. PreCompact fires synchronously before `/compact` to preserve full conversation detail; SessionEnd fires on exit to catch any remaining changes.
-
-### Manual hook installation
-
-If you prefer to manage hooks yourself, add this to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "PreCompact": [{"hooks": [{"type": "command", "command": "csb backup --quiet"}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "csb backup --quiet &"}]}]
-  }
-}
-```
-
-Or use `python install.py` in the repo to copy the hook script and print the snippet.
-
-### Cron (Linux/Mac)
-
-Belt-and-suspenders periodic backup as a safety net:
-
-```bash
-*/15 * * * * /usr/local/bin/csb backup --quiet 2>/dev/null
-```
-
-### Task Scheduler (Windows)
-
-```powershell
-schtasks /create /tn "Claude Session Backup" /tr "csb backup --quiet" /sc minute /mo 15
-```
-
-## Recovery
-
-When Claude Code purges a session you wanted to keep, csb can recover it from your `~/.claude` git history. The restore path is **byte-exact** regardless of host git's `core.autocrlf` settings, on every platform csb supports.
-
-### Finding what was deleted
-
-```bash
-csb list --deleted                  # Every session csb has flagged deleted, all projects
-csb list amd --deleted              # Filtered: only deleted sessions matching "amd"
-csb scan --deleted                  # Deleted sessions touching cwd (or any folder)
-csb scan --deleted all              # Live AND deleted together (same grammar as list/search)
-csb scan -d /path/to/proj --deleted # Scoped to a specific folder (folder + descendants)
-csb scan --deleted --all-folders    # Don't truncate the per-session folder list
-```
-
-The default `csb list` and `csb scan` hide deleted sessions (active-only view); the bottom of `csb list` shows a one-line footer when there are deleted sessions matching your filter so you don't have to remember to check.
-
-### Recovering one session
-
-```bash
-csb restore <session-uuid>          # Full UUID required when DB has no row for it
-csb restore <prefix>                # Prefix works when the session IS in csb's DB
-csb restore <uuid> --dry-run        # Preview commit + target path without writing
-```
-
-If csb's DB doesn't have a row for the session (e.g., on a fresh machine), `csb restore` falls back to walking `git log --all` for `projects/*/<uuid>.jsonl`. It needs the full UUID for the fallback path. To discover deleted sessions from git that aren't in the live DB, use `csb update backfill-deleted` (see [`docs/maintenance.md`](docs/maintenance.md)).
-
-### Recovering many sessions at once
-
-```bash
-csb scan -d <pattern> --deleted --restore --dry-run    # Preview the whole set
-csb scan -d <pattern> --deleted --restore              # Confirm prompt for >1 file
-csb scan -d <pattern> --deleted --restore --yes       # Skip the prompt
-csb scan -d <pattern> --deleted --restore --force     # Overwrite existing on-disk files
-```
-
-Bulk restore takes the same `backup_lock` as `csb backup`, so it won't race a concurrent backup. Per-file status (`OK` / `SKIP` / `FAIL`) is printed; the final line summarizes counts.
-
-### What csb restore does NOT do
-
-- It does NOT modify any other Claude Code state files. Only the JSONL is written back to its original `projects/<slug>/<uuid>.jsonl` location.
-- It does NOT preserve the original mtime — restored files have `mtime=now` (a known limitation; affects the `--sort expiration` view until the next backup cycle).
-- It does NOT (yet) restore subagent or tool-result subdirectory contents alongside the JSONL — separate follow-up if testing shows the JSONL alone isn't enough for `claude --resume`.
+The Claude Code plugin (from Quick Start above) covers most users: PreCompact fires before `/compact`, SessionEnd on exit. For manual hooks, cron, Task Scheduler, and distill-on-backup, see **[docs/automation.md](docs/automation.md)**.
 
 ## Requirements
 
@@ -293,6 +164,8 @@ cd Claude-Session-Backup
 pip install -e ".[dev]"
 ```
 
+Full documentation index: **[docs/README.md](docs/README.md)**.
+
 ## Contributing
 
 Contributions welcome! Please open an issue or submit a pull request.
@@ -309,13 +182,13 @@ Like the project?
 
 ## Related Projects
 
-- [claude-session-logger](https://github.com/DazzleML/claude-session-logger) -- Real-time per-session tool/conversation logging; csb backs up and restores its files, and its session naming + state-file conventions shaped csb's.
-- [dazzle-filekit](https://github.com/DazzleLib/dazzle-filekit) -- Cross-platform file operations toolkit (symlink recreation, timestamp restore).
+- [claude-session-logger](https://github.com/DazzleML/claude-session-logger) - Real-time per-session tool/conversation logging; csb backs up and restores its files, and its session naming + state-file conventions shaped csb's
+- [dazzle-filekit](https://github.com/DazzleLib/dazzle-filekit) - Cross-platform file operations toolkit (symlink recreation, timestamp restore)
 
 ## Acknowledgements
 
-- [claude-vault](https://github.com/kuroko1t/claude-vault) by [@kuroko1t](https://github.com/kuroko1t) --  Work on `csb` serendipitously began a week or so before [kuroko1t's blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500) inspiring additional backends (FTS5) beyond claude-session-logger and full jsonl.
-- [claude-code-history-viewer](https://github.com/jhlee0409/claude-code-history-viewer) by [@jhlee0409](https://github.com/jhlee0409) -- GUI session reader that `csb view` launches.
+- [claude-vault](https://github.com/kuroko1t/claude-vault) by [@kuroko1t](https://github.com/kuroko1t) -- FTS5 search design, JSONL parsing patterns, Claude Code hook integration. Serendipitously started work on `csb` a week or so before [kuroko1t's blog post](https://dev.to/kuroko1t/i-built-a-tool-to-stop-losing-my-claude-code-conversation-history-5500).
+- [claude-code-history-viewer](https://github.com/jhlee0409/claude-code-history-viewer) by [@jhlee0409](https://github.com/jhlee0409) - GUI session reader that `csb view` launches.
 
 ## License
 

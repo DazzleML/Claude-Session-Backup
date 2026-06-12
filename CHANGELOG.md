@@ -9,6 +9,22 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.1] -- 2026-06-11 (alpha)
+
+Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines -- a storefront of highlights with examples, linking into a proper `docs/` manual:
+
+### Changed
+- **README restructured**: full command list, search/distill/recovery deep dives, and automation setups moved to `docs/`; each README section keeps a paragraph + example + link. "How It Works" (and the mermaid diagram) stays. Banner, Quick Start, TIP, Features, and the footer are unchanged.
+- **Corrected stale restore claims** that survived in the old README's "What csb restore does NOT do": restore HAS recovered the full footprint since v0.3.12 and HAS restored original timestamps since v0.3.18. The accurate guarantees/limits list now lives in `docs/commands.md#recovery`.
+
+### Added
+- **`docs/commands.md`** -- the complete command reference + deep dives (searching, distill, purge-TTL, single + bulk recovery, restore guarantees).
+- **`docs/automation.md`** -- plugin, manual hooks, cron, Task Scheduler, distill-on-backup.
+- **`docs/README.md`** -- documentation index + one-paragraph orientation.
+
+### Notes
+- This release also serves as a fresh final-upload event for PyPI: the five parallel v0.3.19-v0.4.0 publishes finished out of order (0.3.22's files landed seconds AFTER 0.4.0's) and PyPI's cached "latest" banner stuck on 0.3.22 -- installers were unaffected (pip already served 0.4.0); this upload forces the recompute. Release-ordering rule refined: push the highest version's tag only after the lower versions' workflows complete.
+
 ## [0.4.0] -- 2026-06-11 (alpha)
 
 **`csb distill` -- read any session like a chat log (#12). The alpha roadmap is complete.** The last of the three alpha epics lands: sessions render as instant-messenger-style logs (timestamped speaker turns, generous separation, one-line tool calls -- never tool output), readable as Markdown in Typora and navigable in Vim. The distilled file is a READING layer over the preserved JSONL -- never a replacement; csb remains full-recovery-first. With #12 + #13 + #14 all shipped, csb is feature-complete for its original roadmap: on the cusp of beta, staying alpha while the tires get kicked. 904/904 tests pass (was 884; +20 new). Red-green verified. Closes #12.
@@ -748,7 +764,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0
 [0.3.22]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...v0.3.22
 [0.3.21]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...v0.3.21
