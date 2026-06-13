@@ -227,8 +227,8 @@ def register_session_sources(
     ``size_bytes``, and ``mtime`` attributes/keys).
 
     The FTS5-readiness columns (``fts5_indexed_at``, ``content_hash``) are
-    deliberately left NULL on insert -- Phase 2's FTS5 indexer is what
-    eventually populates them.
+    deliberately left NULL on insert; the FTS5 indexer (``fts5_index.py``,
+    run via ``csb update build-fts5``) populates them later.
 
     Returns ``(added_rows, removed_rows)`` for caller-side logging.
     """

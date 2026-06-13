@@ -25,11 +25,11 @@ from typing import Callable
 
 
 def _v3_add_session_sources(conn: sqlite3.Connection) -> None:
-    """Add the session_sources table (Phase 1 of the transcript-search work).
+    """Add the session_sources table.
 
     Records one row per searchable transcript file per session. FTS5-ready
-    columns (``fts5_indexed_at``, ``content_hash``) are present from day one
-    so the Phase 2 FTS5 work needs no schema migration.
+    columns (``fts5_indexed_at``, ``content_hash``) were present from the
+    start, so the later FTS5 indexing work needed no schema migration.
     """
     conn.executescript(
         """

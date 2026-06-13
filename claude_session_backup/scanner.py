@@ -154,7 +154,8 @@ def scan_for_path(claude_dir: str, target_path: str) -> list[SessionFiles]:
     Find all sessions in ~/.claude/projects/ whose project path starts with target_path.
 
     Uses Claude Code's sanitized project folder naming to do a fast prefix match
-    against the projects directory -- no filesystem walking needed.
+    against the projects directory -- a single pass over the top-level project
+    folders with a prefix test, no recursive/deep walk.
 
     Returns a list of SessionFiles sorted by JSONL modification time (newest first).
     """

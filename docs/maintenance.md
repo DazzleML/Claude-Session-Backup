@@ -55,7 +55,7 @@ v0.3.11 makes the rebuild safe via a snapshot-then-merge dance:
 csb update rebuild-index --include-fts5
 ```
 
-Stub flag on this branch -- reserved as the integration seam for `csb backup --refresh-fts5` work landing in a follow-on release. Currently a no-op; the flag is accepted so callers can already wire it.
+After the index rebuild, also force-rebuilds the per-project FTS5 content indexes (the nuclear rebuild-index verb rebuilds them unconditionally; the mtime-gated incremental path is `csb update build-fts5`). Fails soft -- an FTS5 problem (for example a SQLite built without FTS5) warns but never fails the rebuild, which has already succeeded by the time the refresh runs.
 
 ```bash
 csb update rebuild-index --include-backfill-deleted

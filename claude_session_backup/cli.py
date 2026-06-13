@@ -612,9 +612,9 @@ def build_parser():
     p_update_rebuild.add_argument(
         "--include-fts5", action="store_true",
         help=(
-            "Also refresh the per-project FTS5 indexes (currently a no-op "
-            "stub on this branch -- main wires the actual refresh in "
-            "post-merge)."
+            "Also force-rebuild the per-project FTS5 content indexes after "
+            "the index rebuild. Fails soft -- an FTS5 problem warns but never "
+            "fails the rebuild."
         ),
     )
     p_update_rebuild.add_argument(

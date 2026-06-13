@@ -1,5 +1,5 @@
 """
-FTS5 build orchestrator (Phase 2 of #3).
+FTS5 build orchestrator.
 
 Walks the main DB's ``sessions`` + ``session_sources`` tables to
 discover candidate sessions, opens the per-project FTS5 DB for each,
@@ -10,15 +10,17 @@ session import.
 
 The orchestrator is intentionally explicit -- no hidden background
 indexing, no triggers in the main DB. ``csb backup`` does NOT call
-this (would slow the hook). Users opt in via ``csb update build-fts5`` or
-the future ``csb backup --refresh-fts5`` flag.
+this (would slow the hook). Users opt in via ``csb update build-fts5``,
+or ``csb update rebuild-index --include-fts5`` to refresh alongside an
+index rebuild.
 
 Source of truth (per design doc):
   - Per-project FTS5 DB's ``indexed_sessions`` table: authoritative
     "is this session in the index, at what mtime"
   - Main DB's ``session_sources.fts5_indexed_at`` / ``content_hash``:
-    HINT columns (kept in sync as a UX nicety; not consulted by the
-    runtime search dispatcher in v0.3.1)
+    HINT columns kept in sync for inspection; the search dispatcher
+    checks freshness against the per-project DB's ``indexed_sessions``,
+    not these columns.
 """
 
 from __future__ import annotations
