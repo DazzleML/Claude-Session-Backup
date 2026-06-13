@@ -1655,7 +1655,7 @@ def cmd_search(args) -> int:
 
 
 def cmd_build_fts5(args) -> int:
-    """Build / refresh per-project FTS5 content indices (Phase 2 of #3).
+    """Build / refresh per-project FTS5 content indices.
 
     Idempotent: by default only re-indexes sessions whose JSONL mtime
     has advanced past ``indexed_sessions.last_jsonl_mtime``. Use
@@ -2130,7 +2130,7 @@ def cmd_rebuild_index(args) -> int:
         if getattr(args, "include_fts5", False):
             _maybe_refresh_fts5(args)
 
-        # 6. Optional --include-backfill-deleted (Phase 4 fills in cmd_backfill_deleted)
+        # 6. Optional --include-backfill-deleted -- chain cmd_backfill_deleted
         if getattr(args, "include_backfill_deleted", False):
             cmd_backfill_deleted(args)
 

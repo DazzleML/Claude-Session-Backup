@@ -184,7 +184,7 @@ def test_register_stores_size_and_mtime(mock_db):
 
 
 def test_register_stores_project_for_fts5_routing(mock_db):
-    """The project column will route Phase 2 FTS5 lookups."""
+    """The project column routes per-project FTS5 lookups."""
     _make_session(mock_db, "sess-1", project="amdead")
     register_session_sources(
         mock_db, "sess-1", "amdead",

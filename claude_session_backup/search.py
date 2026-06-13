@@ -1,5 +1,5 @@
 """
-Transcript content search -- Phase 1 of #3 (parity-fixed in v0.3.1).
+Transcript content search (grep / regex over JSONL + logger channels).
 
 Walks the ``session_sources`` table (populated by ``csb backup``), parses
 each source file for USER / AI / AGENT message blocks, and yields ``Hit``

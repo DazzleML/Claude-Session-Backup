@@ -7,9 +7,8 @@ SQLite database per project.
 Naming follows claude-session-logger's ``<Name>__<UniqueID>_<USER>``
 folder convention to satisfy four constraints:
 
-1. **Per-project** -- one DB per project (not one monolithic vault).
-   Deliberate deviation from claude-vault's design; rationale in the
-   design doc.
+1. **Per-project** -- one DB per project rather than a single
+   monolithic content store; rationale in the design doc.
 2. **Multi-user safe** -- OS username in the filename so a shared
    ``~/.claude`` (rare but possible) doesn't collide.
 3. **Recognizable by project name alone** -- the human-readable project

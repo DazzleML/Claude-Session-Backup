@@ -1305,8 +1305,8 @@ def test_cmd_rebuild_index_include_fts5_fail_soft_without_fts5(
     assert "lacks FTS5" in captured.err
 
 
-def test_cmd_rebuild_index_include_fts5_flag_calls_stub(populated_db_and_repo, monkeypatch):
-    """--include-fts5 must invoke the _maybe_refresh_fts5 stub (main's seam)."""
+def test_cmd_rebuild_index_include_fts5_flag_invokes_refresh(populated_db_and_repo, monkeypatch):
+    """--include-fts5 must invoke the _maybe_refresh_fts5 seam exactly once."""
     from claude_session_backup.commands import cmd_rebuild_index
     from claude_session_backup import commands as cmds
 
@@ -1321,7 +1321,7 @@ def test_cmd_rebuild_index_include_fts5_flag_calls_stub(populated_db_and_repo, m
     args = _make_rebuild_args(claude_dir=str(claude), db=str(db), include_fts5=True)
     rc = cmd_rebuild_index(args)
     assert rc == 0
-    assert called["n"] == 1, "stub seam should fire exactly once when --include-fts5 set"
+    assert called["n"] == 1, "the FTS5 refresh seam should fire exactly once when --include-fts5 set"
 
 
 def test_cmd_rebuild_index_skips_fts5_stub_when_flag_absent(populated_db_and_repo, monkeypatch):
