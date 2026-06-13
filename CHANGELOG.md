@@ -9,6 +9,26 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.3] -- 2026-06-12 (alpha)
+
+**ClaudePaths -- one owner for the `~/.claude` layout (#46).** Layout knowledge (folder names, the absolute-vs-git-relative dual representation, abs<->rel conversion) consolidates from 19 scattered literal joins across 8 files into a single frozen `ClaudePaths` dataclass in `pathkit.py`, with a guard test that keeps it that way. Pure-refactor goal verified -- DB and git-history conventions byte-identical -- plus three real defects the consolidation inventory uncovered are fixed. 933 tests pass (was 913; +20 new). Guard and junction tests red-green verified. Refs #46 (Phase 4 go/no-go still open).
+
+### Added
+- **`ClaudePaths` (pathkit.py)**: resolved-root frozen dataclass owning every csb-known location in both representations -- absolute accessors/builders (`Path` out) and claude_dir-relative POSIX exports (`str` out: the git/DB form), plus `parse_rel()` replacing string surgery. Layout names are grouped by PROVENANCE -- core Claude Code (`projects/`, `file-history/`, `tasks/`, `session-env/`, `settings.json`) vs claude-session-logger companion (`session-states/`, `sesslogs/`) vs csb's own artifacts -- so optional-for-this-user reasoning is explicit.
+- **Guard test**: no module may join `claude_dir` to a literal layout name outside `pathkit.py`/`config.py` -- the invariant is enforced by the suite, permanently.
+- **First-ever home-repo fixture**: `mock_claude_dir_nested` (git repo rooted at the PARENT of claude_dir) pins the repo-prefix translation path (`git show` prefix prepend, `git log` output strip) that real `~/.git`-tracking-`~/.claude` setups exercise.
+- **20 new automated tests**: layout accessors/builders, POSIX-out pins, rel/abs roundtrips (incl. backslash-drift tolerance), `parse_rel` against production formats, junction/symlink resolve policy + end-to-end junction scan, provenance partition, prefix translation, and the guard.
+
+### Fixed
+- **Hook logs now follow relocated setups**: `backup-hook.py` hard-coded `~/.claude/csb-logs` and ignored `CLAUDE_DIR`/`CLAUDE_CONFIG_DIR` entirely -- the one relocation blind spot that escaped #45.
+- **Junction/symlink claude_dir no longer breaks indexing**: the backup upsert relativized unresolved scan paths against a resolved base -- a latent `ValueError` for linked claude_dirs. Walk roots and relativization now share one resolve policy (resolved once, at `ClaudePaths` construction); regression-tested with a real junction.
+- **Windows test divergence closed**: a test helper wrote backslash-separated paths into the index (missing `.as_posix()`) -- the drift that originally taught production readers backslash tolerance.
+- **`index_path` relocation-follow comparison is Path-normalized**: a config file carrying the expanded default spelling now still follows a relocated claude_dir.
+
+### Changed
+- `git_ops` pathspec/match strings (the `SESSION_HISTORY_SCOPES` table, deleted-JSONL globs) compose from `ClaudePaths` name constants -- one spelling, two representations. The repo-prefix machinery itself is untouched.
+- `fts_paths` accepts `str | Path` for `claude_dir` (annotation was `Path`-only while every caller passed `str`).
+
 ## [0.4.2] -- 2026-06-12 (alpha)
 
 **Restore-by-name + follow relocated `~/.claude` setups.** Two gaps surfaced within hours of v0.4.1 -- one while writing README workflow examples, one from real-world container/worktree usage patterns. 913/913 tests pass (was 904; +9 new). Both red-green verified. Closes #44, closes #45.
@@ -775,7 +795,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.3...HEAD
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0

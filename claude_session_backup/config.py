@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 
+from .pathkit import ClaudePaths
+
 DEFAULT_CONFIG = {
     "claude_dir": "~/.claude",
     "index_path": "~/.claude/session-backup.db",
@@ -52,7 +54,7 @@ ENV_CLAUDE_DIR = "CLAUDE_DIR"
 ENV_CLAUDE_CONFIG_DIR = "CLAUDE_CONFIG_DIR"
 ENV_DB_PATH = "CLAUDE_SESSION_BACKUP_DB"
 
-CONFIG_FILENAME = "session-backup-config.json"
+CONFIG_FILENAME = ClaudePaths.CONFIG_FILE  # canonical spelling lives in pathkit (#46)
 
 
 def _env_claude_dir():
@@ -90,7 +92,7 @@ def get_settings_path(claude_dir=None):
     can edit the TTL through it.
     """
     base = Path(claude_dir).expanduser() if claude_dir else _default_claude_dir()
-    return base / "settings.json"
+    return base / ClaudePaths.SETTINGS_FILE
 
 
 def load_config(claude_dir=None):
@@ -132,10 +134,15 @@ def load_config(claude_dir=None):
     # (#45): when index_path is still the stock default but claude_dir
     # was relocated (flag / CLAUDE_DIR / CLAUDE_CONFIG_DIR / config),
     # follow the relocation -- otherwise sessions would scan from the
-    # new dir while the index silently pinned to ~/.claude.
-    if config["index_path"] == DEFAULT_CONFIG["index_path"]:
+    # new dir while the index silently pinned to ~/.claude. Compared
+    # Path-normalized (#46): a config file carrying the EXPANDED default
+    # spelling still counts as "stock default" and follows relocation.
+    stock_db = DEFAULT_CONFIG["index_path"]
+    if (config["index_path"] == stock_db
+            or Path(str(config["index_path"])).expanduser()
+            == Path(stock_db).expanduser()):
         config["index_path"] = str(
-            Path(config["claude_dir"]).expanduser() / "session-backup.db"
+            Path(config["claude_dir"]).expanduser() / ClaudePaths.DEFAULT_DB
         )
 
     return config

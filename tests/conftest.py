@@ -113,6 +113,48 @@ def mock_claude_dir(tmp_path):
 
 
 @pytest.fixture
+def mock_claude_dir_nested(tmp_path):
+    """A claude dir whose GIT REPO ROOTS AT THE PARENT -- the home-repo
+    configuration (``~/.git`` tracking ``~/.claude/``), i.e. the setup
+    ``git_ops._claude_dir_prefix`` returns ``".claude/"`` for. Until #46
+    no fixture exercised this offset; every test used claude_dir == repo
+    root. Layout matches ``mock_claude_dir`` minus the logger files.
+    """
+    import subprocess
+
+    home = tmp_path / "home"
+    claude = home / ".claude"
+    project_dir = claude / "projects" / "C--code-test"
+    project_dir.mkdir(parents=True)
+
+    session_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    jsonl = project_dir / f"{session_id}.jsonl"
+    jsonl.write_text(
+        json.dumps({"type": "user", "timestamp": "2026-03-23T10:00:00Z",
+                    "cwd": "/home/user/code", "sessionId": session_id,
+                    "uuid": "u1"}) + "\n",
+        encoding="utf-8",
+    )
+
+    test_env = {
+        **dict(os.environ),
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@test.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@test.com",
+    }
+    subprocess.run(["git", "init", str(home)], capture_output=True, check=True, env=test_env)
+    subprocess.run(["git", "-C", str(home), "config", "commit.gpgsign", "false"],
+                   capture_output=True, check=True, env=test_env)
+    subprocess.run(["git", "-C", str(home), "add", "-A"],
+                   capture_output=True, check=True, env=test_env)
+    subprocess.run(["git", "-C", str(home), "commit", "--no-gpg-sign", "-m", "initial"],
+                   capture_output=True, check=True, env=test_env)
+
+    return claude
+
+
+@pytest.fixture
 def mock_db(tmp_path):
     """Create a temporary SQLite index database."""
     from claude_session_backup.index import open_db, init_schema

@@ -24,6 +24,8 @@ claude plugin install claude-session-backup@dazzle-claude-session-backup
 
 The plugin uses a Node.js bootstrapper (`run-hook.mjs`) to find the correct Python binary on each platform, so it works reliably on Windows, Linux, and macOS without any shell quoting concerns. PreCompact fires synchronously before `/compact` to preserve full conversation detail; SessionEnd fires on exit to catch any remaining changes.
 
+The hook writes its own diagnostics to `<claude-dir>/csb-logs/`. Relocated setups are followed via `CLAUDE_DIR` or `CLAUDE_CONFIG_DIR` (the same env vars the csb CLI honors); a relocation expressed only through `--claude-dir` or the config file does not reach the hook -- set the env var for hook-driven setups.
+
 ## Manual hook installation
 
 If you prefer to manage hooks yourself, add this to `~/.claude/settings.json`:

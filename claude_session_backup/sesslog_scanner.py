@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from .pathkit import ClaudePaths
+
 
 # Sesslog folder name pattern: <anything>__<uuid>_<user>
 # The UUID is the canonical 8-4-4-4-12 hex format and is the only stable
@@ -65,7 +67,7 @@ def list_sesslog_folders(claude_dir: Path) -> dict[str, Path]:
     race), the lexicographically later folder wins -- the assumption is
     that the rename produced a newer name with the same UUID.
     """
-    sesslogs_root = Path(claude_dir) / "sesslogs"
+    sesslogs_root = ClaudePaths.from_dir(claude_dir).sesslogs
     if not sesslogs_root.is_dir():
         return {}
 
