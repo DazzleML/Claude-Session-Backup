@@ -9,6 +9,17 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.4] -- 2026-06-12 (alpha)
+
+**`csb update rebuild-index --include-fts5` is real -- the Content Search epic (#3) closes.** The flag has plumbed through to a documented no-op since the v0.3.11 branch handoff; the wiring that "main fills in post-merge" never happened until now. 935 tests pass (was 933; +2 net new alongside the existing seam tests). Red-green verified (no-op probe fails the build test). Closes #3.
+
+### Added
+- **`--include-fts5` wired**: after a successful index rebuild, force wipes + rebuilds the per-project FTS5 content indexes (the AC's "wipe + rebuild" -- rebuild-index is the nuclear verb; the mtime-gated incremental path remains `csb update build-fts5`). Ordering is correct by construction: the refresh runs after the rescan registers `session_sources`.
+- **Fail-soft guarantee, test-pinned**: by the time the FTS5 seam runs the index rebuild has already succeeded, so a missing-FTS5 SQLite build or an indexing error downgrades to a stderr warning (with the manual `csb update build-fts5 --force` command) -- never a non-zero rebuild exit.
+
+### Notes
+- Closing #3 also records two by-design dispositions from the epic's tail: backup-time incremental FTS5 indexing was REJECTED (hook latency in PreCompact/SessionEnd; v0.3.22's search-time freshness rescue covers staleness instead), and the `messages_fts_meta` linker table was superseded by per-project `fts_schema_version` under the v0.3.2 migration framework.
+
 ## [0.4.3] -- 2026-06-12 (alpha)
 
 **ClaudePaths -- one owner for the `~/.claude` layout (#46).** Layout knowledge (folder names, the absolute-vs-git-relative dual representation, abs<->rel conversion) consolidates from 19 scattered literal joins across 8 files into a single frozen `ClaudePaths` dataclass in `pathkit.py`, with a guard test that keeps it that way. Pure-refactor goal verified -- DB and git-history conventions byte-identical -- plus three real defects the consolidation inventory uncovered are fixed. 933 tests pass (was 913; +20 new). Guard and junction tests red-green verified. Refs #46 (Phase 4 go/no-go still open).
@@ -795,7 +806,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.4...HEAD
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0

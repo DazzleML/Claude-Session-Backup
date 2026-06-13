@@ -457,9 +457,9 @@ def find_unbacked_sessions(conn, claude_dir, exclude=None):
     aren't in the index at all) -- i.e. sessions with un-backed-up changes.
 
     The single source of truth for "what isn't backed up", shared by the
-    SessionStart hook's `_check` and (future) user-facing surfacing in
-    ``csb status`` / ``csb list``. ``exclude`` is a set of full session ids to
-    skip (e.g. the currently-active session, whose JSONL is mid-write).
+    SessionStart hook's `_check` and ``csb status``'s un-backed-up section
+    (and, eventually, ``csb list``). ``exclude`` is a set of full session ids
+    to skip (e.g. the currently-active session, whose JSONL is mid-write).
     """
     exclude = set(exclude or [])
     stale = []
@@ -964,8 +964,9 @@ def cmd_restore(args) -> int:
 #
 # Single source of truth for the file-level restore policy. Used by:
 #   - cmd_restore     -- the `csb restore <uuid>` command
-#   - cmd_resume      -- (v0.3.14+) prompts-to-restore when session is pruned
-#   - cmd_view        -- (future, #14 + #34 phase B) same when viewing pruned
+#   - cmd_resume      -- prompts-to-restore when the session is pruned
+#   - cmd_view        -- same when viewing a pruned session (#14 / #34)
+#   - cmd_distill     -- same when distilling a pruned session (#12)
 #
 # Callers are responsible for resolving the UUID, finding `jsonl_path` (DB
 # row OR git-history fallback), and finding `commit` (parent-of-deletion).
@@ -1023,8 +1024,8 @@ def _restore_session(
             from the DB row OR via `git_find_jsonl_by_uuid` fallback.
         commit: commit-ish to restore from. Caller obtains via
             `git_find_deleted_file(claude_dir, jsonl_path)`.
-        jsonl_only: if True, restore only the main transcript (v0.3.11
-            behavior preserved behind this flag).
+        jsonl_only: if True, restore only the main transcript JSONL
+            (skip the session subtree and logger sidecars).
         force: if True, overwrite present on-disk files from git.
             Default behavior preserves on-disk content (idempotent;
             never clobbers local content with newer-than-git writes).
@@ -1741,16 +1742,49 @@ def cmd_update(args) -> int:
 
 
 def _maybe_refresh_fts5(args) -> None:
-    """Stub seam for main's FTS5 refresh integration (post-merge).
+    """Wipe + rebuild the per-project FTS5 content indexes after a
+    `csb update rebuild-index --include-fts5` (#3, the last open AC).
 
-    Per the v0.3.11 handoff
-    (private/claude/2026-06-02__14-14-02__handoff__...md), main will wire
-    the actual `csb update rebuild-index --include-fts5` and
-    `csb backup --refresh-fts5` work on the unified base after the
-    reverse-merge. This stub is the agreed-on hook point. Currently a
-    no-op so the flag plumbs through without effect.
+    Force-rebuild on purpose: rebuild-index is the nuclear
+    reconstruct-everything verb, so the content indexes are rebuilt
+    unconditionally too rather than mtime-gated (that incremental path
+    is `csb update build-fts5` without --force).
+
+    Fails SOFT in every case: by the time this seam runs the main index
+    rebuild has already succeeded, so a missing-FTS5 SQLite build or an
+    indexing error downgrades to a stderr warning with the manual
+    command, never a non-zero rebuild exit.
+
+    (Backup-time incremental FTS5 indexing -- the other half of the
+    original #3 Phase 2 spec -- was REJECTED by design: it would add
+    latency inside the PreCompact/SessionEnd hooks, and v0.3.22's
+    search-time freshness rescue makes it unnecessary.)
     """
-    pass
+    from . import fts5_db, fts5_index
+
+    quiet = getattr(args, "quiet", False)
+    if not fts5_db.fts5_available():
+        print(
+            "Warning: this Python's SQLite lacks FTS5; skipped the "
+            "--include-fts5 refresh (main index rebuild is intact).",
+            file=sys.stderr,
+        )
+        return
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn, quiet=quiet)
+    try:
+        fts5_index.build_all(
+            conn, Path(config["claude_dir"]), force=True, quiet=quiet,
+        )
+    except Exception as e:  # noqa: BLE001 -- secondary refresh must not fail the rebuild
+        print(
+            f"Warning: FTS5 refresh failed ({e}); main index rebuild is "
+            f"intact. Run `csb update build-fts5 --force` manually.",
+            file=sys.stderr,
+        )
+    finally:
+        conn.close()
 
 
 def cmd_backfill_deleted(args) -> int:
@@ -1778,11 +1812,12 @@ def cmd_backfill_deleted(args) -> int:
 
     Flags:
       --dry-run -- preview without writing anything
-      --full    -- (currently identical to default; incremental refresh
-                   via the last_refreshed_at marker is a follow-on)
+      --full    -- accepted but not yet differentiated from the default
+                   run (the last_refreshed_at marker is recorded but not
+                   yet used as an incremental-skip gate)
 
-    Plan ref: private/claude/2026-06-02__15-46-56__claude-plan__safe-
-    update-umbrella-and-backfill-v0.3.11.md (Phase 4)
+    Plan ref: 2026-06-02__15-46-56__claude-plan__safe-update-umbrella-
+    and-backfill-v0.3.11.md
     """
     from .index import (
         count_git_deleted_jsonls,
@@ -2010,14 +2045,14 @@ def cmd_rebuild_index(args) -> int:
          deleted-session rows back in (skipping any UUIDs the live
          rescan already repopulated, which would mean the JSONL came
          back somehow).
-      7. Optionally runs ``_maybe_refresh_fts5`` (stub on this branch;
-         main wires the real refresh post-merge) if ``--include-fts5``.
+      7. Optionally runs ``_maybe_refresh_fts5`` (force wipe + rebuild
+         of the per-project FTS5 DBs, fail-soft) if ``--include-fts5``.
       8. Optionally chains ``cmd_backfill_deleted`` if
          ``--include-backfill-deleted`` is set.
       9. Removes the ``.bak`` on full success.
 
-    Plan ref: private/claude/2026-06-02__15-46-56__claude-plan__safe-
-    update-umbrella-and-backfill-v0.3.11.md (Phase 2)
+    Plan ref: 2026-06-02__15-46-56__claude-plan__safe-update-umbrella-
+    and-backfill-v0.3.11.md
     """
     config = _get_config(args)
     claude_dir = config["claude_dir"]
@@ -2090,7 +2125,8 @@ def cmd_rebuild_index(args) -> int:
                 print(f"Preserved {restored} deleted-session {noun} "
                       f"across rebuild")
 
-        # 5. Optional --include-fts5 (stub seam; main fills this in post-merge)
+        # 5. Optional --include-fts5: wipe + rebuild per-project FTS5 DBs
+        # against the freshly rebuilt index (fails soft -- see the helper).
         if getattr(args, "include_fts5", False):
             _maybe_refresh_fts5(args)
 

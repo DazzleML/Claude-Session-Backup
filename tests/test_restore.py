@@ -1264,6 +1264,47 @@ def test_cmd_rebuild_index_restores_bak_on_failure(populated_db_and_repo, monkey
         ".bak should have been renamed back into place"
 
 
+def test_cmd_rebuild_index_include_fts5_builds_real_indexes(populated_db_and_repo):
+    """#3's last AC, now wired: --include-fts5 force-rebuilds the per-project
+    FTS5 DBs under <claude_dir>/csb-fts/ after the index rebuild."""
+    import pytest as _pytest
+    from claude_session_backup import fts5_db
+    from claude_session_backup.commands import cmd_rebuild_index
+    from claude_session_backup.fts_paths import fts5_db_dir
+
+    if not fts5_db.fts5_available():
+        _pytest.skip("local SQLite lacks FTS5")
+
+    claude, db, ids = populated_db_and_repo
+    fts_dir = fts5_db_dir(claude)
+    assert not list(fts_dir.glob("*.db")) if fts_dir.exists() else True
+
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db), include_fts5=True)
+    rc = cmd_rebuild_index(args)
+    assert rc == 0
+    assert list(fts_dir.glob("*.db")), (
+        "--include-fts5 must produce per-project FTS5 DBs (stub would leave none)"
+    )
+
+
+def test_cmd_rebuild_index_include_fts5_fail_soft_without_fts5(
+    populated_db_and_repo, monkeypatch, capsys,
+):
+    """A missing-FTS5 SQLite must downgrade to a warning -- the rebuild
+    itself already succeeded and must still exit 0."""
+    from claude_session_backup import fts5_db
+    from claude_session_backup.commands import cmd_rebuild_index
+
+    monkeypatch.setattr(fts5_db, "fts5_available", lambda: False)
+
+    claude, db, ids = populated_db_and_repo
+    args = _make_rebuild_args(claude_dir=str(claude), db=str(db), include_fts5=True)
+    rc = cmd_rebuild_index(args)
+    captured = capsys.readouterr()
+    assert rc == 0, "FTS5 refresh problems must never fail the rebuild"
+    assert "lacks FTS5" in captured.err
+
+
 def test_cmd_rebuild_index_include_fts5_flag_calls_stub(populated_db_and_repo, monkeypatch):
     """--include-fts5 must invoke the _maybe_refresh_fts5 stub (main's seam)."""
     from claude_session_backup.commands import cmd_rebuild_index

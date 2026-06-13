@@ -1,9 +1,8 @@
 """
-Path conventions for per-project FTS5 databases (Phase 2 of #3).
+Path conventions for per-project FTS5 databases.
 
-Phase 1 (this release) ships only the path-naming contract -- no FTS5
-databases are written. Phase 2 will populate ``<claude_dir>/csb-fts/``
-with one SQLite database per project.
+``csb update build-fts5`` populates ``<claude_dir>/csb-fts/`` with one
+SQLite database per project.
 
 Naming follows claude-session-logger's ``<Name>__<UniqueID>_<USER>``
 folder convention to satisfy four constraints:
@@ -101,9 +100,8 @@ def fts5_db_path(
 def list_fts_dbs(claude_dir: Path | str) -> dict[str, Path]:
     """Return ``{filename_stem: path}`` for every existing FTS5 DB.
 
-    Phase 1 always returns an empty dict (no DBs have been created yet);
-    Phase 2 will populate ``<claude_dir>/csb-fts/`` and this enumeration
-    becomes meaningful.
+    Empty dict until ``csb update build-fts5`` has built at least one
+    per-project DB under ``<claude_dir>/csb-fts/``.
     """
     d = fts5_db_dir(claude_dir)
     if not d.exists():
@@ -119,6 +117,6 @@ def fts5_db_exists(
 ) -> bool:
     """True if a per-project FTS5 DB has been built for this triple.
 
-    Phase 1 invariant: always False (no FTS5 indexer runs yet).
+    False until ``csb update build-fts5`` has indexed the project.
     """
     return fts5_db_path(claude_dir, project, encoded_slug, user).exists()

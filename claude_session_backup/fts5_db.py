@@ -1,5 +1,5 @@
 """
-Per-project SQLite FTS5 content database (Phase 2 of #3).
+Per-project SQLite FTS5 content database.
 
 One DB per project at ``~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db``
 (path convention locked in :mod:`fts_paths`). Each DB is self-contained --
@@ -9,12 +9,12 @@ main DB tracks WHICH sessions have been indexed via the already-reserved
 per-project FTS5 DB independently tracks the same fact via its own
 ``indexed_sessions`` table (source of truth for "did this row land?").
 
-Why per-project (not one monolithic vault like claude-vault): smaller
-files, faster targeted queries, per-project archive/move/delete, no
-contention when multiple projects refresh in parallel. Locked at v0.2.5
-in :mod:`fts_paths`.
+Why per-project (rather than one monolithic content store): smaller
+files, faster targeted queries, per-project archive/move/delete, and no
+contention when multiple projects refresh in parallel. The path
+convention lives in :mod:`fts_paths`.
 
-Schema (mirrors claude-vault's pattern at ``db.rs``)::
+Schema::
 
     messages(id PK, session_id, uuid, message_index, role,
              role_subtype, content, timestamp,
@@ -91,9 +91,9 @@ CREATE TABLE IF NOT EXISTS indexed_sessions (
 --
 -- `strength` column (v0.3.1): per-row importance weight assigned at
 -- import time. 3 = wrote/edited/notebook_edit (active modification),
--- 2 = read (passive view), 1 = searched (Grep probe). Used by future
--- ranking queries (`csb search -d` directory-scope mode). Default 2
--- so legacy rows pre-migration land on the median.
+-- 2 = read (passive view), 1 = searched (Grep probe). Used by
+-- `csb search -d/-D` directory-scope ranking. Default 2 so legacy
+-- rows pre-migration land on the median.
 CREATE TABLE IF NOT EXISTS file_operations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
