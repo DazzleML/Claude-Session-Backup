@@ -1,8 +1,8 @@
-"""Tests for claude_session_backup.fts_paths -- Phase 2 path scaffolding.
+"""Tests for claude_session_backup.fts_paths -- the per-project DB path contract.
 
-Phase 1 ships only the naming contract: no FTS5 DBs are created yet.
-These tests pin the contract so Phase 2's FTS5 indexer has a stable
-foundation to build on.
+Pins the naming/path contract the FTS5 indexer relies on. The "empty"
+cases assert the pre-build state (no DBs yet); the "finds existing"
+cases assert enumeration once DBs are present.
 """
 
 import os
@@ -143,11 +143,11 @@ def test_db_path_combines_dir_and_filename(tmp_path):
     assert path.name.endswith("_u.db")
 
 
-# ── Phase 1 invariants: no DBs exist yet ──────────────────────────────
+# ── Empty-state: nothing built yet ────────────────────────────────────
 
 
 def test_list_fts_dbs_empty_when_dir_missing(tmp_path):
-    """Phase 1: csb-fts/ directory hasn't been created yet."""
+    """csb-fts/ directory hasn't been created yet."""
     assert list_fts_dbs(tmp_path) == {}
 
 
@@ -157,7 +157,7 @@ def test_list_fts_dbs_empty_when_dir_present_but_empty(tmp_path):
 
 
 def test_list_fts_dbs_finds_existing(tmp_path):
-    """Forward-compat: when Phase 2 creates DBs, list_fts_dbs surfaces them."""
+    """When build-fts5 has created DBs, list_fts_dbs surfaces them."""
     d = tmp_path / "csb-fts"
     d.mkdir()
     (d / "amdead__a1b2c3d4_Extreme.db").write_text("")
@@ -167,13 +167,13 @@ def test_list_fts_dbs_finds_existing(tmp_path):
     assert set(result.keys()) == {"amdead__a1b2c3d4_Extreme", "other__b2e7f1a9_Extreme"}
 
 
-def test_fts5_db_exists_false_in_phase1(tmp_path):
-    """Phase 1 invariant: no FTS5 DB is ever built, so this is always False."""
+def test_fts5_db_exists_false_before_build(tmp_path):
+    """False before any FTS5 DB has been built for the triple."""
     assert not fts5_db_exists(tmp_path, "amdead", "C--code-amdead-local", user="u")
 
 
 def test_fts5_db_exists_true_after_manual_create(tmp_path):
-    """Forward-compat: Phase 2 creates the DB, fts5_db_exists returns True."""
+    """Once the DB exists on disk, fts5_db_exists returns True."""
     d = tmp_path / "csb-fts"
     d.mkdir()
     fn = fts5_db_filename("amdead", "C--code-amdead-local", user="u")

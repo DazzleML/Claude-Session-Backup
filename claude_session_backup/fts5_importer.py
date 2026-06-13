@@ -1,5 +1,5 @@
 """
-JSONL -> FTS5 ingest (Phase 2 of #3; refactored for v0.3.1 parity).
+JSONL -> FTS5 ingest.
 
 This module is now a thin shim over :mod:`transcript_walker`. The shared
 walker yields ``ImportRow`` + ``FileOpRow`` instances; we insert them

@@ -9,6 +9,17 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.5] -- 2026-06-13 (alpha)
+
+**Docstring/help accuracy audit -- completing the sweep started in v0.4.4.** A follow-up pass over the source files the first sweep missed (`search.py`, `fts5_importer.py`, `transcript_walker.py`), the test suite, and `docs/`. No behavior change; docstrings, comments, and help text only. 935 tests pass.
+
+### Docs
+- **Removed the remaining "FTS5 not built yet" framing** that survived in the test suite: `test_fts_paths.py` still asserted a "Phase 1 invariant: no FTS5 DB is ever built, so this is always False" -- the same claim corrected in the source in v0.4.4. Reframed (test logic unchanged) and renamed two now-misleading tests (`..._false_in_phase1` -> `..._false_before_build`; `..._calls_stub` -> `..._invokes_refresh`).
+- **Dropped a speculative unbuilt-release promise**: `migrations.py` said `git_deleted_jsonls` would be "populated incrementally by `csb backup` in a follow-on release" -- removed (same shape as the phantom `--refresh-fts5` flag fixed in v0.4.4).
+- **`docs/maintenance.md`**: corrected the `backfill-deleted --full` note that claimed "default is incremental in future releases" (the flag is currently accepted but not yet differentiated from the default).
+- **Dropped stale "Phase N of #3" subtitles** from `search.py`, `fts5_importer.py`, and `cmd_build_fts5` docstrings (the epic shipped); fixed a `# Phase 4 fills in cmd_backfill_deleted` comment (it's implemented).
+- **Removed remaining claude-vault-as-baseline framing** from `fts_paths.py` and `transcript_walker.py` (each now states its rationale on its own merits) -- consistent with the v0.4.4 `fts5_db.py` cleanup.
+
 ## [0.4.4] -- 2026-06-12 (alpha)
 
 **`csb update rebuild-index --include-fts5` is real -- the Content Search epic (#3) closes.** The flag has plumbed through to a documented no-op since the v0.3.11 branch handoff; the wiring that "main fills in post-merge" never happened until now. 935 tests pass (was 933; +2 net new alongside the existing seam tests). Red-green verified (no-op probe fails the build test). Closes #3.
@@ -806,7 +817,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.5...HEAD
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0

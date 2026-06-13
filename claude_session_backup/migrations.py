@@ -62,9 +62,8 @@ def _v4_add_git_deleted_jsonls(conn: sqlite3.Connection) -> None:
     """Add the git_deleted_jsonls cache table (v0.3.11 backfill work).
 
     Records every JSONL path git has seen deleted. Populated by
-    ``csb update backfill-deleted`` (and incrementally by ``csb backup``
-    in a follow-on release). Consumed by ``cmd_backfill_deleted`` to know
-    which UUIDs to synthesize sessions rows for.
+    ``csb update backfill-deleted``. Consumed by ``cmd_backfill_deleted``
+    to know which UUIDs to synthesize sessions rows for.
 
     Schema choices:
 

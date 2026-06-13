@@ -42,8 +42,8 @@ can rank "files this session was actually working on" vs "files glanced
 at."
 
 Content is preserved VERBATIM (no stripping of ``<system-reminder>``,
-``<command-name>``, etc. -- csb policy diverges from claude-vault here
-because we want search to faithfully reflect what was in the transcript).
+``<command-name>``, etc.) so search faithfully reflects what was
+actually in the transcript.
 """
 
 from __future__ import annotations
