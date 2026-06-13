@@ -70,6 +70,7 @@ from .metadata import (
     read_name_cache,
     read_session_state,
 )
+from .pathkit import ClaudePaths
 from .scanner import scan_projects
 from .timeline import format_session_line, format_timeline, render_timeline_rich, HAS_RICH
 
@@ -192,8 +193,10 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
             # Upsert into index. Store rel_path with forward slashes so it
             # works directly with `git show <commit>:<path>` (which rejects
             # backslash separators on Windows). Path operations downstream
-            # accept either separator.
-            rel_path = sf.jsonl_path.relative_to(claude_dir).as_posix()
+            # accept either separator. ClaudePaths.rel() also survives a
+            # junction/symlink claude_dir, where a resolved-vs-raw prefix
+            # mismatch made bare relative_to() raise ValueError (#46).
+            rel_path = ClaudePaths.from_dir(claude_dir).rel(sf.jsonl_path)
             # Restore-verify gate (v0.3.16): only let a reappeared JSONL
             # clear an existing deleted_at if it's a genuine transcript
             # (>=1 parsed event). A stub / garbage file (event_count == 0,
@@ -1211,8 +1214,11 @@ def _recreate_transcript_symlink(
         from dazzle_filekit import create_symlink
     except ImportError:
         return False
-    link_path = Path(claude_dir) / link_rel
-    target_abs = (Path(claude_dir) / "projects" / slug / f"{uuid}.jsonl").resolve()
+    cp = ClaudePaths.from_dir(claude_dir)
+    link_path = cp.abs_of(link_rel)
+    # .resolve() stays: the is_symlink comparison below resolves the live
+    # link's target, so both sides must share resolve semantics (#46).
+    target_abs = cp.jsonl(slug, uuid).resolve()
     # Skip work if a correct symlink already exists (idempotent, no churn).
     try:
         if link_path.is_symlink() and Path(os.readlink(link_path)).resolve() == target_abs:
@@ -1442,11 +1448,7 @@ def _extract_slug_from_jsonl_path(jsonl_path: str) -> str:
     """
     if not jsonl_path:
         return ""
-    norm = jsonl_path.replace("\\", "/")
-    parts = norm.split("/")
-    if len(parts) >= 3 and parts[0] == "projects":
-        return parts[1]
-    return ""
+    return ClaudePaths.parse_rel(jsonl_path).slug or ""
 
 
 def _categorize_restored_paths(
@@ -1907,8 +1909,7 @@ def cmd_backfill_deleted(args) -> int:
                 continue
 
             # Derive the project slug from the path: projects/<slug>/<uuid>.jsonl
-            parts = jp.split("/")
-            project = parts[1] if len(parts) >= 3 and parts[0] == "projects" else ""
+            project = ClaudePaths.parse_rel(jp).slug or ""
 
             meta = extract_metadata_from_bytes(blob, session_id=sid, project=project)
             new_folder_count = len(meta.folder_usage)
@@ -2714,7 +2715,7 @@ def _distill_canonical_path(claude_dir: str, session: dict) -> Path:
     jsonl_rel = session.get("jsonl_path") or ""
     slug = (Path(jsonl_rel).parent.name if jsonl_rel
             else (session.get("project") or "unknown"))
-    return Path(claude_dir) / "distilled" / slug / f"{session['session_id']}.md"
+    return ClaudePaths.from_dir(claude_dir).distilled_md(slug, session["session_id"])
 
 
 def _safe_stdout_write(text: str) -> None:
@@ -2740,7 +2741,7 @@ def _render_session_distill(
 
     full_id = session["session_id"]
     jsonl_rel = session.get("jsonl_path") or ""
-    jsonl_abs = Path(claude_dir) / jsonl_rel if jsonl_rel else None
+    jsonl_abs = ClaudePaths.from_dir(claude_dir).abs_of(jsonl_rel) if jsonl_rel else None
     convo_type, convo_path, tool_paths = pick_channels(
         src_rows, jsonl_abs, source_override,
     )
@@ -3701,7 +3702,7 @@ def _bulk_restore_jsonls(results, args, config, scope_label: str, quiet: bool) -
         skipped = 0
         failed = 0
         for s, jsonl_rel in candidates:
-            full_path = Path(claude_dir) / jsonl_rel
+            full_path = ClaudePaths.from_dir(claude_dir).abs_of(jsonl_rel)
             if full_path.exists() and not force:
                 print(f"  SKIP  {s['session_id'][:8]}  {jsonl_rel} "
                       f"(already exists; use --force to overwrite)")

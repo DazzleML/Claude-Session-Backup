@@ -39,6 +39,8 @@ import os
 import re
 from pathlib import Path
 
+from .pathkit import ClaudePaths
+
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -68,9 +70,9 @@ def _current_user() -> str:
     return os.getenv("USERNAME") or os.getenv("USER") or "unknown"
 
 
-def fts5_db_dir(claude_dir: Path) -> Path:
+def fts5_db_dir(claude_dir: Path | str) -> Path:
     """Return ``<claude_dir>/csb-fts/`` -- where per-project FTS5 DBs live."""
-    return Path(claude_dir) / "csb-fts"
+    return ClaudePaths.from_dir(claude_dir).fts_dir
 
 
 def fts5_db_filename(
@@ -87,7 +89,7 @@ def fts5_db_filename(
 
 
 def fts5_db_path(
-    claude_dir: Path,
+    claude_dir: Path | str,
     project: str,
     encoded_slug: str,
     user: str | None = None,
@@ -96,7 +98,7 @@ def fts5_db_path(
     return fts5_db_dir(claude_dir) / fts5_db_filename(project, encoded_slug, user)
 
 
-def list_fts_dbs(claude_dir: Path) -> dict[str, Path]:
+def list_fts_dbs(claude_dir: Path | str) -> dict[str, Path]:
     """Return ``{filename_stem: path}`` for every existing FTS5 DB.
 
     Phase 1 always returns an empty dict (no DBs have been created yet);
@@ -110,7 +112,7 @@ def list_fts_dbs(claude_dir: Path) -> dict[str, Path]:
 
 
 def fts5_db_exists(
-    claude_dir: Path,
+    claude_dir: Path | str,
     project: str,
     encoded_slug: str,
     user: str | None = None,

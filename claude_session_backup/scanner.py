@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from .pathkit import ClaudePaths
+
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -39,10 +41,10 @@ def scan_projects(claude_dir: str) -> list[SessionFiles]:
 
     Returns a list of SessionFiles, one per discovered session.
     """
-    claude_path = Path(claude_dir)
-    projects_dir = claude_path / "projects"
-    states_dir = claude_path / "session-states"
-    history_dir = claude_path / "file-history"
+    cp = ClaudePaths.from_dir(claude_dir)
+    projects_dir = cp.projects
+    states_dir = cp.session_states
+    history_dir = cp.file_history
 
     if not projects_dir.exists():
         return []
@@ -108,7 +110,7 @@ def scan_session_states(claude_dir: str) -> dict[str, Path]:
     Returns a dict of session_id -> state_file_path.
     This includes sessions that may no longer have JSONL files.
     """
-    states_dir = Path(claude_dir) / "session-states"
+    states_dir = ClaudePaths.from_dir(claude_dir).session_states
     if not states_dir.exists():
         return {}
 
@@ -156,7 +158,7 @@ def scan_for_path(claude_dir: str, target_path: str) -> list[SessionFiles]:
 
     Returns a list of SessionFiles sorted by JSONL modification time (newest first).
     """
-    projects_dir = Path(claude_dir) / "projects"
+    projects_dir = ClaudePaths.from_dir(claude_dir).projects
     if not projects_dir.exists():
         return []
 
@@ -183,9 +185,9 @@ def scan_for_path(claude_dir: str, target_path: str) -> list[SessionFiles]:
 
 def _scan_project_dir(claude_dir: str, project_dir: Path) -> list[SessionFiles]:
     """Scan a single project directory for session JSONL files."""
-    claude_path = Path(claude_dir)
-    states_dir = claude_path / "session-states"
-    history_dir = claude_path / "file-history"
+    cp = ClaudePaths.from_dir(claude_dir)
+    states_dir = cp.session_states
+    history_dir = cp.file_history
     project_name = project_dir.name
     sessions = []
 

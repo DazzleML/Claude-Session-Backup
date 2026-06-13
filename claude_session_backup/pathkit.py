@@ -52,8 +52,200 @@ from __future__ import annotations
 
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import ClassVar, NamedTuple, Optional, Union
+
+
+class ParsedRel(NamedTuple):
+    """Decomposition of a claude_dir-relative POSIX path (the git/DB form).
+
+    ``kind`` is the first path segment (``"projects"``, ``"sesslogs"``, ...);
+    ``slug`` and ``uuid`` are populated only for ``projects/`` paths. For
+    ``projects/<slug>/<uuid>.jsonl`` the ``.jsonl`` suffix is stripped from
+    ``uuid``; for ``projects/<slug>/<uuid>/...`` (session subtree) the bare
+    directory name is returned.
+    """
+
+    kind: str
+    slug: Optional[str]
+    uuid: Optional[str]
+
+
+@dataclass(frozen=True)
+class ClaudePaths:
+    """Single owner of the ``~/.claude`` layout (GH #46).
+
+    Holds the resolved base directory and derives every csb-known location
+    from it, in both representations:
+
+    - **absolute** (``Path`` out): accessors/builders for filesystem use
+    - **claude_dir-relative POSIX** (``str`` out): the form git pathspecs
+      and the SQLite index consume -- forward slashes always, on Windows too
+
+    Construct via :meth:`from_dir`, which applies THE resolve policy:
+    ``expanduser().resolve()`` exactly once, at construction. All children
+    derived from this instance therefore share the resolved prefix, which is
+    what makes :meth:`rel` safe when ``claude_dir`` is a junction/symlink
+    (RF2 in the design doc).
+
+    Deliberately NOT here: the git repo-root prefix (repo may root at an
+    ancestor of claude_dir -- ``git_ops._claude_dir_prefix`` owns that), and
+    the NOISE/USER commit-classification lists (git_ops owns those).
+    """
+
+    root: Path
+
+    # Canonical first-level names, grouped by PROVENANCE -- who creates the
+    # path decides whether a given user has it at all. git_ops composes its
+    # pathspec/match strings from these same constants -- one spelling, two
+    # representations.
+
+    # Core Claude Code layout: present in EVERY installation.
+    PROJECTS: ClassVar[str] = "projects"        # session transcripts
+    FILE_HISTORY: ClassVar[str] = "file-history"  # /undo history
+    TASKS: ClassVar[str] = "tasks"              # task v2 state
+    SESSION_ENV: ClassVar[str] = "session-env"  # shell env snapshots
+    SETTINGS_FILE: ClassVar[str] = "settings.json"
+
+    # claude-session-logger companion: present ONLY when the logger plugin
+    # is installed. csb treats these as optional everywhere.
+    SESSION_STATES: ClassVar[str] = "session-states"  # logger state + name-cache
+    SESSLOGS: ClassVar[str] = "sesslogs"              # logger transcripts
+
+    # csb's own artifacts: we create these; absent until first use.
+    DISTILLED: ClassVar[str] = "distilled"
+    FTS_DIR: ClassVar[str] = "csb-fts"
+    DEFAULT_DB: ClassVar[str] = "session-backup.db"
+    LOCK_FILE: ClassVar[str] = ".csb-backup.lock"
+    CONFIG_FILE: ClassVar[str] = "session-backup-config.json"
+    GITATTRIBUTES: ClassVar[str] = ".gitattributes"  # csb-managed block within
+    CSB_LOGS: ClassVar[str] = "csb-logs"  # hook logs; backup-hook.py mirrors
+    #                                       this name (it can't import csb)
+
+    # Provenance sets for programmatic "is this optional for this user?"
+    # reasoning (diagnostics, future doctor command). Must partition the
+    # names above -- pinned by test.
+    CORE_NAMES: ClassVar[frozenset] = frozenset({
+        PROJECTS, FILE_HISTORY, TASKS, SESSION_ENV, SETTINGS_FILE,
+    })
+    COMPANION_NAMES: ClassVar[frozenset] = frozenset({SESSION_STATES, SESSLOGS})
+    CSB_NAMES: ClassVar[frozenset] = frozenset({
+        DISTILLED, FTS_DIR, DEFAULT_DB, LOCK_FILE, CONFIG_FILE,
+        GITATTRIBUTES, CSB_LOGS,
+    })
+
+    @classmethod
+    def from_dir(cls, claude_dir: Union[str, Path]) -> "ClaudePaths":
+        """Build from any claude_dir spelling (str or Path, ~ ok, junction ok)."""
+        return cls(Path(claude_dir).expanduser().resolve())
+
+    # -- absolute accessors (Path out) ---------------------------------
+
+    @property
+    def projects(self) -> Path:
+        return self.root / self.PROJECTS
+
+    @property
+    def session_states(self) -> Path:
+        return self.root / self.SESSION_STATES
+
+    @property
+    def file_history(self) -> Path:
+        return self.root / self.FILE_HISTORY
+
+    @property
+    def sesslogs(self) -> Path:
+        return self.root / self.SESSLOGS
+
+    @property
+    def distilled(self) -> Path:
+        return self.root / self.DISTILLED
+
+    @property
+    def fts_dir(self) -> Path:
+        return self.root / self.FTS_DIR
+
+    @property
+    def gitattributes(self) -> Path:
+        return self.root / self.GITATTRIBUTES
+
+    @property
+    def default_db(self) -> Path:
+        return self.root / self.DEFAULT_DB
+
+    @property
+    def lock_file(self) -> Path:
+        return self.root / self.LOCK_FILE
+
+    @property
+    def config_file(self) -> Path:
+        return self.root / self.CONFIG_FILE
+
+    @property
+    def settings_file(self) -> Path:
+        return self.root / self.SETTINGS_FILE
+
+    # -- builders (Path out) --------------------------------------------
+
+    def jsonl(self, slug: str, uuid: str) -> Path:
+        """``<root>/projects/<slug>/<uuid>.jsonl`` -- the transcript."""
+        return self.projects / slug / f"{uuid}.jsonl"
+
+    def session_dir(self, slug: str, uuid: str) -> Path:
+        """``<root>/projects/<slug>/<uuid>/`` -- the session subtree."""
+        return self.projects / slug / uuid
+
+    def distilled_md(self, slug: str, session_id: str) -> Path:
+        """``<root>/distilled/<slug>/<session_id>.md`` -- canonical distill output."""
+        return self.distilled / slug / f"{session_id}.md"
+
+    def abs_of(self, rel: str) -> Path:
+        """Claude_dir-relative (either separator) -> absolute Path.
+
+        Splits on normalized forward slashes so a backslash-bearing DB row
+        (pre-#46 drift) still lands on the right file on POSIX too.
+        """
+        norm = rel.replace("\\", "/").strip("/")
+        return self.root.joinpath(*norm.split("/")) if norm else self.root
+
+    # -- claude_dir-relative POSIX exports (str out: the git/DB form) ----
+
+    def rel(self, path: Union[str, Path]) -> str:
+        """Absolute path -> claude_dir-relative POSIX string.
+
+        Tries the cheap no-I/O ``relative_to`` first; if the prefixes
+        disagree (one side resolved through a junction/symlink, the other
+        not), retries once with the path resolved. Raises ``ValueError``
+        only if the path is genuinely outside ``root``.
+        """
+        p = Path(path)
+        try:
+            return p.relative_to(self.root).as_posix()
+        except ValueError:
+            return p.resolve().relative_to(self.root).as_posix()
+
+    def jsonl_rel(self, slug: str, uuid: str) -> str:
+        """``"projects/<slug>/<uuid>.jsonl"`` -- exactly the DB/git spelling."""
+        return f"{self.PROJECTS}/{slug}/{uuid}.jsonl"
+
+    @staticmethod
+    def parse_rel(rel: str) -> ParsedRel:
+        """Decompose a claude_dir-relative path (backslash-tolerant input).
+
+        Replaces the scattered ``parts[0] == "projects"`` string surgery.
+        """
+        norm = rel.replace("\\", "/").strip("/") if rel else ""
+        parts = norm.split("/") if norm else []
+        kind = parts[0] if parts else ""
+        slug: Optional[str] = None
+        uuid: Optional[str] = None
+        if kind == ClaudePaths.PROJECTS and len(parts) >= 2:
+            slug = parts[1]
+            if len(parts) >= 3:
+                leaf = parts[2]
+                uuid = leaf[:-len(".jsonl")] if leaf.endswith(".jsonl") else leaf
+        return ParsedRel(kind, slug, uuid)
 
 
 # Mirrors claude-code/utils/sessionStoragePortable.ts:311-319 (the canonical

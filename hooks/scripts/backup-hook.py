@@ -44,6 +44,7 @@ so a background run is never silent.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -205,10 +206,22 @@ def _spawn_backup(out, note):
     return False
 
 
+def _claude_dir() -> Path:
+    """The Claude data directory, honoring relocation (#46).
+
+    Env-only on purpose: this hook stays dependency-free (it can't import
+    the csb package), and relocated setups run Claude Code with CLAUDE_DIR
+    or CLAUDE_CONFIG_DIR set -- the same precedence csb's CLI uses. The
+    "csb-logs" name mirrors ClaudePaths.CSB_LOGS in pathkit.py.
+    """
+    env = os.environ.get("CLAUDE_DIR") or os.environ.get("CLAUDE_CONFIG_DIR")
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
 def main():
     hook_event_name, source, session_id = _read_hook_input()
 
-    log_dir = Path.home() / ".claude" / "csb-logs"
+    log_dir = _claude_dir() / "csb-logs"
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
     except OSError:

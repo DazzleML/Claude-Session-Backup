@@ -41,7 +41,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-LOCK_FILENAME = ".csb-backup.lock"
+from .pathkit import ClaudePaths
+
+LOCK_FILENAME = ClaudePaths.LOCK_FILE  # canonical spelling lives in pathkit (#46)
 
 # A backup of a few hundred sessions takes seconds-to-minutes; even a large
 # vault with FTS5 work is low-tens-of-minutes. 30 min is ~10-100x headroom
@@ -324,7 +326,7 @@ def backup_lock(claude_dir: str, *, quiet: bool = False):
     skip / reclaim messages are emitted here (suppressed when ``quiet``)
     so callers don't need to print their own.
     """
-    lock_path = Path(claude_dir) / LOCK_FILENAME
+    lock_path = ClaudePaths.from_dir(claude_dir).lock_file
     my_pid = os.getpid()
     now = time.time()
 

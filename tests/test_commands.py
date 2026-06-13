@@ -576,7 +576,10 @@ def _index_sessions_at_live_mtime(claude_dir, db):
     for sf in scan_projects(claude_dir):
         meta = extract_metadata(sf.jsonl_path)
         meta.project = sf.project
-        rel = str(sf.jsonl_path.relative_to(claude_dir))
+        # .as_posix() matches the production write seam (commands.py upsert):
+        # the DB contract is forward-slash POSIX -- str() emitted backslashes
+        # on Windows, the drift that taught readers backslash tolerance (#46).
+        rel = sf.jsonl_path.relative_to(claude_dir).as_posix()
         upsert_session(conn, meta, rel, sf.jsonl_size, sf.jsonl_mtime, "2026-01-01T00:00:00Z")
     conn.commit()
     conn.close()

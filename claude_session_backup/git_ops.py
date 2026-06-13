@@ -26,6 +26,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Union
 
+from .pathkit import ClaudePaths
+
 
 # ── File classification ─────────────────────────────────────────────
 # Mirrors dz claude-cleanup categories exactly.
@@ -416,7 +418,7 @@ def git_find_jsonl_by_uuid(claude_dir: str, uuid: str) -> list[str]:
 
     # `:(glob)` magic: ``*`` matches one path component. Without it, ``*``
     # is a literal character.
-    pathspec = f":(glob)projects/*/{uuid}.jsonl"
+    pathspec = f":(glob){ClaudePaths.PROJECTS}/*/{uuid}.jsonl"
     result = run_git(
         claude_dir,
         "log", "--all", "--pretty=format:", "--name-only",
@@ -497,47 +499,56 @@ def _matches_sesslog_dir(rel: str, slug: str, uuid: str) -> bool:
     nested `<sesslog-dir>/baks/` is included naturally because it lives
     under the matched first-component dir.
     """
-    if not rel.startswith("sesslogs/"):
+    if not rel.startswith(f"{ClaudePaths.SESSLOGS}/"):
         return False
     parts = rel.split("/", 2)
     return len(parts) >= 2 and f"__{uuid}_" in parts[1]
 
 
+# Composed from ClaudePaths' canonical name constants (#46): the same
+# spelling that builds absolute paths builds these claude_dir-relative
+# pathspec/match strings -- one owner, two representations.
 SESSION_HISTORY_SCOPES: list[ScopeSpec] = [
     ScopeSpec(
         label="main transcript",
-        pathspec_fmt="projects/{slug}",
-        match_fmt=lambda rel, slug, uuid: rel == f"projects/{slug}/{uuid}.jsonl",
+        pathspec_fmt=ClaudePaths.PROJECTS + "/{slug}",
+        match_fmt=lambda rel, slug, uuid:
+            rel == f"{ClaudePaths.PROJECTS}/{slug}/{uuid}.jsonl",
     ),
     ScopeSpec(
         label="session subtree",
-        pathspec_fmt="projects/{slug}",
-        match_fmt=lambda rel, slug, uuid: rel.startswith(f"projects/{slug}/{uuid}/"),
+        pathspec_fmt=ClaudePaths.PROJECTS + "/{slug}",
+        match_fmt=lambda rel, slug, uuid:
+            rel.startswith(f"{ClaudePaths.PROJECTS}/{slug}/{uuid}/"),
     ),
     ScopeSpec(
         label="session-states (logger)",
-        pathspec_fmt="session-states",
-        match_fmt=lambda rel, slug, uuid: rel.startswith(f"session-states/{uuid}."),
+        pathspec_fmt=ClaudePaths.SESSION_STATES,
+        match_fmt=lambda rel, slug, uuid:
+            rel.startswith(f"{ClaudePaths.SESSION_STATES}/{uuid}."),
     ),
     ScopeSpec(
         label="sesslogs (logger)",
-        pathspec_fmt="sesslogs",
+        pathspec_fmt=ClaudePaths.SESSLOGS,
         match_fmt=_matches_sesslog_dir,
     ),
     ScopeSpec(
         label="file-history (Claude Code /undo)",
-        pathspec_fmt="file-history",
-        match_fmt=lambda rel, slug, uuid: rel.startswith(f"file-history/{uuid}/"),
+        pathspec_fmt=ClaudePaths.FILE_HISTORY,
+        match_fmt=lambda rel, slug, uuid:
+            rel.startswith(f"{ClaudePaths.FILE_HISTORY}/{uuid}/"),
     ),
     ScopeSpec(
         label="tasks (Claude Code task v2)",
-        pathspec_fmt="tasks",
-        match_fmt=lambda rel, slug, uuid: rel.startswith(f"tasks/{uuid}/"),
+        pathspec_fmt=ClaudePaths.TASKS,
+        match_fmt=lambda rel, slug, uuid:
+            rel.startswith(f"{ClaudePaths.TASKS}/{uuid}/"),
     ),
     ScopeSpec(
         label="session-env (Claude Code shell env)",
-        pathspec_fmt="session-env",
-        match_fmt=lambda rel, slug, uuid: rel.startswith(f"session-env/{uuid}/"),
+        pathspec_fmt=ClaudePaths.SESSION_ENV,
+        match_fmt=lambda rel, slug, uuid:
+            rel.startswith(f"{ClaudePaths.SESSION_ENV}/{uuid}/"),
     ),
 ]
 
@@ -824,7 +835,7 @@ def ensure_gitattributes(claude_dir: str) -> bool:
     Returns True if the file was created or modified, False if nothing changed.
     Safe to call on every backup -- it's a cheap text read.
     """
-    path = Path(claude_dir) / ".gitattributes"
+    path = ClaudePaths.from_dir(claude_dir).gitattributes
 
     block_lines = [GITATTRIBUTES_MARKER_BEGIN, *GITATTRIBUTES_RULES, GITATTRIBUTES_MARKER_END]
     block = "\n".join(block_lines) + "\n"
@@ -890,7 +901,7 @@ def git_list_deleted_jsonls(claude_dir: str,
         "--pretty=format:%H|%cI",
         "--name-only",
         "--diff-filter=D",
-        "--", ":(glob)projects/*/*.jsonl",
+        "--", f":(glob){ClaudePaths.PROJECTS}/*/*.jsonl",
         check=False,
     )
     if result.returncode != 0:
