@@ -2485,19 +2485,27 @@ def _find_viewer(config) -> Optional[dict]:
     return None
 
 
-def _launch_viewer(viewer: dict, session_value: str) -> int:
+def _passthrough_args(args) -> list:
+    """The args after a standalone `--` (#47), forwarded verbatim to the
+    wrapped subtool. Empty list when none were given."""
+    return list(getattr(args, "passthrough", None) or [])
+
+
+def _launch_viewer(viewer: dict, session_value: str, passthrough: list = None) -> int:
     """Launch CCHV focused on ``session_value`` (a full session UUID).
 
     Binary mode launches DETACHED so the viewer outlives this shell.
     Dev mode runs ``pnpm tauri:dev`` in the foreground (build output
-    visible; Ctrl-C stops it).
+    visible; Ctrl-C stops it). ``passthrough`` (anything after `--`, #47)
+    is appended verbatim to the viewer's argv.
     """
     import platform as _platform
     import subprocess
 
+    extra = list(passthrough or [])
     mode, path = viewer["mode"], viewer["path"]
     if mode == "dev":
-        cmd = ["pnpm", "tauri:dev", "--", "--", "--session", session_value]
+        cmd = ["pnpm", "tauri:dev", "--", "--", "--session", session_value] + extra
         print(f"Launching in dev mode from: {path}")
         print("  (Vite + cargo run -- Ctrl-C to stop)")
         try:
@@ -2507,7 +2515,7 @@ def _launch_viewer(viewer: dict, session_value: str) -> int:
             print("  Is pnpm installed?", file=sys.stderr)
             return 1
 
-    cmd = [path, "--session", session_value]
+    cmd = [path, "--session", session_value] + extra
     try:
         if _platform.system() == "Windows":
             subprocess.Popen(
@@ -2733,7 +2741,7 @@ def cmd_view(args) -> int:
         print("  - install: https://github.com/jhlee0409/claude-code-history-viewer")
         return 0
 
-    return _launch_viewer(viewer, full_id)
+    return _launch_viewer(viewer, full_id, _passthrough_args(args))
 
 
 # ── csb distill (#12): human-readable chat-log rendering ────────────────────
@@ -3169,11 +3177,16 @@ def cmd_resume(args) -> int:
     if target is None:
         target = session.get("start_folder")
 
+    # Forward anything after `--` straight to claude (#47), e.g.
+    # `csb resume <name> -- --fork-session`.
+    claude_cmd = ["claude", "--resume", full_id] + _passthrough_args(args)
+    launch_str = " ".join(claude_cmd)
+
     print(f"Resuming: {name}")
     print(f"  ID: {full_id}")
     if target:
         print(f"  cd {target}")
-    print(f"  claude --resume {full_id}")
+    print(f"  {launch_str}")
     print()
 
     # Launch claude --resume as a child process. We use subprocess.run with
@@ -3190,7 +3203,7 @@ def cmd_resume(args) -> int:
     import subprocess
     try:
         result = subprocess.run(
-            ["claude", "--resume", full_id],
+            claude_cmd,
             cwd=target if target else None,
             check=False,
         )
@@ -3203,10 +3216,10 @@ def cmd_resume(args) -> int:
         if target and not os.path.isdir(target):
             print(f"Error: cannot cd to {target}: {e}", file=sys.stderr)
             print("The folder may have been deleted. Run manually:", file=sys.stderr)
-            print(f"  cd <correct-folder> && claude --resume {full_id}", file=sys.stderr)
+            print(f"  cd <correct-folder> && {launch_str}", file=sys.stderr)
             return 1
         print("Error: 'claude' command not found in PATH.", file=sys.stderr)
-        print(f"Run manually: claude --resume {full_id}", file=sys.stderr)
+        print(f"Run manually: {launch_str}", file=sys.stderr)
         return 1
     except NotADirectoryError as e:
         # Edge case: target exists but isn't a directory (file with same name).

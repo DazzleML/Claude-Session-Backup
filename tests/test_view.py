@@ -281,7 +281,7 @@ def test_cmd_view_launches_with_full_uuid(
     )
     monkeypatch.setattr(
         "claude_session_backup.commands._launch_viewer",
-        lambda viewer, value: launched.update(viewer=viewer, value=value) or 0,
+        lambda viewer, value, passthrough=None: launched.update(viewer=viewer, value=value) or 0,
     )
     rc = cmd_view(_view_args(tmp_path, db, claude, query="aaaa0001"))
     out = capsys.readouterr().out
@@ -357,7 +357,7 @@ def test_cmd_view_pruned_restore_pruned_restores_then_launches(
     launched = {}
     monkeypatch.setattr(
         "claude_session_backup.commands._launch_viewer",
-        lambda viewer, value: launched.update(value=value) or 0,
+        lambda viewer, value, passthrough=None: launched.update(value=value) or 0,
     )
     rc = cmd_view(_view_args(
         tmp_path, db, claude, query="aaaa0001", restore_pruned=True,
@@ -395,7 +395,7 @@ def test_cmd_view_pruned_restore_failure_aborts_launch(
     launched = []
     monkeypatch.setattr(
         "claude_session_backup.commands._launch_viewer",
-        lambda viewer, value: launched.append(value) or 0,
+        lambda viewer, value, passthrough=None: launched.append(value) or 0,
     )
     rc = cmd_view(_view_args(
         tmp_path, db, claude, query="aaaa0001", restore_pruned=True,
