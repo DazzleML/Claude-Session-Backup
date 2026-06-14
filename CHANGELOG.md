@@ -9,6 +9,20 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.6] -- 2026-06-14 (alpha)
+
+**`--` passthrough: csb as a transparent wrapper (#47).** The commands that launch a subtool now forward everything after a standalone `--` straight to that tool, so the resolve-and-cd convenience extends to any flag the wrapped tool accepts. 947 tests pass (+12 new); the isolation guarantee is red-green verified. Closes #47.
+
+### Added
+- **`csb resume <query> -- <claude args>`** -- resolves the session, cds to its start folder, and launches `claude --resume <uuid>` with the forwarded args appended. `csb resume MY-PROJECT__date__slug -- --fork-session` collapses the old 4-step `list` -> read-folder -> `cd` -> `claude --fork-session -r` dance into one line. `csb view <query> -- <viewer args>` forwards to the history viewer the same way.
+- **The split happens before csb's own flag-parsing** (`_split_passthrough` runs ahead of `_hoist_common_flags`), so a forwarded flag is never mistaken for one of csb's: `csb resume x -- --db /other` uses csb's real DB and sends `--db /other` to claude. Forwarded as a subprocess argv list -- no shell, no quoting/injection surface.
+- **Capability-gated**: only `resume` and `view` forward (a small registry makes future wrapped tools a one-line opt-in). A non-launching command given `--` (e.g. `csb list -- foo`) errors clearly rather than silently dropping the args.
+- The printed launch line (and the "run manually" hints) include the forwarded args; `csb resume -h` / `csb view -h` teach the convention; docs/commands.md gains a "csb as a wrapper" section.
+
+### Fixed
+- **CI green on cache-cold interpreters**: the new `test_launch_viewer_appends_passthrough` broke under CI because `_launch_viewer`'s `platform.system()` shells out via `subprocess` on a cold uname cache, hitting the test's globally-patched `subprocess.Popen` (a context-manager-less fake). It passed locally only because the cache was already warm. The test now pins `platform.system()` before patching `Popen` -- deterministic and OS-independent. Test-only; runtime behavior unchanged.
+- **`pathkit.py` invalid escape sequence**: the module docstring had a stray `\.` (`New\.Project`) that raised `DeprecationWarning: invalid escape sequence` (a `SyntaxError` on future Python). Escaped to `\\.` to match the docstring's other path examples; a whole-package escape-sequence sweep is now clean.
+
 ## [0.4.5] -- 2026-06-13 (alpha)
 
 **Docstring/help accuracy audit -- completing the sweep started in v0.4.4.** A follow-up pass over the source files the first sweep missed (`search.py`, `fts5_importer.py`, `transcript_walker.py`), the test suite, and `docs/`. No behavior change; docstrings, comments, and help text only. 935 tests pass.
@@ -817,7 +831,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...HEAD
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0

@@ -53,6 +53,12 @@ for flag, spec in _COMMON_FLAGS.items():
     if "short" in spec:
         _COMMON_FLAG_NAMES.add(spec["short"])
 
+# Commands that launch a wrapped subtool and therefore accept `--` passthrough
+# (#47): everything after a standalone `--` is forwarded verbatim to the child
+# (resume -> claude, view -> the history viewer). Any other command rejects a
+# passthrough rather than silently dropping it.
+PASSTHROUGH_COMMANDS = {"resume", "view"}
+
 
 def _add_common_flags(parser):
     """Add common flags to a subcommand parser."""
@@ -227,7 +233,19 @@ def build_parser():
     )
 
     # resume
-    p_resume = sub.add_parser("resume", help="Launch claude --resume with full UUID")
+    p_resume = sub.add_parser(
+        "resume",
+        help="Launch claude --resume with full UUID",
+        description=(
+            "Resolve a session, cd to its start folder, and launch\n"
+            "`claude --resume <uuid>`. Forward extra args to claude after `--`:\n\n"
+            "  csb resume <query>                    resume it\n"
+            "  csb resume <query> -- --fork-session  resume + forward --fork-session to claude\n\n"
+            "Everything after `--` is passed verbatim to claude (don't re-pass\n"
+            "--resume / -r -- csb already supplies it)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _add_common_flags(p_resume)
     p_resume.add_argument(
         "session_id", metavar="query",
@@ -270,7 +288,9 @@ def build_parser():
             "key (csb config viewer_path <path>), then platform install\n"
             "locations. Without a viewer, prints the transcript path.\n"
             "Pruned sessions offer restore-from-git first (same flags as\n"
-            "`csb resume`)."
+            "`csb resume`).\n\n"
+            "Forward extra args to the viewer after `--`:\n"
+            "  csb view <query> -- <viewer-args>"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -732,20 +752,56 @@ def build_parser():
     return parser
 
 
+def _split_passthrough(argv):
+    """Split argv at the first standalone ``--`` token (#47).
+
+    Returns ``(csb_argv, passthrough)`` -- everything before the ``--`` for
+    csb's own parsing, everything after it forwarded verbatim to a wrapped
+    subtool. No ``--`` -> ``(argv, [])``. Matches only the exact two-char
+    token, never ``--db``/``--force``. Must run BEFORE ``_hoist_common_flags``
+    so forwarded flags are never hoisted into csb's own options.
+    """
+    if "--" in argv:
+        i = argv.index("--")
+        return list(argv[:i]), list(argv[i + 1:])
+    return list(argv), []
+
+
 def main(argv=None):
     """Entry point for csb CLI."""
     # Hoist common flags from before the subcommand to after it.
     # This makes `csb --quiet backup` work the same as `csb backup --quiet`.
     if argv is None:
         argv = sys.argv[1:]
+
+    # `--` passthrough (#47): everything after the first standalone `--` token
+    # is forwarded verbatim to the wrapped subtool. Carve it off BEFORE
+    # flag-hoisting so a forwarded flag (e.g. `csb resume x -- --db /other`)
+    # is never mistaken for one of csb's own options. argparse never sees the
+    # `--` -- the tail is reattached to the namespace as `args.passthrough`.
+    argv, passthrough = _split_passthrough(argv)
+
     argv = _hoist_common_flags(argv)
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.passthrough = passthrough
 
     if args.command is None:
         parser.print_help()
         return 0
+
+    # Only subtool-launchers can forward args; reject (never silently drop)
+    # a passthrough given to any other command.
+    if passthrough and args.command not in PASSTHROUGH_COMMANDS:
+        capable = ", ".join(sorted(PASSTHROUGH_COMMANDS))
+        print(
+            f"csb {args.command}: `--` passthrough is only supported by: "
+            f"{capable}. (Everything after `--` is forwarded to the wrapped "
+            f"tool, which `{args.command}` does not launch.)",
+            file=sys.stderr,
+        )
+        return 2
 
     # Import handlers lazily to keep startup fast
     if args.command == "backup":

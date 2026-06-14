@@ -63,6 +63,16 @@ Common flags (`--quiet`, `--claude-dir`, `--db`) work before OR after the subcom
 
 **Relocated `~/.claude`?** csb follows Claude Code's `CLAUDE_CONFIG_DIR` automatically (container / host-mount / worktree-isolated setups need zero csb configuration). Precedence: `--claude-dir` > `CLAUDE_DIR` > `CLAUDE_CONFIG_DIR` > `claude_dir` config key > `~/.claude`; the default DB location follows the relocation too.
 
+**csb as a wrapper (`--` passthrough).** For the commands that launch a subtool -- `csb resume` (-> `claude`) and `csb view` (-> the history viewer) -- everything after a standalone `--` is forwarded verbatim to that tool. csb does the session resolution + `cd`; the tool gets your extra flags:
+
+```bash
+csb resume MY-PROJECT__2025-5-25__redesign -- --fork-session
+#  -> resolve the name -> cd to its start folder -> claude --resume <uuid> --fork-session
+csb view <query> -- <viewer-args>
+```
+
+The split happens before csb parses its own options, so a forwarded flag is never mistaken for one of csb's (`csb resume x -- --db /other` sends `--db /other` to claude, not to csb). Don't re-pass `--resume` / `-r` in the passthrough -- csb already supplies it. A command that doesn't launch a subtool (e.g. `csb list -- foo`) rejects the `--` rather than silently dropping it.
+
 ## Searching conversations
 
 Use `csb search` to find old sessions by **what was discussed**, not just by folder or name. The query is a case-insensitive literal substring by default; `-E` switches to Python regex.

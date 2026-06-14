@@ -26,7 +26,7 @@ rationale.
 
 Multi-candidate disambiguation (#23): when a slug has more than one valid
 on-disk decoding (e.g., a literal ``New--Project`` folder AND a sibling
-``New\.Project`` folder), ``decode_project_slug(slug, first_cwd, folder_usage)``
+``New\\.Project`` folder), ``decode_project_slug(slug, first_cwd, folder_usage)``
 picks the right one via a three-tier fallback (see the function docstring).
 Callers without JSONL signals (``first_cwd=None, folder_usage=None``) get the
 encoded-length heuristic -- preserving the original #19 behavior for which
