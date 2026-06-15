@@ -1,8 +1,13 @@
 name: Publish to PyPI
 
+# Triggered when a GitHub Release is PUBLISHED -- not on tag push. This makes
+# "publish a release" the single deliberate ship action: force-moving or
+# re-pushing a tag (e.g. amending a released commit) never re-fires PyPI, so
+# we don't get spurious "400 File already exists" failures. The release event
+# checks out the release's tag, so the right version is built.
 on:
-  push:
-    tags: ['v*']
+  release:
+    types: [published]
 
 permissions:
   id-token: write
@@ -54,3 +59,7 @@ jobs:
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        # Idempotency safety net: if a release is ever re-published or this
+        # job re-runs, skip files already on PyPI instead of failing.
+        skip-existing: true
