@@ -456,9 +456,50 @@ def test_search_auto_uses_fts5_when_fresh(mock_db, tmp_path):
     assert len(hits) == 1
     assert hits[0].source_type == "fts5"
 
-    # And the grep-only term doesn't appear when FTS5 is picked
+    # B1 zero-match fallback: FTS5 is fresh but lacks "FROM_JSONL". Auto-search
+    # must NOT let a deficient FTS5 shadow the authoritative JSONL -- it falls
+    # through to jsonl and finds it (this was the silent false-negative bug).
     hits = list(search(mock_db, "FROM_JSONL", claude_dir=claude_dir))
-    assert hits == []
+    assert len(hits) == 1
+    assert hits[0].source_type == "jsonl"
+
+    # ...but an EXPLICIT --source fts5 keeps the no-fallback contract: the
+    # user pinned that channel, so a miss stays a miss.
+    assert list(search(
+        mock_db, "FROM_JSONL", claude_dir=claude_dir, source_override="fts5",
+    )) == []
+
+
+def test_search_fts5_finds_hyphenated_term_end_to_end(mock_db, tmp_path):
+    """Bug A end-to-end: a hyphenated term indexed in FTS5 must be found via
+    the FTS5 path. The JSONL deliberately does NOT contain the term, so if the
+    escape regressed to '"fmv"' (FTS5 miss) the B1 fallback would also miss ->
+    zero hits. A passing 'fts5' hit isolates the escape fix."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = encoded_slug = "C--code-test"
+    sid = "fff77777-7777-7777-7777-777777777777"
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "I wired up the core:f-mv and f-cp tools")],
+        jsonl_mtime=1700000000.0,
+    )
+    proj_dir = claude_dir / "projects" / encoded_slug
+    proj_dir.mkdir(parents=True)
+    jsonl_abs = proj_dir / f"{sid}.jsonl"
+    jsonl_abs.write_text(  # NO 'f-mv' here -- forces the win to come from FTS5
+        '{"type":"user","timestamp":"t","message":{"content":"unrelated text"}}\n',
+        encoding="utf-8",
+    )
+    _insert_session_with_jsonl(
+        mock_db, sid, project, f"projects/{encoded_slug}/{sid}.jsonl", 1700000000.0,
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    hits = list(search(mock_db, "f-mv", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "fts5"
 
 
 def test_search_auto_falls_through_to_grep_when_stale(mock_db, tmp_path):
@@ -1978,8 +2019,12 @@ def test_search_auto_fts5_fresh_via_content_hash_when_mtime_stale(
     hits = list(search(mock_db, "RESCUED_TERM", claude_dir=claude_dir))
     assert len(hits) == 1
     assert hits[0].source_type == "fts5"
-    # And grep did NOT run (FROM_JSONL is on disk only).
-    assert list(search(mock_db, "FROM_JSONL", claude_dir=claude_dir)) == []
+    # B1 zero-match fallback: FTS5 (hash-fresh) lacks "FROM_JSONL"; auto-search
+    # falls through to the authoritative jsonl rather than reporting a false
+    # zero. (Explicit --source fts5 would still return [].)
+    hits = list(search(mock_db, "FROM_JSONL", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "jsonl"
 
 
 def _write_shell_only_sesslog(path):

@@ -258,10 +258,16 @@ def escape_fts_query(pattern: str) -> str:
 
     For a pattern like ``oauth callback``, returns
     ``"oauth" "callback"`` -- two FTS5 phrase terms (AND'd by default).
-    Special chars inside individual tokens are stripped because FTS5
-    rejects bare punctuation; this is intentionally conservative
-    (false positives at the candidate-narrowing stage are fine -- the
-    Python-side literal match in search.py validates accuracy).
+
+    Intra-token punctuation is treated as a TOKEN SEPARATOR, not deleted:
+    ``f-mv`` becomes the adjacency phrase ``"f mv"`` (which matches the
+    index's ``f`` + ``mv`` adjacent), NOT ``"fmv"`` (which joins across the
+    tokenizer boundary and matches NOTHING -- the index never holds ``fmv``).
+    The earlier strip-and-join behavior produced a token strictly *narrower*
+    than the source and silently lost every hyphenated/punctuated term
+    (``f-mv``, ``claude-code``, ``oauth-callback``). FTS5 stays a
+    candidate-narrower; the Python-side literal match in search.py still
+    enforces exactness, so this phrase form is safe.
 
     Heuristic: if the pattern already contains operators (AND / OR /
     NOT / NEAR, or ``+ * ^``), returns it verbatim so power users can
@@ -272,13 +278,15 @@ def escape_fts_query(pattern: str) -> str:
     # User-explicit FTS5 syntax: pass through unchanged.
     if _FTS5_OPERATOR_RE.search(pattern):
         return pattern
-    # Split on whitespace, drop punctuation inside each token, wrap in
-    # double quotes. Tokens with no alphanum content are dropped.
+    # One quoted phrase per whitespace token; within a token, split on
+    # punctuation into sub-tokens joined by spaces so the phrase matches the
+    # tokenizer's view (``f-mv`` -> ``"f mv"``). Tokens with no alphanum
+    # content are dropped.
     out: list[str] = []
     for tok in pattern.split():
-        cleaned = re.sub(r"[^\w]+", "", tok, flags=re.UNICODE)
-        if cleaned:
-            out.append(f'"{cleaned}"')
+        subtoks = re.findall(r"\w+", tok, flags=re.UNICODE)
+        if subtoks:
+            out.append('"' + " ".join(subtoks) + '"')
     return " ".join(out)
 
 

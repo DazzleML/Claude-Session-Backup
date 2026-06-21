@@ -321,8 +321,13 @@ def _pick_source_for_session(
     source_rows: list[sqlite3.Row],
     preference: tuple[str, ...],
     claude_dir: Optional[Path],
+    exclude: "frozenset[str] | tuple[str, ...]" = (),
 ) -> tuple[Optional[str], object]:
     """Walk the preference list; return the first available source.
+
+    ``exclude`` skips source types already tried this session -- the
+    zero-match fallback (search loop) re-calls this to get the NEXT
+    available source after a chosen one yielded no hits.
 
     Returns ``(source_type, handle)`` where ``handle`` is:
       - a :class:`pathlib.Path` to the per-project FTS5 DB (for ``fts5``)
@@ -347,6 +352,8 @@ def _pick_source_for_session(
     explicit_choice = len(preference) == 1
 
     for source_type in preference:
+        if source_type in exclude:
+            continue
         if source_type == "fts5":
             handle = _fts5_handle_for_session(
                 session_row,
@@ -1074,12 +1081,6 @@ def search(
             (session_row["session_id"],),
         ).fetchall()
 
-        picked_type, picked_handle = _pick_source_for_session(
-            session_row, source_rows, preference, claude_dir,
-        )
-        if picked_type is None:
-            continue
-
         # v0.3.5: resolve the best file-based transcript for THIS session
         # once, regardless of which source the dispatcher picked. Used to
         # populate Hit.transcript_path so --files-only / JSON consumers
@@ -1088,24 +1089,47 @@ def search(
             source_rows, session_row, claude_dir,
         )
 
-        if picked_type == "fts5":
-            events = list(query_fts5_for_session(
-                picked_handle,  # Path to per-project FTS5 DB
-                session_row["session_id"],
-                pattern,
-                regex=regex,
-            ))
-            picked_source_type = "fts5"
-            picked_source_path = str(picked_handle)
-        else:
-            # File-based source: handle is the session_sources row.
-            events = list(parse_source(
-                picked_handle["source_type"],
-                picked_handle["source_path"],
-                session_row["session_id"],
-            ))
-            picked_source_type = picked_handle["source_type"]
-            picked_source_path = picked_handle["source_path"]
+        # Walk the preference chain for THIS session. The dispatcher picks
+        # the most-preferred available source; in AUTO mode, if it yields no
+        # matcher-passing hit we fall through to the NEXT available source
+        # (ending at the authoritative jsonl), so a deficient FTS5 / convo
+        # result (broken escaping, staleness, tokenization, lossy distilled
+        # content) can never silently shadow content the source of truth
+        # holds. An explicit `--source X` is a single-element preference, so
+        # the loop tries only that one -- no fallback (the user chose it).
+        tried: set[str] = set()
+        events: list = []
+        picked_source_type = picked_source_path = None
+        while True:
+            picked_type, picked_handle = _pick_source_for_session(
+                session_row, source_rows, preference, claude_dir, exclude=tried,
+            )
+            if picked_type is None:
+                break
+            tried.add(picked_type)
+
+            if picked_type == "fts5":
+                cand = list(query_fts5_for_session(
+                    picked_handle,  # Path to per-project FTS5 DB
+                    session_row["session_id"],
+                    pattern,
+                    regex=regex,
+                ))
+                st, sp = "fts5", str(picked_handle)
+            else:
+                # File-based source: handle is the session_sources row.
+                cand = list(parse_source(
+                    picked_handle["source_type"],
+                    picked_handle["source_path"],
+                    session_row["session_id"],
+                ))
+                st, sp = picked_handle["source_type"], picked_handle["source_path"]
+
+            # Accept this source iff it yields >=1 matcher-passing hit;
+            # otherwise fall through (auto) / stop (explicit single source).
+            if any(matcher(ev.text) for ev in cand):
+                events, picked_source_type, picked_source_path = cand, st, sp
+                break
 
         if not events:
             continue
