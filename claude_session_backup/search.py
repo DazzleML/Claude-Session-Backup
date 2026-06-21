@@ -661,6 +661,27 @@ def query_fts5_for_session(
         conn.close()
 
 
+def _fts5_union_events(
+    fts5_db_path: Path,
+    session_id: str,
+    terms: list[str],
+    regex: bool,
+) -> list[Event]:
+    """Events from this session's FTS5 DB matching ANY of ``terms``, deduped
+    by ``line_num`` (the message ordinal) so a message matching several terms
+    appears once, returned in transcript order. A single term takes the plain
+    single-query fast path (byte-identical to the pre-multi-term behavior)."""
+    if len(terms) == 1:
+        return list(query_fts5_for_session(
+            fts5_db_path, session_id, terms[0], regex=regex,
+        ))
+    by_line: dict = {}
+    for t in terms:
+        for ev in query_fts5_for_session(fts5_db_path, session_id, t, regex=regex):
+            by_line.setdefault(ev.line_num, ev)
+    return [by_line[k] for k in sorted(by_line)]
+
+
 # ── Directory-scope helpers (v0.3.5) ──────────────────────────────────
 
 
@@ -935,6 +956,8 @@ def search(
     conn: sqlite3.Connection,
     pattern: str,
     *,
+    extra_terms: tuple[str, ...] = (),
+    match_mode: str = "all",
     regex: bool = False,
     case_sensitive: bool = False,
     above: int = 0,
@@ -1031,7 +1054,20 @@ def search(
         )
         return
 
-    matcher = _build_matcher(pattern, regex, case_sensitive)
+    # One matcher per term (single-term is the n==1 fast path). The boolean
+    # combiner qualifies a SESSION (not a message): a session passes when the
+    # SET of its present-term indices satisfies match_mode -- "all" (AND, every
+    # term somewhere in the session) or "any" (OR, at least one). Unordered and
+    # cross-message by construction (each term is matched independently).
+    terms = [pattern, *extra_terms]
+    matchers = [_build_matcher(t, regex, case_sensitive) for t in terms]
+    n_terms = len(terms)
+    if match_mode == "any":
+        def _qualifies(present: set) -> bool:
+            return len(present) >= 1
+    else:  # "all" (default) -- AND
+        def _qualifies(present: set) -> bool:
+            return len(present) == n_terms
     # Auto-mode preference adapts to the user's actual vault: drops
     # convo / sesslog when no claude-session-logger output exists.
     # Explicit --source X overrides this entirely.
@@ -1109,15 +1145,17 @@ def search(
             tried.add(picked_type)
 
             if picked_type == "fts5":
-                cand = list(query_fts5_for_session(
+                # Union FTS5 candidates across ALL terms (deduped); MATCH is
+                # per-term narrowing, the Python matchers below decide presence.
+                cand = _fts5_union_events(
                     picked_handle,  # Path to per-project FTS5 DB
                     session_row["session_id"],
-                    pattern,
-                    regex=regex,
-                ))
+                    terms,
+                    regex,
+                )
                 st, sp = "fts5", str(picked_handle)
             else:
-                # File-based source: handle is the session_sources row.
+                # File-based source: parse the whole transcript; matchers filter.
                 cand = list(parse_source(
                     picked_handle["source_type"],
                     picked_handle["source_path"],
@@ -1125,9 +1163,19 @@ def search(
                 ))
                 st, sp = picked_handle["source_type"], picked_handle["source_path"]
 
-            # Accept this source iff it yields >=1 matcher-passing hit;
-            # otherwise fall through (auto) / stop (explicit single source).
-            if any(matcher(ev.text) for ev in cand):
+            # Which terms are present in THIS source? Accept iff the present-set
+            # satisfies the combiner; else fall through (auto) / stop (explicit).
+            # The chain ends at the authoritative jsonl, so AND across
+            # cross-source / cross-message terms is correct -- the complete
+            # transcript holds every term.
+            present: set = set()
+            for ev in cand:
+                for i, m in enumerate(matchers):
+                    if i not in present and m(ev.text):
+                        present.add(i)
+                if len(present) == n_terms:
+                    break
+            if _qualifies(present):
                 events, picked_source_type, picked_source_path = cand, st, sp
                 break
 
@@ -1148,7 +1196,10 @@ def search(
             folders_for_session = [dict(r) for r in folder_rows]
 
         for idx, ev in enumerate(events):
-            if not matcher(ev.text):
+            # Excerpt mode yields events matching ANY term (so an AND search
+            # shows where each term landed). Session-level qualification already
+            # passed above.
+            if not any(m(ev.text) for m in matchers):
                 continue
 
             ctx_above = events[max(0, idx - above):idx] if above > 0 else []

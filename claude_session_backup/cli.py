@@ -483,10 +483,20 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_common_flags(p_search)
-    p_search.add_argument("query", help="Search pattern (literal substring by default)")
+    p_search.add_argument(
+        "query", nargs="+", metavar="TERM",
+        help="One or more search terms (literal substring by default). "
+             "Multiple terms combine per --match.",
+    )
+    p_search.add_argument(
+        "--match", choices=["all", "any"], default="all",
+        help="How multiple TERMs combine, at the SESSION level: all (default, "
+             "AND -- the session contains every term, in any order/message); "
+             "any (OR -- at least one term). No effect with a single term.",
+    )
     p_search.add_argument(
         "-E", "--regex", action="store_true",
-        help="Treat query as a Python regex (re.IGNORECASE unless -s)",
+        help="Treat each term as a Python regex (re.IGNORECASE unless -s)",
     )
     p_search.add_argument(
         "-s", "--case-sensitive", action="store_true",

@@ -1557,6 +1557,18 @@ def cmd_search(args) -> int:
         }
         # The dispatcher always runs against FTS5 -- pin the source.
         source_override = "fts5"
+        # Multi-term boolean is not wired through the dir-scope ranker yet
+        # (it ranks by file-op strength, a different path). Reject clearly
+        # rather than silently searching only the first term.
+        if len(args.query) > 1:
+            print(
+                "Error: multiple search terms are not supported with -d/-D "
+                "directory-scope yet. Search one term with -d/-D, or drop "
+                "-d/-D to combine terms.",
+                file=sys.stderr,
+            )
+            conn.close()
+            return 2
 
     # Parse --session-id: comma-separated list of UUID prefixes. Empty
     # entries (e.g. trailing comma) and whitespace are tolerated.
@@ -1589,7 +1601,9 @@ def cmd_search(args) -> int:
     try:
         hits = list(run_search(
             conn,
-            args.query,
+            args.query[0],
+            extra_terms=tuple(args.query[1:]),
+            match_mode=args.match,
             regex=args.regex,
             case_sensitive=args.case_sensitive,
             above=above,
@@ -1619,7 +1633,9 @@ def cmd_search(args) -> int:
         hits = cap_hits_by_output_unit(hits, user_limit, only_mode)
 
     if not hits:
-        print(f"No content matches for {args.query!r}")
+        _terms_disp = " ".join(f'"{t}"' for t in args.query)
+        _how = "" if len(args.query) == 1 else f" (--match {args.match})"
+        print(f"No content matches for {_terms_disp}{_how}")
         print(
             "  Hint: for metadata search use 'csb list <filter>' or 'csb scan <term>'",
             file=sys.stderr,
