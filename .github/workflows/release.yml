@@ -8,6 +8,16 @@ name: Publish to PyPI
 on:
   release:
     types: [published]
+  # Manual fallback: publish on demand from the Actions tab ("Run workflow")
+  # without needing a GitHub Release -- backfill a skipped version (e.g. one
+  # where no Release was published), retry a failed publish, or ship a tag.
+  # skip-existing (below) keeps re-runs idempotent.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Tag/ref to build & publish (e.g. v0.5.0). Blank = current branch."
+        required: false
+        default: ""
 
 permissions:
   id-token: write
@@ -19,6 +29,10 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
+      with:
+        # On a manual run, build the requested tag/ref; on a release event the
+        # default checkout already lands on the release's tag.
+        ref: ${{ github.event.inputs.ref || github.ref }}
 
     - name: Set up Python
       uses: actions/setup-python@v6

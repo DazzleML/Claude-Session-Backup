@@ -227,6 +227,27 @@ def _full_info_line(hit: Hit, cleanup_days: int, use_color: bool) -> str | None:
     return f"{label} {' '.join(body_parts)}"
 
 
+def _highlight_terms(
+    text: str,
+    query,  # str | list[str] | None
+    regex: bool,
+    case_sensitive: bool,
+    enabled: bool,
+) -> str:
+    """:func:`_highlight` for one OR many terms. ``query`` may be a single
+    string (today's behavior) or a list of terms (multi-term search). Builds a
+    single alternation so every term is highlighted in one pass (no ANSI
+    interference from sequential calls). A single literal term reduces to the
+    same output as before."""
+    if not enabled or not query:
+        return text
+    terms = [query] if isinstance(query, str) else [t for t in query if t]
+    if not terms:
+        return text
+    pat = "|".join((t if regex else re.escape(t)) for t in terms)
+    return _highlight(text, pat, True, case_sensitive, enabled)
+
+
 def render_human(
     hits: list[Hit],
     *,
@@ -326,21 +347,21 @@ def render_human(
             for ev in h.context_above:
                 sub_role = _c(_role_color(ev.role), f"[{ev.role}]", use_color)
                 ctx_text = _truncate(ev.text, _CONTEXT_MAX)
-                ctx_text = _highlight(
+                ctx_text = _highlight_terms(
                     ctx_text, query, regex, case_sensitive, use_color,
                 )
                 print(f"    {_c('dim', sub_role, use_color)} {ctx_text}")
 
             # Matched line
             text = h.matched_text if full_match else _truncate(h.matched_text, _MATCH_MAX)
-            text = _highlight(text, query, regex, case_sensitive, use_color)
+            text = _highlight_terms(text, query, regex, case_sensitive, use_color)
             print(f"    {_c('green', '>', use_color)} {text}")
 
             # Context below
             for ev in h.context_below:
                 sub_role = _c(_role_color(ev.role), f"[{ev.role}]", use_color)
                 ctx_text = _truncate(ev.text, _CONTEXT_MAX)
-                ctx_text = _highlight(
+                ctx_text = _highlight_terms(
                     ctx_text, query, regex, case_sensitive, use_color,
                 )
                 print(f"    {_c('dim', sub_role, use_color)} {ctx_text}")
@@ -447,10 +468,15 @@ def render_sessions_only(
             ):
                 print(ln)
 
-    if query is not None and order:
+    # ``query`` may be a single string (today) or a list of terms (multi-term
+    # search). Quote each term so the drill-in hint round-trips: a single term
+    # renders identically to before (``"foo"``).
+    _terms = ([query] if isinstance(query, str) else list(query or []))
+    if _terms and order:
         print()
+        _terms_str = " ".join(f'"{t}"' for t in _terms)
         hint = (
-            f'Next: csb search "{query}" --session-id '
+            f'Next: csb search {_terms_str} --session-id '
             f"{format_short_uuid(order[0]) if shortid else order[0]} -A 3 -B 1"
         )
         print(_c("dim", hint, use_color))

@@ -2128,3 +2128,98 @@ def test_search_explicit_sesslog_shell_only_no_fallthrough(mock_db, tmp_path):
         mock_db, "NEEDLE3", source_override="sesslog", claude_dir=claude_dir,
     ))
     assert hits == []
+
+
+# ── multi-term boolean search (v0.5.0) ─────────────────────────────────
+
+
+def test_search_multi_term_and_cross_message(mock_db, tmp_path):
+    """AND qualifies a session when terms appear in DIFFERENT messages
+    (session-level, cross-message, unordered) -- the regex/single-message
+    approaches can't express this."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = encoded_slug = "C--code-test"
+    sid = "fff88888-8888-8888-8888-888888888888"
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "the alpha tool"),
+                  ("AI", None, "and the beta tool")],
+        jsonl_mtime=1700000000.0,
+    )
+    proj = claude_dir / "projects" / encoded_slug
+    proj.mkdir(parents=True)
+    jsonl_abs = proj / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"alpha beta"}}\n',
+        encoding="utf-8",
+    )
+    _insert_session_with_jsonl(
+        mock_db, sid, project, f"projects/{encoded_slug}/{sid}.jsonl", 1700000000.0,
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+
+    # AND: alpha (msg0) and beta (msg1) -> session qualifies
+    hits = list(search(mock_db, "alpha", extra_terms=("beta",), claude_dir=claude_dir))
+    assert hits and all(h.session_id == sid for h in hits)
+    # Unordered: swapping the terms gives the same qualification
+    assert list(search(mock_db, "beta", extra_terms=("alpha",), claude_dir=claude_dir))
+    # AND with an absent term -> NOT qualified
+    assert list(search(mock_db, "alpha", extra_terms=("gamma",), claude_dir=claude_dir)) == []
+    # OR (--match any): one present + one absent -> qualifies
+    assert list(search(mock_db, "alpha", extra_terms=("gamma",),
+                       match_mode="any", claude_dir=claude_dir))
+
+
+def test_search_single_term_unchanged_by_multiterm_machinery(mock_db, tmp_path):
+    """A single term (default match_mode) is byte-identical: same hit, same
+    source as before multi-term existed."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = encoded_slug = "C--code-test"
+    sid = "fff99999-9999-9999-9999-999999999999"
+    _build_fake_fts5_db(
+        claude_dir, project, encoded_slug, sid,
+        messages=[("USER", None, "solo TERMX here")],
+        jsonl_mtime=1700000000.0,
+    )
+    proj = claude_dir / "projects" / encoded_slug
+    proj.mkdir(parents=True)
+    jsonl_abs = proj / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"TERMX"}}\n',
+        encoding="utf-8",
+    )
+    _insert_session_with_jsonl(
+        mock_db, sid, project, f"projects/{encoded_slug}/{sid}.jsonl", 1700000000.0,
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+    hits = list(search(mock_db, "TERMX", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert hits[0].source_type == "fts5"
+
+
+def test_search_operator_word_is_a_literal_term(mock_db, tmp_path):
+    """`csb search "AND"` searches the literal word -- operators live in
+    --match, never in the term stream. (Found via the jsonl grep path.)"""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    project = encoded_slug = "C--code-test"
+    sid = "faaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    proj = claude_dir / "projects" / encoded_slug
+    proj.mkdir(parents=True)
+    jsonl_abs = proj / f"{sid}.jsonl"
+    jsonl_abs.write_text(
+        '{"type":"user","timestamp":"t","message":{"content":"foo AND bar"}}\n',
+        encoding="utf-8",
+    )
+    _insert_session_with_jsonl(
+        mock_db, sid, project, f"projects/{encoded_slug}/{sid}.jsonl", 1700000000.0,
+    )
+    _insert_source(mock_db, sid, project, "jsonl", str(jsonl_abs))
+    mock_db.commit()
+    hits = list(search(mock_db, "AND", claude_dir=claude_dir))
+    assert len(hits) == 1
+    assert "AND" in hits[0].matched_text

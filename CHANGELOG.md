@@ -9,6 +9,23 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.5.0] -- 2026-06-21 (alpha)
+
+**Multi-term boolean `csb search` (#49) + a manual PyPI-publish trigger.** You can now search for several terms at once and find the sessions that contain them all, in any order, even across different messages. 952 tests pass (was 949 at v0.4.7; +3).
+
+### Added
+- **Multiple search terms with `--match {all,any}`.** `csb search "f-mv" "f-cp"` finds sessions containing **both** terms (default `all` = AND); `--match any` is OR. The boolean is evaluated at the **session level** — a session qualifies when its transcript contains the terms anywhere, in any order, in the same or different messages — which a single regex (`.*?f-mv.*?f-cp.*?`) can't express because it imposes an order. Each term is matched independently and combined at the csb layer, so it works identically across FTS5, `.convo`, `.sesslog`, and JSONL (and composes with the v0.4.7 zero-match fallback to the authoritative transcript). A single term is unchanged. Operators live in `--match`, never in the term stream, so `csb search "AND"` searches the literal word. (CLI: `query` is now `nargs="+"`; engine: `search()` gains `extra_terms` + `match_mode`, a per-source `_fts5_union_events` candidate gather, and a session-level combiner.)
+- **`workflow_dispatch` on the PyPI publish workflow** (`.github/workflows/release.yml`) — a manual "Run workflow" trigger with an optional `ref` input, so a version can be published on demand (backfill a skipped version, retry, or ship a tag) without needing a GitHub Release. `skip-existing` keeps re-runs idempotent.
+
+### Tests
+- 3 new multi-term tests: cross-message AND + unordered + AND-with-absent-term + OR (`any`); single-term-unchanged; operator word (`"AND"`) treated as a literal term.
+
+### Deferred (with reopen triggers)
+- Multi-term with `-d/-D` directory-scope (a different, strength-ranked path) is rejected with a clear error for now. Infix operators (`"a" AND "b"`), XOR (`--match one`), and exclusion (`--without`) are architected for but deferred — see the design doc.
+
+### Design
+- `2026-06-21__19-03-00__dev-workflow-process__multi-term-boolean-search.md` — syntax/matching-unit/combiner analysis + acceptance checks + decision ledger.
+
 ## [0.4.7] -- 2026-06-21 (alpha)
 
 **`csb search` correctness: two bugs that produced silent false negatives (Refs #3).** A user searching `csb search "f-mv"` could not find the session that *created* the `f-mv` tool — even though the term appears 185× in its transcript and `csb scan` lists the session. Root cause was a pair of bugs, both confirmed and red-green verified. 949 tests pass (was 947 at v0.4.6; +2 net, plus 2 contract-correcting updates).
@@ -842,7 +859,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...HEAD
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0
