@@ -396,6 +396,19 @@ def test_escape_fts_query_passes_through_explicit_operators():
     assert "AND" in out  # not mangled
 
 
+def test_escape_fts_query_hyphen_becomes_separator_not_joined():
+    """Regression (Bug A): intra-token punctuation is a TOKEN SEPARATOR, not
+    deleted. 'f-mv' must become the adjacency phrase '"f mv"' (matches the
+    index's f,mv adjacent), NOT '"fmv"' (joined across the tokenizer boundary,
+    which matches NOTHING -- the bug that hid every hyphenated term)."""
+    assert escape_fts_query("f-mv") == '"f mv"'
+    assert escape_fts_query("f-mv") != '"fmv"'
+    assert escape_fts_query("claude-code") == '"claude code"'
+    assert escape_fts_query("oauth-callback") == '"oauth callback"'
+    # Multi-word input is unchanged: still two AND'd phrase terms.
+    assert escape_fts_query("oauth callback") == '"oauth" "callback"'
+
+
 # ── fts5_available ──────────────────────────────────────────────────
 
 

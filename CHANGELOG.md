@@ -9,6 +9,17 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.4.7] -- 2026-06-21 (alpha)
+
+**`csb search` correctness: two bugs that produced silent false negatives (Refs #3).** A user searching `csb search "f-mv"` could not find the session that *created* the `f-mv` tool — even though the term appears 185× in its transcript and `csb scan` lists the session. Root cause was a pair of bugs, both confirmed and red-green verified. 949 tests pass (was 947 at v0.4.6; +2 net, plus 2 contract-correcting updates).
+
+### Fixed
+- **Hyphenated/punctuated query terms matched nothing via FTS5.** `escape_fts_query` deleted intra-token punctuation and *joined* the remainder (`f-mv` → `"fmv"`), producing a token the index never holds (it stores `f` and `mv` separately) — so FTS5 returned zero. Punctuation is now treated as a **token separator**, emitting the adjacency phrase (`f-mv` → `"f mv"`, `claude-code` → `"claude code"`). Affects every hyphenated/punctuated term. Multi-word queries are unchanged. (`fts5_db.py`)
+- **A deficient FTS5 result silently shadowed the authoritative transcript.** The auto dispatcher picked the first available+fresh source per session and trusted a zero result with no fallback — so when FTS5 was fresh but came up empty (from the escaping bug, staleness, tokenization, or lossy distilled content), `convo`/`sesslog`/`jsonl` (which held the term) were never consulted. **Auto-mode now falls through the preference chain to the authoritative JSONL when the chosen source yields no hit** (a *behavior change*: a previously-shadowed term is now found). An explicit `--source X` keeps the no-fallback contract — the user pinned that channel. (`search.py`)
+
+### Design
+- `2026-06-21__17-11-48__dev-workflow-process__csb-search-fts5-escaping-and-no-fallback.md` — the analysis, both bugs' ground-truth evidence, and the chosen fix with acceptance checks. Same "fresh ≠ complete/correct" principle as the rebuild-safety work: a derived index is an accelerator, not an oracle.
+
 ## [0.4.6] -- 2026-06-14 (alpha)
 
 **`--` passthrough: csb as a transparent wrapper (#47).** The commands that launch a subtool now forward everything after a standalone `--` straight to that tool, so the resolve-and-cd convenience extends to any flag the wrapped tool accepts. 947 tests pass (+12 new); the isolation guarantee is red-green verified. Closes #47.
@@ -831,7 +842,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...HEAD
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0
