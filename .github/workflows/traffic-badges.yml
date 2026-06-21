@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Fetch stats and update gist
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           GIST_ID: ${{ vars.TRAFFIC_GIST_ID }}
           ARCHIVE_GIST_ID: ${{ vars.TRAFFIC_ARCHIVE_GIST_ID }}
