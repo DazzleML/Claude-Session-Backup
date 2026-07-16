@@ -572,19 +572,23 @@ def build_parser():
         help="Display compact UUID form (<head>-...-<tail>) in session headers. "
              "Default is the full UUID so users can paste into 'claude --resume <uuid>'.",
     )
-    # Directory-scope mutex (v0.3.5). Names mirror `csb scan`'s -d / -D:
+    # Directory-scope mutex (v0.3.5; source-agnostic since v0.5.1). Names
+    # mirror `csb scan`'s -d / -D:
     #   -d <path>  -- folder + descendants (recursive)
     #   -D <path>  -- folder only (no descendants)
-    # Requires FTS5; rejects --source jsonl|convo|sesslog. See cmd_search.
+    # Works with any --source: default/auto/convo/sesslog/jsonl rank by
+    # folder_usage (cwd activity); an explicit --source fts5 ranks by file-op
+    # strength instead. See cmd_search.
     p_search_dir_scope = p_search.add_mutually_exclusive_group()
     p_search_dir_scope.add_argument(
         "-d", "--directories-below", metavar="PATH", default=None,
-        help="Rank sessions by how heavily each worked on files under "
-             "PATH (active edits weigh most; reads middle; Grep probes "
-             "lightest), then narrow to ones whose transcripts match the "
-             "query. Recurses into subdirectories -- answers 'what's "
-             "been done in this folder, and who said what about it?'. "
-             "Requires `csb update build-fts5` for affected projects.",
+        help="Directory-scope: rank sessions by how much each was active "
+             "under PATH, then narrow to ones whose transcripts match the "
+             "query. Recurses into subdirectories. Source-agnostic -- finds "
+             "every session that touched the folder; add `--source fts5` to "
+             "rank by file-op strength instead (active edits weigh most). "
+             "Answers 'what's been done in this folder, and who said what "
+             "about it?'.",
     )
     p_search_dir_scope.add_argument(
         "-D", "--directory-only", metavar="PATH", default=None,
@@ -595,10 +599,11 @@ def build_parser():
     p_search.add_argument(
         "--min-strength", type=int, choices=[1, 2, 3], default=1,
         metavar="N",
-        help="Filter -d/-D file-ops by minimum strength. 1 (default) "
-             "includes everything; 2 skips Grep/Glob probes; 3 keeps "
-             "only active-modification ops (edited/wrote/notebook_edit). "
-             "No effect outside -d/-D mode.",
+        help="Filter -d/-D file-ops by minimum strength. Applies ONLY to "
+             "--source fts5 (the file-op strength ranking); ignored (with a "
+             "note) for other sources and outside -d/-D. 1 (default) includes "
+             "everything; 2 skips Grep/Glob probes; 3 keeps only "
+             "active-modification ops (edited/wrote/notebook_edit).",
     )
 
     # rebuild-index

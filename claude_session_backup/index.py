@@ -808,6 +808,104 @@ def find_sessions_by_directory(
     return results
 
 
+def find_sessions_by_directory_ranked(
+    conn: sqlite3.Connection,
+    exact_value: str | None,
+    like_match: str | None,
+    like_exclude: str | None,
+    *,
+    deleted_filter: str = "active",
+    limit: int = 10_000,
+    include_folders: bool = False,
+) -> list[dict]:
+    """Rank sessions by summed ``folder_usage.usage_count`` under a scope.
+
+    The source-agnostic, folder_usage counterpart to
+    :func:`find_path_filtered_sessions` (which ranks by FTS5 file-op
+    strength). Used by ``csb search -d/-D`` for every ``--source`` except an
+    explicit ``fts5``: enumerate sessions whose ``folder_usage`` paths fall
+    under the scope, ranked by how heavily the session was active there
+    (``SUM(usage_count)`` DESC; ties break to the session whose START folder
+    is in scope, then most-recently-active). Because ``start_folder`` is
+    itself recorded as a ``folder_usage`` row (``is_start_folder = 1``), a
+    session that merely originated in the folder is covered too.
+
+    Match criteria mirror :func:`find_sessions_by_directory` -- the caller
+    pre-builds them (typically via ``_resolve_directory_pattern``) and
+    pre-escapes LIKE patterns with :func:`escape_like_value`:
+
+      - ``exact_value``: path-equality match (or None).
+      - ``like_match``: SQL LIKE pattern for descendants (or None).
+      - ``like_exclude``: SQL NOT LIKE pattern (``-D`` folder-only) (or None).
+
+    Returns session dicts (all ``sessions`` columns) plus the ranking fields
+    ``scope_usage`` (summed usage_count under the scope), ``scope_folder_count``
+    (how many of the session's folders matched), and ``scope_is_start``
+    (1 when a matched folder is the session's start folder). A ``folders``
+    list is attached only when ``include_folders=True`` -- off by default
+    because it costs one extra query per enumerated session and the search
+    dispatcher fetches folders itself only when ``--full-info 2`` asks.
+    A large default ``limit`` means "rank them all"; the search dispatcher
+    caps by hit count downstream.
+
+    Raises:
+        ValueError: if both ``exact_value`` and ``like_match`` are None.
+    """
+    if exact_value is None and like_match is None:
+        raise ValueError(
+            "find_sessions_by_directory_ranked requires at least one of "
+            "exact_value or like_match"
+        )
+
+    parts: list[str] = []
+    params: list = []
+    if exact_value is not None:
+        parts.append("fu.folder_path = ? COLLATE NOCASE")
+        params.append(exact_value)
+    if like_match is not None:
+        if like_exclude is not None:
+            parts.append(
+                "(fu.folder_path LIKE ? ESCAPE '|' COLLATE NOCASE "
+                "AND fu.folder_path NOT LIKE ? ESCAPE '|' COLLATE NOCASE)"
+            )
+            params.extend([like_match, like_exclude])
+        else:
+            parts.append("fu.folder_path LIKE ? ESCAPE '|' COLLATE NOCASE")
+            params.append(like_match)
+    folder_clause = "(" + " OR ".join(parts) + ")"
+    del_clause = _deleted_filter_clause(deleted_filter)
+
+    query = f"""
+        SELECT s.*,
+               SUM(fu.usage_count) AS scope_usage,
+               COUNT(*) AS scope_folder_count,
+               MAX(fu.is_start_folder) AS scope_is_start
+        FROM sessions s
+        JOIN folder_usage fu ON fu.session_id = s.session_id
+        WHERE {del_clause}
+          AND {folder_clause}
+        GROUP BY s.session_id
+        ORDER BY scope_usage DESC, scope_is_start DESC, s.last_active_at DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+
+    results = []
+    for row in rows:
+        session = dict(row)
+        if include_folders:
+            folders = conn.execute(
+                "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+                "WHERE session_id = ? ORDER BY usage_count DESC",
+                (session["session_id"],),
+            ).fetchall()
+            session["folders"] = [dict(f) for f in folders]
+        results.append(session)
+
+    return results
+
+
 def find_sessions_by_folder_usage(conn: sqlite3.Connection, path_prefix: str,
                                    limit: int = 50) -> list[dict]:
     """

@@ -9,6 +9,34 @@ Status: **alpha** (as of v0.3.17). The core -- backup, deletion detection, FTS5 
 
 ## [Unreleased]
 
+## [0.5.1] -- 2026-07-15 (alpha)
+
+**Multi-term + source-agnostic `csb search -d/-D` (completes #49).** The two things that didn't compose in v0.5.0 now do: you can search **multiple terms** with directory-scope, and directory-scope works with **any `--source`** — not just FTS5. `csb search --match all "SC:N" "SI:N" "SA:N" -d .` (which errored before) works. This is a patch, not a feature: users expected search to already do this. 969 tests pass (was 952 at v0.5.0; +17).
+
+### Fixed
+- **Multiple terms with `-d/-D` no longer error.** `csb search "a" "b" "c" -d . --match {all,any}` used to hard-fail with "multiple search terms are not supported with -d/-D directory-scope yet." Both directory-scope paths now run every term through the same session-level boolean combiner as plain multi-term search (a shared `_term_combiner`), yielding any-term excerpts. Single-term `-d/-D` is byte-for-byte unchanged.
+
+### Changed
+- **`-d/-D` is now source-agnostic — the `--source` you pick supplies the folder signal** (was: FTS5-only, rejected `--source jsonl|convo|sesslog`). Two enumerators, chosen by source:
+  - **`--source fts5` (explicit)** keeps the precise file-op `SUM(strength)` ranking over the per-project FTS5 `file_operations` table (`--min-strength` applies). Only FTS5-indexed sessions rank here. Unchanged from v0.5.0.
+  - **default / `auto` / `convo` / `sesslog` / `jsonl`** ranks sessions by `folder_usage` (summed cwd-activity `usage_count` under the path — the same signal `csb scan -d` uses), then searches each session in its resolved source. This finds **every** session that touched the folder, not just the FTS5-indexed ones.
+- **Behavior change — the default `csb search <term> -d .` now uses the folder_usage path**, not FTS5 strength ranking. It surfaces *more* sessions (any that were active in the folder, regardless of index freshness or channel) and orders them by folder-usage instead of file-op strength. To get the old precise file-op ranking, pass `--source fts5`. (The default changed deliberately: a user's terms often live in `.convo`/`.sesslog` content the FTS5-only default never reached.)
+- **`--min-strength` degrades to a note, not a failure, under a non-FTS5 source.** It only ranks the FTS5 `file_operations` table, so with any other source it prints `Note: --min-strength applies only to --source fts5 ... ignored` and proceeds (was: silently pinned to FTS5). No effect at its default (1).
+
+### Fixed (post-review)
+- **Uppercase `--session` prefixes matched everywhere except the folder_usage path** (its Python `startswith` was case-sensitive while every SQL path folds ASCII case via `LIKE`). Now lowercased on both sides for cross-path consistency — session IDs are hex identifiers, so case carries no meaning.
+- **Folder-usage ties now break to the session whose START folder is in scope** (then most-recently-active), matching the design decision; previously last-active alone broke ties, so a drive-by visitor could outrank the session that originated in the folder.
+- **Killed an N+1 query in the folder_usage enumerator**: it fetched every enumerated session's full folder list up front even though search only needs folders at `--full-info 2` (which fetches its own). Now opt-in via `include_folders=True`; a broad scope like `-d C:\code` no longer pays thousands of unused sub-queries.
+
+### Tests
+- 17 new: 7 source-agnostic dir-scope engine tests (finds a non-FTS5 `.convo` session under the folder; `--match all`/`any`; `usage_count` ordering + start-folder tiebreak; `-D` folder-only vs `-d` descendants; `--session-id` narrowing incl. uppercase prefix) + 2 FTS5 dir-scope multi-term tests (`--match all`/`any` qualification + any-term excerpts; regex terms) + 1 enumerator folders-opt-in contract + 7 `cmd_search` wiring tests (multi-term + `-d` returns 0 not 2; `-d` accepts `--source jsonl`; explicit `fts5` keeps the strength path; `-D` sets the descendant-exclude; the `--min-strength` note fires only under non-FTS5 + raised strength). The 9 existing FTS5 dir-scope tests now pass `--source fts5` explicitly (they validate the strength path, now one of two modes). All red-green verified against the v0.5.0 baseline.
+
+### Refactored
+- The multi-term per-session body (source pick → qualify → any-term excerpts) is extracted to a shared `_iter_multiterm_hits`, consumed by both the plain path (SQL `sort_key` enumeration) and the folder_usage dir-scope path (folder-ranked enumeration). New `index.find_sessions_by_directory_ranked` is the `folder_usage` counterpart to `find_path_filtered_sessions` (FTS5 strength).
+
+### Design
+- `2026-07-15__19-07-23__dev-workflow-process__multiterm-search-with-directory-scope.md` (DWP #1 — FTS5-only composition) and `2026-07-15__19-30-41__dev-workflow-process__source-agnostic-directory-scope-search.md` (DWP #2 — the any-source redesign that supersedes it: decouple directory *scope* from term-search *source*).
+
 ## [0.5.0] -- 2026-06-21 (alpha)
 
 **Multi-term boolean `csb search` (#49) + a manual PyPI-publish trigger.** You can now search for several terms at once and find the sessions that contain them all, in any order, even across different messages. 952 tests pass (was 949 at v0.4.7; +3).
@@ -859,7 +887,14 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0
+[0.4.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7
+[0.4.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.5...v0.4.6
+[0.4.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.4...v0.4.5
+[0.4.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0

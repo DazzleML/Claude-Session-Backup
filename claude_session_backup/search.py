@@ -35,7 +35,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Optional
 
 from . import fts5_db, fts_paths
 from .transcript_walker import (
@@ -818,9 +818,28 @@ def _lookup_session_row(
     return conn.execute(sql, params).fetchone()
 
 
+def _term_combiner(match_mode: str, n_terms: int) -> Callable[[set], bool]:
+    """Session-level qualifier over the SET of present-term indices.
+
+    The boolean combiner qualifies a SESSION (not a message): a session
+    passes when the set of its present-term indices satisfies ``match_mode``
+    -- ``"any"`` (OR, at least one term somewhere in the session) or ``"all"``
+    (AND, every term somewhere in the session). Unordered and cross-message
+    by construction. Single term (``n_terms == 1``) trivially passes under
+    either mode once that term is present.
+
+    Shared by all three search paths (plain multi-term, FTS5 dir-scope,
+    folder_usage dir-scope) so the AND/OR semantics stay in one place.
+    """
+    if match_mode == "any":
+        return lambda present: len(present) >= 1
+    return lambda present: len(present) == n_terms  # "all" (default) -- AND
+
+
 def _search_dir_scope(
     conn: sqlite3.Connection,
-    pattern: str,
+    terms: list[str],
+    match_mode: str,
     *,
     abs_path: str,
     include_descendants: bool,
@@ -836,24 +855,32 @@ def _search_dir_scope(
     fetch_folders: bool,
     claude_dir: Path,
 ) -> Iterator[Hit]:
-    """Directory-scope dispatch: rank sessions by file-op strength under
-    ``abs_path`` and yield hits in that order.
+    """FTS5 directory-scope dispatch: rank sessions by file-op strength
+    under ``abs_path`` and yield hits in that order.
 
-    Walks every per-project FTS5 DB in ``<claude_dir>/csb-fts/``, runs
-    :func:`find_path_filtered_sessions` against each, merges the results,
-    and sorts globally by ``sum_strength`` DESC. For each ranked session
-    we look up the sessions row via :func:`_lookup_session_row`, run
-    :func:`query_fts5_for_session` for the user's pattern, and yield
-    :class:`Hit` with ``strength_sum`` / ``file_op_count`` populated so
-    renderers can display the ranking signal.
+    Used only for an EXPLICIT ``--source fts5`` -- the file-op strength
+    ranking lives in the per-project FTS5 ``file_operations`` table, which
+    has no analog for other sources (they route to the folder_usage path
+    instead). Walks every per-project FTS5 DB in ``<claude_dir>/csb-fts/``,
+    runs :func:`find_path_filtered_sessions` against each, merges the
+    results, and sorts globally by ``sum_strength`` DESC. For each ranked
+    session we look up the sessions row via :func:`_lookup_session_row`,
+    union FTS5 candidates across ALL ``terms`` via :func:`_fts5_union_events`,
+    qualify the session with the ``match_mode`` combiner, and yield
+    :class:`Hit` (any-term excerpts) with ``strength_sum`` / ``file_op_count``
+    populated so renderers can display the ranking signal.
 
     Sessions whose project hasn't been built into an FTS5 DB are skipped
     silently. Sessions filtered out (deleted bits, ``--session-id``
-    prefix) likewise drop quietly. Empty pattern matches every event in
-    the ranked sessions (mirrors the rest of search()'s "empty = match
-    all" semantics).
+    prefix) likewise drop quietly. Empty pattern (single empty term)
+    matches every event in the ranked sessions (mirrors the rest of
+    search()'s "empty = match all" semantics). Single-term calls are a
+    byte-identical fast path (``_fts5_union_events`` collapses to
+    ``query_fts5_for_session`` and the combiner trivially passes).
     """
-    matcher = _build_matcher(pattern, regex, case_sensitive)
+    matchers = [_build_matcher(t, regex, case_sensitive) for t in terms]
+    n_terms = len(terms)
+    qualifies = _term_combiner(match_mode, n_terms)
     include_globs, exclude_globs = _build_directory_globs(
         abs_path, include_descendants,
     )
@@ -900,10 +927,26 @@ def _search_dir_scope(
             source_rows, session_row, claude_dir,
         )
 
-        events = list(query_fts5_for_session(
-            fts_db_path, session_id, pattern, regex=regex,
+        # Union FTS5 candidates across ALL terms (deduped); MATCH is
+        # per-term narrowing, the Python matchers below decide presence.
+        events = list(_fts5_union_events(
+            fts_db_path, session_id, terms, regex,
         ))
         if not events:
+            continue
+
+        # Which terms are present in this session's FTS5 content? Qualify
+        # the session against the combiner (all/any); else skip. Under
+        # -d/-D --source fts5 there is no jsonl fallback, so "all terms"
+        # means "all terms in the session's FTS5-indexed content".
+        present: set = set()
+        for ev in events:
+            for i, m in enumerate(matchers):
+                if i not in present and m(ev.text):
+                    present.add(i)
+            if len(present) == n_terms:
+                break
+        if not qualifies(present):
             continue
 
         folders_for_session: list[dict] = []
@@ -917,7 +960,9 @@ def _search_dir_scope(
             folders_for_session = [dict(r) for r in folder_rows]
 
         for idx, ev in enumerate(events):
-            if not matcher(ev.text):
+            # Excerpt mode yields events matching ANY term (so an AND
+            # search still shows where each term landed).
+            if not any(m(ev.text) for m in matchers):
                 continue
             ctx_above = events[max(0, idx - above):idx] if above > 0 else []
             ctx_below = events[idx + 1:idx + 1 + below] if below > 0 else []
@@ -942,6 +987,215 @@ def _search_dir_scope(
                 context_below=ctx_below,
                 strength_sum=sum_strength,
                 file_op_count=file_op_count,
+                transcript_path=transcript_path,
+            )
+            hits_yielded += 1
+            if hits_yielded >= limit:
+                break
+
+
+def _dir_scope_folderusage_rows(
+    conn: sqlite3.Connection,
+    dir_scope: dict,
+    prefixes: list[str],
+    *,
+    include_deleted: bool,
+    only_deleted: bool,
+) -> list[dict]:
+    """Enumerate sessions under a ``-d``/``-D`` scope, source-agnostically.
+
+    The folder_usage counterpart to :func:`_search_dir_scope`'s FTS5
+    ``file_operations`` ranking. Used for every ``--source`` except an
+    explicit ``fts5`` (which keeps the file-op strength path). Ranks
+    sessions by ``SUM(folder_usage.usage_count)`` under the scope (DESC),
+    so it finds EVERY session that was active in the folder -- not just
+    the FTS5-indexed ones. ``--session-id`` prefixes filter the result.
+
+    ``dir_scope`` carries the SQL match criteria (``exact_value`` /
+    ``like_match`` / ``like_exclude``) that :func:`commands._resolve_directory_pattern`
+    built from the user's path, so ``-d`` (descendants) vs ``-D`` (folder
+    only) is honored identically to ``csb scan``.
+    """
+    from .index import find_sessions_by_directory_ranked
+
+    if only_deleted:
+        deleted_filter = "deleted"
+    elif include_deleted:
+        deleted_filter = "all"
+    else:
+        deleted_filter = "active"
+
+    rows = find_sessions_by_directory_ranked(
+        conn,
+        dir_scope.get("exact_value"),
+        dir_scope.get("like_match"),
+        dir_scope.get("like_exclude"),
+        deleted_filter=deleted_filter,
+    )
+    if prefixes:
+        # Case-insensitive to match the SQL dispatch paths (session_id
+        # LIKE 'p%' folds ASCII case) -- an uppercase --session prefix
+        # must behave identically on every path.
+        lowered = [p.lower() for p in prefixes]
+        rows = [
+            r for r in rows
+            if any(r["session_id"].lower().startswith(p) for p in lowered)
+        ]
+    return rows
+
+
+def _iter_multiterm_hits(
+    conn: sqlite3.Connection,
+    session_rows,
+    *,
+    terms: list[str],
+    matchers: list,
+    n_terms: int,
+    qualifies: Callable[[set], bool],
+    preference: tuple[str, ...],
+    regex: bool,
+    above: int,
+    below: int,
+    fetch_folders: bool,
+    claude_dir: Optional[Path],
+    limit: int,
+) -> Iterator[Hit]:
+    """Per-session multi-term body shared by the plain and dir-scope paths.
+
+    Iterates ``session_rows`` (any iterable of sessions rows -- a live
+    ``ORDER BY sort_key`` cursor for plain search, or a folder_usage-ranked
+    list for source-agnostic dir-scope). For each session it walks the
+    ``preference`` chain, unions/scans candidates in the picked source,
+    qualifies the session against ``qualifies`` (the ``match_mode`` combiner),
+    and yields :class:`Hit` for events matching ANY term. Stops after
+    ``limit`` hits.
+
+    The only thing that differs between the two callers is how sessions are
+    ENUMERATED and ORDERED; everything downstream (source pick, qualify,
+    excerpt) is identical -- so it lives here, once.
+    """
+    hits_yielded = 0
+    for session_row in session_rows:
+        if hits_yielded >= limit:
+            break
+
+        # Fetch all session_sources rows for this session in one query.
+        # The picker walks the preference list (FTS5 -> file sources)
+        # and decides which one is available; file sources need a row
+        # here, FTS5 looks at the per-project DB instead.
+        source_rows = conn.execute(
+            "SELECT source_type, source_path FROM session_sources "
+            "WHERE session_id = ?",
+            (session_row["session_id"],),
+        ).fetchall()
+
+        # v0.3.5: resolve the best file-based transcript for THIS session
+        # once, regardless of which source the dispatcher picked. Used to
+        # populate Hit.transcript_path so --files-only / JSON consumers
+        # always see a navigable file (not a per-project FTS5 DB path).
+        transcript_path = _best_transcript_path(
+            source_rows, session_row, claude_dir,
+        )
+
+        # Walk the preference chain for THIS session. The dispatcher picks
+        # the most-preferred available source; in AUTO mode, if it yields no
+        # matcher-passing hit we fall through to the NEXT available source
+        # (ending at the authoritative jsonl), so a deficient FTS5 / convo
+        # result (broken escaping, staleness, tokenization, lossy distilled
+        # content) can never silently shadow content the source of truth
+        # holds. An explicit `--source X` is a single-element preference, so
+        # the loop tries only that one -- no fallback (the user chose it).
+        tried: set[str] = set()
+        events: list = []
+        picked_source_type = picked_source_path = None
+        while True:
+            picked_type, picked_handle = _pick_source_for_session(
+                session_row, source_rows, preference, claude_dir, exclude=tried,
+            )
+            if picked_type is None:
+                break
+            tried.add(picked_type)
+
+            if picked_type == "fts5":
+                # Union FTS5 candidates across ALL terms (deduped); MATCH is
+                # per-term narrowing, the Python matchers below decide presence.
+                cand = _fts5_union_events(
+                    picked_handle,  # Path to per-project FTS5 DB
+                    session_row["session_id"],
+                    terms,
+                    regex,
+                )
+                st, sp = "fts5", str(picked_handle)
+            else:
+                # File-based source: parse the whole transcript; matchers filter.
+                cand = list(parse_source(
+                    picked_handle["source_type"],
+                    picked_handle["source_path"],
+                    session_row["session_id"],
+                ))
+                st, sp = picked_handle["source_type"], picked_handle["source_path"]
+
+            # Which terms are present in THIS source? Accept iff the present-set
+            # satisfies the combiner; else fall through (auto) / stop (explicit).
+            # The chain ends at the authoritative jsonl, so AND across
+            # cross-source / cross-message terms is correct -- the complete
+            # transcript holds every term.
+            present: set = set()
+            for ev in cand:
+                for i, m in enumerate(matchers):
+                    if i not in present and m(ev.text):
+                        present.add(i)
+                if len(present) == n_terms:
+                    break
+            if qualifies(present):
+                events, picked_source_type, picked_source_path = cand, st, sp
+                break
+
+        if not events:
+            continue
+
+        # Level-2 --full-info wants the full folder list. One query per
+        # matching session; shared across this session's hits via the
+        # `folders_for_session` list reference below.
+        folders_for_session: list[dict] = []
+        if fetch_folders:
+            folder_rows = conn.execute(
+                "SELECT folder_path, usage_count, is_start_folder "
+                "FROM folder_usage WHERE session_id = ? "
+                "ORDER BY usage_count DESC, is_start_folder DESC",
+                (session_row["session_id"],),
+            ).fetchall()
+            folders_for_session = [dict(r) for r in folder_rows]
+
+        for idx, ev in enumerate(events):
+            # Excerpt mode yields events matching ANY term (so an AND search
+            # shows where each term landed). Session-level qualification already
+            # passed above.
+            if not any(m(ev.text) for m in matchers):
+                continue
+
+            ctx_above = events[max(0, idx - above):idx] if above > 0 else []
+            ctx_below = events[idx + 1:idx + 1 + below] if below > 0 else []
+
+            yield Hit(
+                session_id=session_row["session_id"],
+                session_name=session_row["session_name"],
+                project=session_row["project"],
+                last_active_at=session_row["last_active_at"],
+                source_type=picked_source_type,
+                source_path=picked_source_path,
+                line_num=ev.line_num,
+                role=ev.role,
+                timestamp=ev.timestamp,
+                matched_text=ev.text,
+                start_folder=session_row["start_folder"],
+                started_at=session_row["started_at"],
+                jsonl_mtime=session_row["jsonl_mtime"] or 0.0,
+                folders=folders_for_session,
+                message_count=session_row["message_count"] or 0,
+                claude_version=session_row["claude_version"],
+                context_above=ctx_above,
+                context_below=ctx_below,
                 transcript_path=transcript_path,
             )
             hits_yielded += 1
@@ -1028,46 +1282,69 @@ def search(
     elif session_filter:
         prefixes = [p for p in session_filter if p]
 
-    # v0.3.5: directory-scope mode (-d / -D). Hands off to a separate
-    # dispatcher that ranks sessions by file-op strength under the
-    # given path -- the rest of search()'s sort-key + preference-walk
-    # machinery doesn't apply because the ordering is determined by
-    # `SUM(strength)` across each session's file_operations rows.
+    # v0.3.5 / v0.5.1: directory-scope mode (-d / -D). Two enumerators,
+    # chosen by the resolved source -- the source you pick supplies the
+    # folder signal:
+    #   --source fts5 (explicit) -> _search_dir_scope: rank by file-op
+    #       SUM(strength) over the per-project FTS5 file_operations table
+    #       (precise "files-worked-here"; --min-strength applies).
+    #   default / auto / convo / sesslog / jsonl -> folder_usage: rank by
+    #       SUM(usage_count) under the scope, source-agnostic, so EVERY
+    #       session that touched the folder is found (not just FTS5-indexed
+    #       ones); the term search runs in each session's resolved source.
+    # Either way the sort-key + SQL enumeration below don't apply -- the
+    # ordering comes from the folder ranking.
     if dir_scope is not None:
         if claude_dir is None:
             return
-        yield from _search_dir_scope(
-            conn, pattern,
-            abs_path=dir_scope["abs_path"],
-            include_descendants=dir_scope["include_descendants"],
-            min_strength=dir_scope.get("min_strength", 1),
-            regex=regex,
-            case_sensitive=case_sensitive,
-            above=above,
-            below=below,
-            session_filter_prefixes=prefixes,
-            include_deleted=include_deleted,
-            only_deleted=only_deleted,
-            limit=limit,
-            fetch_folders=fetch_folders,
-            claude_dir=claude_dir,
+        terms = [pattern, *extra_terms]
+        if source_override == "fts5":
+            yield from _search_dir_scope(
+                conn, terms, match_mode,
+                abs_path=dir_scope["abs_path"],
+                include_descendants=dir_scope["include_descendants"],
+                min_strength=dir_scope.get("min_strength", 1),
+                regex=regex,
+                case_sensitive=case_sensitive,
+                above=above,
+                below=below,
+                session_filter_prefixes=prefixes,
+                include_deleted=include_deleted,
+                only_deleted=only_deleted,
+                limit=limit,
+                fetch_folders=fetch_folders,
+                claude_dir=claude_dir,
+            )
+            return
+        # Source-agnostic dir-scope: folder_usage-ranked session set, then
+        # the shared multi-term body searches each in its resolved source.
+        matchers = [_build_matcher(t, regex, case_sensitive) for t in terms]
+        n_terms = len(terms)
+        qualifies = _term_combiner(match_mode, n_terms)
+        default_pref = effective_default_preference(conn)
+        preference = _resolve_preference(source_override, default_pref)
+        session_rows = _dir_scope_folderusage_rows(
+            conn, dir_scope, prefixes,
+            include_deleted=include_deleted, only_deleted=only_deleted,
+        )
+        yield from _iter_multiterm_hits(
+            conn, session_rows,
+            terms=terms, matchers=matchers, n_terms=n_terms,
+            qualifies=qualifies, preference=preference, regex=regex,
+            above=above, below=below, fetch_folders=fetch_folders,
+            claude_dir=claude_dir, limit=limit,
         )
         return
 
-    # One matcher per term (single-term is the n==1 fast path). The boolean
-    # combiner qualifies a SESSION (not a message): a session passes when the
-    # SET of its present-term indices satisfies match_mode -- "all" (AND, every
-    # term somewhere in the session) or "any" (OR, at least one). Unordered and
-    # cross-message by construction (each term is matched independently).
+    # Plain multi-term search (no dir-scope). One matcher per term
+    # (single-term is the n==1 fast path). The combiner qualifies a SESSION
+    # (not a message): a session passes when the SET of its present-term
+    # indices satisfies match_mode -- "all" (AND) or "any" (OR). Sessions are
+    # enumerated by sort_key; the shared body qualifies + excerpts each.
     terms = [pattern, *extra_terms]
     matchers = [_build_matcher(t, regex, case_sensitive) for t in terms]
     n_terms = len(terms)
-    if match_mode == "any":
-        def _qualifies(present: set) -> bool:
-            return len(present) >= 1
-    else:  # "all" (default) -- AND
-        def _qualifies(present: set) -> bool:
-            return len(present) == n_terms
+    qualifies = _term_combiner(match_mode, n_terms)
     # Auto-mode preference adapts to the user's actual vault: drops
     # convo / sesslog when no claude-session-logger output exists.
     # Explicit --source X overrides this entirely.
@@ -1102,130 +1379,10 @@ def search(
         f"ORDER BY {SORT_SQL[sort_key]}"
     )
 
-    hits_yielded = 0
-    for session_row in conn.execute(sql, params):
-        if hits_yielded >= limit:
-            break
-
-        # Fetch all session_sources rows for this session in one query.
-        # The picker walks the preference list (FTS5 -> file sources)
-        # and decides which one is available; file sources need a row
-        # here, FTS5 looks at the per-project DB instead.
-        source_rows = conn.execute(
-            "SELECT source_type, source_path FROM session_sources "
-            "WHERE session_id = ?",
-            (session_row["session_id"],),
-        ).fetchall()
-
-        # v0.3.5: resolve the best file-based transcript for THIS session
-        # once, regardless of which source the dispatcher picked. Used to
-        # populate Hit.transcript_path so --files-only / JSON consumers
-        # always see a navigable file (not a per-project FTS5 DB path).
-        transcript_path = _best_transcript_path(
-            source_rows, session_row, claude_dir,
-        )
-
-        # Walk the preference chain for THIS session. The dispatcher picks
-        # the most-preferred available source; in AUTO mode, if it yields no
-        # matcher-passing hit we fall through to the NEXT available source
-        # (ending at the authoritative jsonl), so a deficient FTS5 / convo
-        # result (broken escaping, staleness, tokenization, lossy distilled
-        # content) can never silently shadow content the source of truth
-        # holds. An explicit `--source X` is a single-element preference, so
-        # the loop tries only that one -- no fallback (the user chose it).
-        tried: set[str] = set()
-        events: list = []
-        picked_source_type = picked_source_path = None
-        while True:
-            picked_type, picked_handle = _pick_source_for_session(
-                session_row, source_rows, preference, claude_dir, exclude=tried,
-            )
-            if picked_type is None:
-                break
-            tried.add(picked_type)
-
-            if picked_type == "fts5":
-                # Union FTS5 candidates across ALL terms (deduped); MATCH is
-                # per-term narrowing, the Python matchers below decide presence.
-                cand = _fts5_union_events(
-                    picked_handle,  # Path to per-project FTS5 DB
-                    session_row["session_id"],
-                    terms,
-                    regex,
-                )
-                st, sp = "fts5", str(picked_handle)
-            else:
-                # File-based source: parse the whole transcript; matchers filter.
-                cand = list(parse_source(
-                    picked_handle["source_type"],
-                    picked_handle["source_path"],
-                    session_row["session_id"],
-                ))
-                st, sp = picked_handle["source_type"], picked_handle["source_path"]
-
-            # Which terms are present in THIS source? Accept iff the present-set
-            # satisfies the combiner; else fall through (auto) / stop (explicit).
-            # The chain ends at the authoritative jsonl, so AND across
-            # cross-source / cross-message terms is correct -- the complete
-            # transcript holds every term.
-            present: set = set()
-            for ev in cand:
-                for i, m in enumerate(matchers):
-                    if i not in present and m(ev.text):
-                        present.add(i)
-                if len(present) == n_terms:
-                    break
-            if _qualifies(present):
-                events, picked_source_type, picked_source_path = cand, st, sp
-                break
-
-        if not events:
-            continue
-
-        # Level-2 --full-info wants the full folder list. One query per
-        # matching session; shared across this session's hits via the
-        # `folders_for_session` list reference below.
-        folders_for_session: list[dict] = []
-        if fetch_folders:
-            folder_rows = conn.execute(
-                "SELECT folder_path, usage_count, is_start_folder "
-                "FROM folder_usage WHERE session_id = ? "
-                "ORDER BY usage_count DESC, is_start_folder DESC",
-                (session_row["session_id"],),
-            ).fetchall()
-            folders_for_session = [dict(r) for r in folder_rows]
-
-        for idx, ev in enumerate(events):
-            # Excerpt mode yields events matching ANY term (so an AND search
-            # shows where each term landed). Session-level qualification already
-            # passed above.
-            if not any(m(ev.text) for m in matchers):
-                continue
-
-            ctx_above = events[max(0, idx - above):idx] if above > 0 else []
-            ctx_below = events[idx + 1:idx + 1 + below] if below > 0 else []
-
-            yield Hit(
-                session_id=session_row["session_id"],
-                session_name=session_row["session_name"],
-                project=session_row["project"],
-                last_active_at=session_row["last_active_at"],
-                source_type=picked_source_type,
-                source_path=picked_source_path,
-                line_num=ev.line_num,
-                role=ev.role,
-                timestamp=ev.timestamp,
-                matched_text=ev.text,
-                start_folder=session_row["start_folder"],
-                started_at=session_row["started_at"],
-                jsonl_mtime=session_row["jsonl_mtime"] or 0.0,
-                folders=folders_for_session,
-                message_count=session_row["message_count"] or 0,
-                claude_version=session_row["claude_version"],
-                context_above=ctx_above,
-                context_below=ctx_below,
-                transcript_path=transcript_path,
-            )
-            hits_yielded += 1
-            if hits_yielded >= limit:
-                break
+    yield from _iter_multiterm_hits(
+        conn, conn.execute(sql, params),
+        terms=terms, matchers=matchers, n_terms=n_terms,
+        qualifies=qualifies, preference=preference, regex=regex,
+        above=above, below=below, fetch_folders=fetch_folders,
+        claude_dir=claude_dir, limit=limit,
+    )

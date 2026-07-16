@@ -95,6 +95,17 @@ csb search "rate limit" --json | jq -r '.session_id' | sort -u
 
 Per-session source preference is `.convo*` (preferred, USER/AI/AGENT-only) -> `.sesslog*` (filtered to USER/AI/AGENT) -> `<uuid>.jsonl` (authoritative fallback). New sessions logged by [claude-session-logger](https://github.com/DazzleML/claude-session-logger) get the cleanest `.convo*` source; older sessions fall through to JSONL automatically. Hits are sorted by session last-used time, so the most recent matches surface first. Freshness is two-tier (mtime fast-path + content-hash rescue) -- see [maintenance.md](maintenance.md#fts5-freshness-semantics-v0322-36).
 
+### Multiple terms and directory-scope
+
+Pass several terms to find sessions containing them **all** (or **any**), evaluated at the session level -- a session qualifies when its transcript holds the terms anywhere, in any order, across the same or different messages. `--match all` (default) is AND; `--match any` is OR.
+
+```bash
+csb search "oauth" "refresh token" --match all      # sessions mentioning BOTH
+csb search "SC:N" "SI:N" "SA:N" -d . --match all     # ...that were also active in this folder
+```
+
+`-d <path>` / `-D <path>` scope the search to sessions that worked under a folder (`-d` recurses into subdirectories; `-D` is that folder only). Directory-scope is **source-agnostic**: the default finds *every* session that touched the folder (ranked by folder activity) and searches each in its best available source. Add `--source fts5` to rank instead by file-op strength -- active edits weigh most, reads middle, Grep/Glob probes lightest -- over sessions built into the FTS5 index (`--min-strength {1,2,3}` filters those file-ops; it applies only under `--source fts5`).
+
 For metadata search (folder paths, project, session name), use `csb list <filter>` or `csb scan <term>` -- those are the right tools for "find sessions in this folder" rather than "find sessions about this topic."
 
 ## Reading conversations (distill)

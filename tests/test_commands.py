@@ -18,6 +18,7 @@ from claude_session_backup.commands import (
     _maybe_promote_dot_prefix,
     _format_timestamp,
     cmd_resume,
+    cmd_search,
 )
 
 
@@ -654,3 +655,129 @@ def test_status_unbacked_respects_config_limit(mock_claude_dir, tmp_path, capsys
     out = capsys.readouterr().out
     assert "+ 1 more not shown" in out
     assert _CONFTEST_SID[:8] not in out  # nothing listed at limit 0
+
+
+# ── v0.5.1: cmd_search dir-scope wiring (guards removed, source-agnostic) ──
+#
+# These mock the heavy deps (config/DB/search/render) and assert cmd_search's
+# WIRING: multi-term + -d no longer errors, -d accepts any --source, the
+# resolved source_override drives dispatch (no forced fts5 pin), the dir_scope
+# dict carries the folder_usage SQL criteria, and --min-strength degrades to a
+# note (not a failure) under a non-fts5 source.
+
+
+def _make_search_args(**kwargs):
+    """Fake argparse namespace for cmd_search (search()/render() are mocked)."""
+    defaults = dict(
+        query=["needle"], match="all", source="auto",
+        before=0, after=0, context=None, regex=False, case_sensitive=False,
+        directories_below=None, directory_only=None, min_strength=1,
+        session_id=None, only=None, limit=20, full_info=0,
+        sort="last-used", shortid=False, json=False, no_color=True,
+        full_match=False, quiet=True, deleted=None, all=False,
+    )
+    defaults.update(kwargs)
+    return SimpleNamespace(**defaults)
+
+
+@pytest.fixture
+def mock_search_env(monkeypatch, tmp_path):
+    """Patch cmd_search's deps; return the search() mock (empty hits -> rc 0)."""
+    import claude_session_backup.search as search_module
+    search_mock = MagicMock(return_value=[])
+    # cmd_search does `from .search import search as run_search` at call time,
+    # so patching the module attribute is picked up by the inline import.
+    monkeypatch.setattr(search_module, "search", search_mock)
+    monkeypatch.setattr(
+        commands_module, "_get_config",
+        lambda args: {"index_path": str(tmp_path / "i.db"), "claude_dir": tmp_path},
+    )
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+    monkeypatch.setattr(commands_module, "read_cleanup_period", MagicMock(return_value=30))
+    return search_mock
+
+
+def test_cmd_search_multiterm_dir_scope_no_longer_errors(mock_search_env):
+    """The user's bug: multiple terms + -d used to return 2. Now it runs, and
+    search() receives every term plus a source-agnostic dir_scope."""
+    args = _make_search_args(
+        query=["SC:N", "SI:N", "SA:N"], match="all",
+        directories_below=".", source="auto",
+    )
+    rc = cmd_search(args)
+    assert rc == 0  # not 2 (multi-term guard removed)
+    _, kwargs = mock_search_env.call_args
+    assert kwargs["extra_terms"] == ("SI:N", "SA:N")
+    assert kwargs["match_mode"] == "all"
+    ds = kwargs["dir_scope"]
+    assert ds is not None
+    assert ds["exact_value"] is not None      # folder_usage SQL criteria present
+    assert "like_match" in ds and "like_exclude" in ds
+    # Default (auto) is NOT force-pinned to fts5 anymore -> folder_usage path.
+    assert kwargs["source_override"] is None
+
+
+def test_cmd_search_dir_scope_accepts_non_fts5_source(mock_search_env):
+    """`-d` with `--source jsonl` used to return 2 (incompatible). Now allowed;
+    the resolved source flows through untouched."""
+    args = _make_search_args(
+        query=["needle"], directories_below=".", source="jsonl",
+    )
+    rc = cmd_search(args)
+    assert rc == 0
+    _, kwargs = mock_search_env.call_args
+    assert kwargs["source_override"] == "jsonl"
+    assert kwargs["dir_scope"]["exact_value"] is not None
+
+
+def test_cmd_search_dir_scope_explicit_fts5_keeps_source(mock_search_env):
+    """Explicit `--source fts5 -d` still routes to the strength path (dispatch
+    keys on source_override == 'fts5' inside search())."""
+    args = _make_search_args(
+        query=["needle"], directories_below=".", source="fts5",
+    )
+    rc = cmd_search(args)
+    assert rc == 0
+    _, kwargs = mock_search_env.call_args
+    assert kwargs["source_override"] == "fts5"
+
+
+def test_cmd_search_directory_only_sets_exclude(mock_search_env):
+    """`-D` (folder-only) builds a like_exclude so descendants are dropped;
+    `-d` does not."""
+    d_args = _make_search_args(query=["needle"], directory_only=".", source="auto")
+    cmd_search(d_args)
+    _, d_kwargs = mock_search_env.call_args
+    assert d_kwargs["dir_scope"]["include_descendants"] is False
+
+
+def test_cmd_search_min_strength_note_for_non_fts5(mock_search_env, capsys):
+    """`--min-strength` raised under a non-fts5 source prints a note (no fail)."""
+    args = _make_search_args(
+        query=["needle"], directories_below=".", source="auto", min_strength=2,
+    )
+    rc = cmd_search(args)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "--min-strength applies only to --source fts5" in err
+
+
+def test_cmd_search_no_min_strength_note_for_fts5(mock_search_env, capsys):
+    """No note when `--min-strength` is used with `--source fts5` (it applies)."""
+    args = _make_search_args(
+        query=["needle"], directories_below=".", source="fts5", min_strength=2,
+    )
+    cmd_search(args)
+    err = capsys.readouterr().err
+    assert "--min-strength applies only" not in err
+
+
+def test_cmd_search_no_min_strength_note_at_default(mock_search_env, capsys):
+    """Default --min-strength (1) never notes, even under a non-fts5 source."""
+    args = _make_search_args(
+        query=["needle"], directories_below=".", source="auto", min_strength=1,
+    )
+    cmd_search(args)
+    err = capsys.readouterr().err
+    assert "--min-strength applies only" not in err

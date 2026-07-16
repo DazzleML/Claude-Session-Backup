@@ -1529,46 +1529,49 @@ def cmd_search(args) -> int:
 
     source_override = None if args.source == "auto" else args.source
 
-    # v0.3.5: directory-scope (-d / -D) and --min-strength wiring. The
-    # mutex on argparse guarantees at most one of -d/-D is set; we
-    # additionally reject incompatible --source overrides (anything
-    # other than auto or fts5) since dir-scope queries the per-project
-    # FTS5 DBs exclusively -- there's no analog over .convo / .sesslog
-    # / .jsonl yet.
+    # v0.3.5 / v0.5.1: directory-scope (-d / -D) wiring. The argparse mutex
+    # guarantees at most one of -d/-D is set. Directory-scope is now
+    # source-agnostic AND multi-term. The source picks the folder signal:
+    #   --source fts5 (explicit) -> file-op SUM(strength) ranking over the
+    #       per-project FTS5 file_operations table (precise; --min-strength
+    #       applies). Only FTS5-indexed sessions rank here.
+    #   default / auto / convo / sesslog / jsonl -> folder_usage ranking
+    #       (SUM(usage_count) under the path), so EVERY session that touched
+    #       the folder is found and each is searched in its resolved source.
+    # `_resolve_directory_pattern` builds the SQL match criteria the
+    # folder_usage path needs (identical to `csb scan -d/-D`); `abs_path` +
+    # `include_descendants` feed the FTS5 path. We no longer pin the source
+    # to fts5 -- the resolved `source_override` drives the dispatch in
+    # search(), and multiple terms are supported on both paths.
     directories_below = getattr(args, "directories_below", None)
     directory_only = getattr(args, "directory_only", None)
     dir_path = directories_below or directory_only
     dir_scope: dict | None = None
     if dir_path is not None:
-        if args.source not in ("auto", "fts5"):
-            print(
-                f"Error: -d/-D directory-scope is incompatible with "
-                f"--source {args.source}. -d/-D requires FTS5; omit "
-                f"--source (auto resolves to fts5) or pass --source fts5.",
-                file=sys.stderr,
-            )
-            conn.close()
-            return 2
+        include_descendants = directory_only is None  # -D excludes descendants
         abs_path = str(Path(dir_path).resolve())
+        _resolved, exact_value, like_match, like_exclude = (
+            _resolve_directory_pattern(abs_path, include_descendants)
+        )
+        min_strength = getattr(args, "min_strength", 1)
         dir_scope = {
             "abs_path": abs_path,
-            "include_descendants": directory_only is None,  # -D excludes
-            "min_strength": getattr(args, "min_strength", 1),
+            "include_descendants": include_descendants,
+            "min_strength": min_strength,
+            # SQL match criteria for the source-agnostic folder_usage path.
+            "exact_value": exact_value,
+            "like_match": like_match,
+            "like_exclude": like_exclude,
         }
-        # The dispatcher always runs against FTS5 -- pin the source.
-        source_override = "fts5"
-        # Multi-term boolean is not wired through the dir-scope ranker yet
-        # (it ranks by file-op strength, a different path). Reject clearly
-        # rather than silently searching only the first term.
-        if len(args.query) > 1:
+        # --min-strength only ranks the FTS5 file_operations table; it has no
+        # analog for the folder_usage path. Note (don't fail) when the user
+        # raised it under a non-fts5 source -- flags degrade gracefully.
+        if min_strength > 1 and args.source != "fts5":
             print(
-                "Error: multiple search terms are not supported with -d/-D "
-                "directory-scope yet. Search one term with -d/-D, or drop "
-                "-d/-D to combine terms.",
+                "Note: --min-strength applies only to --source fts5 "
+                f"(file-op strength ranking); ignored for --source {args.source}.",
                 file=sys.stderr,
             )
-            conn.close()
-            return 2
 
     # Parse --session-id: comma-separated list of UUID prefixes. Empty
     # entries (e.g. trailing comma) and whitespace are tolerated.

@@ -1416,7 +1416,7 @@ def test_search_dir_scope_orders_sessions_by_strength(mock_db, tmp_path):
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "needle", claude_dir=claude_dir,
+        mock_db, "needle", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1450,7 +1450,7 @@ def test_search_dir_scope_empty_pattern_matches_all_in_ranked(mock_db, tmp_path)
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "", claude_dir=claude_dir,
+        mock_db, "", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1487,7 +1487,7 @@ def test_search_dir_scope_min_strength_filters_low_signal(mock_db, tmp_path):
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "needle", claude_dir=claude_dir,
+        mock_db, "needle", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1512,7 +1512,7 @@ def test_search_dir_scope_skips_session_not_in_main_db(mock_db, tmp_path):
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "x", claude_dir=claude_dir,
+        mock_db, "x", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1529,7 +1529,7 @@ def test_search_dir_scope_no_fts_dir_returns_empty(mock_db, tmp_path):
     claude_dir.mkdir()
     # No csb-fts directory created. dir_scope path should return cleanly.
     hits = list(search(
-        mock_db, "x", claude_dir=claude_dir,
+        mock_db, "x", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1559,7 +1559,7 @@ def test_search_dir_scope_carries_strength_into_hit(mock_db, tmp_path):
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "FIND_ME", claude_dir=claude_dir,
+        mock_db, "FIND_ME", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1757,7 +1757,7 @@ def test_search_dir_scope_hit_populates_transcript_path(mock_db, tmp_path):
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "needle", claude_dir=claude_dir,
+        mock_db, "needle", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1929,7 +1929,7 @@ def test_search_dir_scope_regex_bypasses_match(mock_db, tmp_path):
 
     hits = list(search(
         mock_db, r"FTS\d?|fts5",
-        regex=True, claude_dir=claude_dir,
+        regex=True, source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": True,
@@ -1968,7 +1968,7 @@ def test_search_dir_scope_excludes_descendants_with_folder_only(mock_db, tmp_pat
     mock_db.commit()
 
     hits = list(search(
-        mock_db, "needle", claude_dir=claude_dir,
+        mock_db, "needle", source_override="fts5", claude_dir=claude_dir,
         dir_scope={
             "abs_path": r"C:\code\foo",
             "include_descendants": False,
@@ -1976,6 +1976,329 @@ def test_search_dir_scope_excludes_descendants_with_folder_only(mock_db, tmp_pat
         },
     ))
     assert [h.session_id for h in hits] == ["top-sid"]
+
+
+# ── v0.5.1: source-agnostic dir-scope (folder_usage path) ─────────────
+#
+# When --source is anything other than an explicit `fts5`, -d/-D ranks
+# sessions by folder_usage (cwd activity under the path), source-agnostic,
+# and searches each in its resolved source. This finds EVERY session that
+# touched the folder -- not just FTS5-indexed ones -- and supports multiple
+# terms. Ships as v0.5.1 (restores an expected capability).
+
+
+def _insert_folder_usage(conn, session_id, folder_path, usage_count, is_start=0):
+    conn.execute(
+        "INSERT INTO folder_usage (session_id, folder_path, usage_count, "
+        "is_start_folder) VALUES (?, ?, ?, ?)",
+        (session_id, folder_path, usage_count, is_start),
+    )
+
+
+def _dir_scope_folderusage(abs_path: str, include_descendants: bool) -> dict:
+    """Build the search() dir_scope dict for the source-agnostic path,
+    exactly as cmd_search does (via _resolve_directory_pattern). Separators
+    come from os.sep so folder_path values built the same way match."""
+    from claude_session_backup.commands import _resolve_directory_pattern
+    _resolved, exact_value, like_match, like_exclude = _resolve_directory_pattern(
+        abs_path, include_descendants,
+    )
+    return {
+        "abs_path": abs_path,
+        "include_descendants": include_descendants,
+        "min_strength": 1,
+        "exact_value": exact_value,
+        "like_match": like_match,
+        "like_exclude": like_exclude,
+    }
+
+
+def test_search_dir_scope_folderusage_finds_non_fts5_session(mock_db, tmp_path):
+    """v0.5.1: -d over a NON-FTS5 source. A session with only a .convo
+    channel (no FTS5 index) that was active under the folder is found and
+    searched in convo. The OLD FTS5-only dir-scope returned nothing here."""
+    target = tmp_path / "proj"
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "NEEDLE")])
+    _insert_session(mock_db, "conv-sid", "n", "p")
+    _insert_source(mock_db, "conv-sid", "p", "convo", str(convo))
+    _insert_folder_usage(mock_db, "conv-sid", str(target), 10, is_start=1)
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path,   # default source (auto)
+        dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert [h.session_id for h in hits] == ["conv-sid"]
+    assert hits[0].source_type == "convo"
+
+
+def test_search_dir_scope_folderusage_multiterm_all_and_any(mock_db, tmp_path):
+    """v0.5.1: the exact bug -- multiple terms + -d. --match all keeps only
+    the session holding EVERY term; --match any keeps any with at least one.
+    Both sessions are non-FTS5 (.convo)."""
+    target = tmp_path / "proj"
+    d_both = tmp_path / "both"; d_both.mkdir()
+    d_one = tmp_path / "one"; d_one.mkdir()
+    convo_both = _write_convo(d_both, [
+        ("2026-05-16 10:00:00", "USER", "ALPHA here"),
+        ("2026-05-16 10:00:05", "AI", "and BETA too"),
+    ])
+    convo_one = _write_convo(d_one, [("2026-05-16 10:00:00", "USER", "ALPHA only")])
+    _insert_session(mock_db, "both-sid", "n", "p")
+    _insert_source(mock_db, "both-sid", "p", "convo", str(convo_both))
+    _insert_folder_usage(mock_db, "both-sid", str(target), 10, 1)
+    _insert_session(mock_db, "one-sid", "n", "p")
+    _insert_source(mock_db, "one-sid", "p", "convo", str(convo_one))
+    _insert_folder_usage(mock_db, "one-sid", str(target), 10, 1)
+    mock_db.commit()
+
+    all_hits = list(search(
+        mock_db, "ALPHA", extra_terms=("BETA",), match_mode="all",
+        claude_dir=tmp_path, dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert {h.session_id for h in all_hits} == {"both-sid"}
+
+    any_hits = list(search(
+        mock_db, "ALPHA", extra_terms=("BETA",), match_mode="any",
+        claude_dir=tmp_path, dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert {h.session_id for h in any_hits} == {"both-sid", "one-sid"}
+
+
+def test_search_dir_scope_folderusage_ranks_by_usage_count(mock_db, tmp_path):
+    """v0.5.1: source-agnostic dir-scope orders sessions by summed
+    folder_usage.usage_count under the scope (DESC)."""
+    target = tmp_path / "proj"
+    d_h = tmp_path / "h"; d_h.mkdir()
+    d_l = tmp_path / "l"; d_l.mkdir()
+    ch = _write_convo(d_h, [("2026-05-16 10:00:00", "USER", "NEEDLE heavy")])
+    cl = _write_convo(d_l, [("2026-05-16 10:00:00", "USER", "NEEDLE light")])
+    _insert_session(mock_db, "heavy-sid", "n", "p")
+    _insert_source(mock_db, "heavy-sid", "p", "convo", str(ch))
+    _insert_folder_usage(mock_db, "heavy-sid", str(target), 50, 1)
+    _insert_session(mock_db, "light-sid", "n", "p")
+    _insert_source(mock_db, "light-sid", "p", "convo", str(cl))
+    _insert_folder_usage(mock_db, "light-sid", str(target), 5, 1)
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path,
+        dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert [h.session_id for h in hits] == ["heavy-sid", "light-sid"]
+
+
+def test_search_dir_scope_folderusage_folder_only_excludes_descendants(
+    mock_db, tmp_path,
+):
+    """v0.5.1: -D (folder-only) drops a session whose folder_usage match is
+    in a SUBfolder; -d (descendants) keeps it. Parity with `csb scan -d/-D`."""
+    target = tmp_path / "proj"
+    child = target / "sub"
+    d_e = tmp_path / "e"; d_e.mkdir()
+    d_c = tmp_path / "c"; d_c.mkdir()
+    ce = _write_convo(d_e, [("2026-05-16 10:00:00", "USER", "NEEDLE exact")])
+    cc = _write_convo(d_c, [("2026-05-16 10:00:00", "USER", "NEEDLE child")])
+    _insert_session(mock_db, "exact-sid", "n", "p")
+    _insert_source(mock_db, "exact-sid", "p", "convo", str(ce))
+    _insert_folder_usage(mock_db, "exact-sid", str(target), 10, 1)
+    _insert_session(mock_db, "child-sid", "n", "p")
+    _insert_source(mock_db, "child-sid", "p", "convo", str(cc))
+    _insert_folder_usage(mock_db, "child-sid", str(child), 10, 1)
+    mock_db.commit()
+
+    d_only = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path,
+        dir_scope=_dir_scope_folderusage(str(target), False),  # -D
+    ))
+    assert {h.session_id for h in d_only} == {"exact-sid"}
+
+    descendants = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path,
+        dir_scope=_dir_scope_folderusage(str(target), True),  # -d
+    ))
+    assert {h.session_id for h in descendants} == {"exact-sid", "child-sid"}
+
+
+def test_search_dir_scope_folderusage_session_id_filter(mock_db, tmp_path):
+    """v0.5.1: --session-id prefix narrows the folder_usage-ranked set."""
+    target = tmp_path / "proj"
+    d_a = tmp_path / "a"; d_a.mkdir()
+    d_b = tmp_path / "b"; d_b.mkdir()
+    ca = _write_convo(d_a, [("2026-05-16 10:00:00", "USER", "NEEDLE a")])
+    cb = _write_convo(d_b, [("2026-05-16 10:00:00", "USER", "NEEDLE b")])
+    _insert_session(mock_db, "aaa11111-sid", "n", "p")
+    _insert_source(mock_db, "aaa11111-sid", "p", "convo", str(ca))
+    _insert_folder_usage(mock_db, "aaa11111-sid", str(target), 10, 1)
+    _insert_session(mock_db, "bbb22222-sid", "n", "p")
+    _insert_source(mock_db, "bbb22222-sid", "p", "convo", str(cb))
+    _insert_folder_usage(mock_db, "bbb22222-sid", str(target), 10, 1)
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path, session_filter="aaa1",
+        dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert {h.session_id for h in hits} == {"aaa11111-sid"}
+
+
+def test_search_dir_scope_folderusage_session_id_prefix_case_insensitive(
+    mock_db, tmp_path,
+):
+    """v0.5.1: an UPPERCASE --session prefix matches on the folder_usage
+    path, same as the SQL paths (session_id LIKE folds ASCII case)."""
+    target = tmp_path / "proj"
+    convo = _write_convo(tmp_path, [("2026-05-16 10:00:00", "USER", "NEEDLE")])
+    _insert_session(mock_db, "abcd1234-sid", "n", "p")
+    _insert_source(mock_db, "abcd1234-sid", "p", "convo", str(convo))
+    _insert_folder_usage(mock_db, "abcd1234-sid", str(target), 10, 1)
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path, session_filter="ABCD",
+        dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert {h.session_id for h in hits} == {"abcd1234-sid"}
+
+
+def test_search_dir_scope_folderusage_start_folder_breaks_usage_tie(
+    mock_db, tmp_path,
+):
+    """v0.5.1 (Q3 decision): equal scope usage_count -> the session whose
+    START folder is in scope ranks ahead of one that merely visited, even
+    when the visitor is more recently active."""
+    target = tmp_path / "proj"
+    d_s = tmp_path / "s"; d_s.mkdir()
+    d_v = tmp_path / "v"; d_v.mkdir()
+    cs = _write_convo(d_s, [("2026-05-16 10:00:00", "USER", "NEEDLE start")])
+    cv = _write_convo(d_v, [("2026-05-16 10:00:00", "USER", "NEEDLE visit")])
+    # start-sid: target IS its start folder; older last_active.
+    _insert_session(mock_db, "start-sid", "n", "p",
+                    last_active="2026-05-10T10:00:00Z")
+    _insert_source(mock_db, "start-sid", "p", "convo", str(cs))
+    _insert_folder_usage(mock_db, "start-sid", str(target), 10, is_start=1)
+    # visit-sid: same usage_count, NOT its start folder; newer last_active
+    # (would win the tie under a last-active tiebreak).
+    _insert_session(mock_db, "visit-sid", "n", "p",
+                    last_active="2026-05-20T10:00:00Z")
+    _insert_source(mock_db, "visit-sid", "p", "convo", str(cv))
+    _insert_folder_usage(mock_db, "visit-sid", str(target), 10, is_start=0)
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, "NEEDLE", claude_dir=tmp_path,
+        dir_scope=_dir_scope_folderusage(str(target), True),
+    ))
+    assert [h.session_id for h in hits] == ["start-sid", "visit-sid"]
+
+
+def test_find_sessions_by_directory_ranked_folders_opt_in(mock_db, tmp_path):
+    """v0.5.1 perf contract: the enumerator runs NO per-session folders
+    sub-query unless include_folders=True (search fetches folders itself,
+    and only for --full-info 2)."""
+    from claude_session_backup.index import find_sessions_by_directory_ranked
+    target = tmp_path / "proj"
+    _insert_session(mock_db, "sid-1", "n", "p")
+    _insert_folder_usage(mock_db, "sid-1", str(target), 10, is_start=1)
+    mock_db.commit()
+
+    rows = find_sessions_by_directory_ranked(mock_db, str(target), None, None)
+    assert [r["session_id"] for r in rows] == ["sid-1"]
+    assert "folders" not in rows[0]
+    assert rows[0]["scope_usage"] == 10
+    assert rows[0]["scope_is_start"] == 1
+
+    rows = find_sessions_by_directory_ranked(
+        mock_db, str(target), None, None, include_folders=True,
+    )
+    assert rows[0]["folders"][0]["folder_path"] == str(target)
+
+
+def test_search_dir_scope_fts5_multiterm_match_all_and_any(mock_db, tmp_path):
+    """v0.5.1: multi-term boolean on the --source fts5 (strength-ranked)
+    dir-scope path. --match all keeps only the session whose FTS5 content
+    holds EVERY term; --match any keeps any with at least one. Excerpts
+    for a qualifying session cover ANY landed term."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "both-sid",
+        messages=[
+            ("USER", None, "ALPHA here"),
+            ("AI", None, "and BETA too"),
+        ],
+        file_ops=[("wrote", "C:/code/foo/a.py", 3)],
+    )
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "one-sid",
+        messages=[("USER", None, "ALPHA only")],
+        file_ops=[("wrote", "C:/code/foo/b.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "both-sid", "p", "projects/p/both-sid.jsonl", 1700000000.0,
+    )
+    _insert_session_with_jsonl(
+        mock_db, "one-sid", "p", "projects/p/one-sid.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    ds = {
+        "abs_path": r"C:\code\foo",
+        "include_descendants": True,
+        "min_strength": 1,
+    }
+    all_hits = list(search(
+        mock_db, "ALPHA", extra_terms=("BETA",), match_mode="all",
+        source_override="fts5", claude_dir=claude_dir, dir_scope=ds,
+    ))
+    assert {h.session_id for h in all_hits} == {"both-sid"}
+    # AND search still shows where EACH term landed (any-term excerpts).
+    texts = " ".join(h.matched_text for h in all_hits)
+    assert "ALPHA" in texts and "BETA" in texts
+
+    any_hits = list(search(
+        mock_db, "ALPHA", extra_terms=("BETA",), match_mode="any",
+        source_override="fts5", claude_dir=claude_dir, dir_scope=ds,
+    ))
+    assert {h.session_id for h in any_hits} == {"both-sid", "one-sid"}
+
+
+def test_search_dir_scope_fts5_multiterm_regex(mock_db, tmp_path):
+    """v0.5.1: regex terms compose with --match all on the --source fts5
+    dir-scope path (regex bypasses FTS5 MATCH; Python matchers decide)."""
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir()
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "both-sid",
+        messages=[
+            ("USER", None, "error E404 raised"),
+            ("AI", None, "fixed in v2.13"),
+        ],
+        file_ops=[("wrote", "C:/code/foo/a.py", 3)],
+    )
+    _build_fake_fts5_db_with_file_ops(
+        claude_dir, "p", "p", "one-sid",
+        messages=[("USER", None, "error E500 raised")],
+        file_ops=[("wrote", "C:/code/foo/b.py", 3)],
+    )
+    _insert_session_with_jsonl(
+        mock_db, "both-sid", "p", "projects/p/both-sid.jsonl", 1700000000.0,
+    )
+    _insert_session_with_jsonl(
+        mock_db, "one-sid", "p", "projects/p/one-sid.jsonl", 1700000000.0,
+    )
+    mock_db.commit()
+
+    hits = list(search(
+        mock_db, r"E\d+", extra_terms=(r"v\d+\.\d+",), match_mode="all",
+        regex=True, source_override="fts5", claude_dir=claude_dir,
+        dir_scope={
+            "abs_path": r"C:\code\foo",
+            "include_descendants": True,
+            "min_strength": 1,
+        },
+    ))
+    assert {h.session_id for h in hits} == {"both-sid"}
 
 
 # == #36: FTS5 content-hash freshness rescue + sesslog conversation probe ===
