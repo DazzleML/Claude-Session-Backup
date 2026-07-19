@@ -48,3 +48,26 @@ def test_pip_version_pep440():
         assert any(c.isalpha() for c in pip_v.split(".")[-1])
     else:
         assert all(c.isdigit() or c == "." for c in pip_v)
+
+
+# ── v0.6.1: full build details in `csb -V` ─────────────────────────────
+
+
+def test_full_display_version_includes_build_string(monkeypatch):
+    """With build metadata baked in, -V shows display + the full string
+    (branch, build#, date, commit) -- distinguishes a GitHub clone's build
+    from a pip release carrying the same number."""
+    import claude_session_backup._version as v
+    monkeypatch.setattr(v, "__version__", "0.6.1_main_62-20260719-9e2c684e")
+    full = v.get_full_display_version()
+    assert full.endswith("(0.6.1_main_62-20260719-9e2c684e)")
+    assert full.startswith(v.get_display_version())
+
+
+def test_full_display_version_plain_without_metadata(monkeypatch):
+    """No build metadata (fresh checkout, no stamping hooks) -> no empty
+    or redundant parenthetical."""
+    import claude_session_backup._version as v
+    monkeypatch.setattr(v, "__version__", "0.6.1")
+    assert v.get_full_display_version() == v.get_display_version()
+    assert "(" not in v.get_full_display_version()

@@ -9,6 +9,18 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.6.1] -- 2026-07-19 (beta)
+
+**`csb setup` detects claude-session-logger (#53).** The setup checklist gains an optional row for [claude-session-logger](https://github.com/DazzleML/claude-session-logger) -- csb consumes its output (`.convo`/`.sesslog` search channels, session-name enrichment) and backs up / restores its files, so setup now surfaces it as an enhancement worth considering without implying it's required.
+
+### Added
+- **`[~]` optional checklist state** (blue -- the intermediate tone between green done and yellow pending): absent, the logger renders as `[~] session logger (optional -- richer csb search + session-name channels)` with the marketplace-add + install commands (each shown only if actually missing); installed, it collapses to a green `[x]` like any other done row. Detection is by plugin key (`session-logger@dazzle-claude-plugins`) in Claude Code's registries -- a local-clone install (`claude plugin marketplace add "./"`) registers the same key, so it counts as done without the GitHub marketplace entry.
+- `_plugin_status` generalized to take marketplace/plugin keys (shared by the csb-plugin and logger rows).
+- **`csb -V` shows full build details**: `csb BETA 0.6.1 (0.6.1_main_62-20260719-9e2c684e)` -- the parenthetical (branch, build#, date, commit hash) distinguishes a GitHub-clone build from a pip release carrying the same number. Omitted when no build metadata is stamped (fresh checkout without the versioning hooks).
+
+### Tests
+- 7 new (1022 pass): logger absent -> `[~]` + both commands, never `[ ]`; installed -> `[x]`, no re-instruction; marketplace-only -> just the install line; plugin-without-marketplace (local clone) -> done; full-display-version with and without build metadata; BOM'd registry still reads as installed (found by the tester run -- a rejected registry would re-instruct a done step). All-done checklist now pins 4 `[x]` rows and zero commands.
+
 ## [0.6.0] -- 2026-07-19 (beta)
 
 **csb enters beta.** The onboarding overhaul below closes the last gap between "the mechanics work" and "the tool takes care of you": setup is now guided, protection is the default, and being unprotected is a signed exception. Beta reflects that the tool now works well for real daily use; surfaces may still break between versions when the design calls for it.
@@ -923,7 +935,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...HEAD
 [0.5.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0
 [0.4.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7

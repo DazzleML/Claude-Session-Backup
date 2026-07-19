@@ -25,7 +25,7 @@ Usage:
 import argparse
 import sys
 
-from ._version import DISPLAY_VERSION
+from ._version import FULL_DISPLAY_VERSION
 
 
 # ── Common flags ────────────────────────────────────────────────────
@@ -156,7 +156,8 @@ def build_parser():
         description="Git-backed Claude Code session backup tool.",
     )
     parser.add_argument(
-        "-V", "--version", action="version", version=f"%(prog)s {DISPLAY_VERSION}"
+        "-V", "--version", action="version",
+        version=f"%(prog)s {FULL_DISPLAY_VERSION}",
     )
 
     # metavar="<command>" keeps the usage line clean (a generic placeholder

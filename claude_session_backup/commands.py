@@ -390,13 +390,21 @@ def _style_print(segments, err=False):
         print("".join(text for text, _ in segments), file=stream)
 
 
-# The csb plugin's identifiers in Claude Code's own registries -- used to
-# detect (not install) the auto-backup hooks during `csb setup`.
+# Plugin identifiers in Claude Code's own registries -- used to detect
+# (never install) companion tooling during `csb setup`. The csb plugin
+# provides the auto-backup hooks; claude-session-logger is OPTIONAL but
+# enhances csb (richer `csb search` channels via .convo/.sesslog
+# transcripts, session-name enrichment) -- csb backs up and restores its
+# files, so setup surfaces it as a considered choice, not a requirement.
 _PLUGIN_KEY = "claude-session-backup@dazzle-claude-session-backup"
 _MARKETPLACE_KEY = "dazzle-claude-session-backup"
+_LOGGER_PLUGIN_KEY = "session-logger@dazzle-claude-plugins"
+_LOGGER_MARKETPLACE_KEY = "dazzle-claude-plugins"
+_LOGGER_MARKETPLACE_REPO = "DazzleML/claude-session-logger"
 
 
-def _plugin_status(claude_dir):
+def _plugin_status(claude_dir, marketplace_key=_MARKETPLACE_KEY,
+                   plugin_key=_PLUGIN_KEY):
     """(marketplace_added, plugin_installed) read from Claude Code's plugin
     registries (`plugins/known_marketplaces.json` / `installed_plugins.json`).
     Best-effort: absent or unreadable registries read as not-done -- setup
@@ -406,14 +414,22 @@ def _plugin_status(claude_dir):
     base = ClaudePaths.from_dir(claude_dir).plugins
     marketplace = False
     plugin = False
+
+    def _read_json(path):
+        # utf-8-sig: tolerate a BOM (e.g. a registry rewritten by
+        # PowerShell 5.1 Set-Content), which plain utf-8 + json.loads
+        # rejects -- and a rejected registry reads as "not installed",
+        # re-instructing an already-done step (the #53 sin).
+        return json.loads(path.read_text(encoding="utf-8-sig"))
+
     try:
-        m = json.loads((base / "known_marketplaces.json").read_text(encoding="utf-8"))
-        marketplace = _MARKETPLACE_KEY in (m or {})
+        m = _read_json(base / "known_marketplaces.json")
+        marketplace = marketplace_key in (m or {})
     except (OSError, ValueError):
         pass
     try:
-        p = json.loads((base / "installed_plugins.json").read_text(encoding="utf-8"))
-        plugin = bool((p or {}).get("plugins", {}).get(_PLUGIN_KEY))
+        p = _read_json(base / "installed_plugins.json")
+        plugin = bool((p or {}).get("plugins", {}).get(plugin_key))
     except (OSError, ValueError):
         pass
     return marketplace, plugin
@@ -453,6 +469,15 @@ def _checklist_todo(label, note):
                   (note, "dim")])
 
 
+def _checklist_optional(label, note):
+    """[~] -- an optional enhancement worth considering, NOT a pending
+    requirement. Blue: the intermediate tone between green (done) and
+    yellow (needs doing), so optional rows never read as obligations.
+    """
+    _style_print([("  [~] ", "bold blue"), (f"{label:<22}", "blue"),
+                  (note, "dim")])
+
+
 def _checklist_cmd(command):
     _style_print([("        -> ", "dim"), (command, "cyan")])
 
@@ -482,6 +507,24 @@ def _setup_checklist(config, claude_dir, repo_note):
         if not marketplace:
             _checklist_cmd('claude plugin marketplace add "DazzleML/Claude-Session-Backup"')
         _checklist_cmd(f"claude plugin install {_PLUGIN_KEY}")
+
+    # claude-session-logger (#53): OPTIONAL companion. Plugin presence is
+    # what matters (a local-clone install registers the same plugin key,
+    # possibly under a "./" marketplace) -- installed means done even if
+    # the GitHub marketplace entry is absent.
+    lg_marketplace, lg_plugin = _plugin_status(
+        claude_dir, _LOGGER_MARKETPLACE_KEY, _LOGGER_PLUGIN_KEY,
+    )
+    if lg_plugin:
+        _checklist_done("session logger", f"{_LOGGER_PLUGIN_KEY} installed")
+    else:
+        _checklist_optional(
+            "session logger",
+            "(optional -- richer csb search + session-name channels)",
+        )
+        if not lg_marketplace:
+            _checklist_cmd(f'claude plugin marketplace add "{_LOGGER_MARKETPLACE_REPO}"')
+        _checklist_cmd(f"claude plugin install {_LOGGER_PLUGIN_KEY}")
 
     print()
     _style_print([("Anytime: ", "dim"), ("csb list", "cyan"), (" (timeline), ", "dim"),

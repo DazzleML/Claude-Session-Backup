@@ -15,13 +15,13 @@ To bump version: python scripts/sync-versions.py --bump patch
 # Version components - edit these for version bumps
 MAJOR = 0
 MINOR = 6
-PATCH = 0
+PATCH = 1
 PHASE = ""  # Per-MINOR feature set: None, "alpha", "beta", "rc1", etc.
 PRE_RELEASE_NUM = 1  # PEP 440 pre-release number (e.g., a1, b2)
 PROJECT_PHASE = "beta"  # Project-wide: "prealpha", "alpha", "beta", "stable"
 
 # Auto-updated by git hooks - do not edit manually
-__version__ = "0.6.0_main_61-20260719-a342bf99"
+__version__ = "0.6.1_main_62-20260719-9e2c684e"
 __app_name__ = "claude-session-backup"
 
 
@@ -46,6 +46,22 @@ def get_base_version():
     if PHASE:
         base = f"{base}-{PHASE}"
     return base
+
+
+def get_full_display_version():
+    """Display version plus the full build string when build metadata
+    exists: `BETA 0.6.1 (0.6.1_main_62-20260719-9e2c684e)`.
+
+    The parenthetical (branch, build#, date, commit hash) is what tells a
+    GitHub-clone user exactly which build they're running -- pip installs
+    and clones can carry the same release number while being different
+    code. Falls back to the plain display form when no metadata is baked
+    in (e.g. a fresh checkout whose git hooks haven't stamped a build).
+    """
+    display = get_display_version()
+    if "_" in __version__:
+        return f"{display} ({__version__})"
+    return display
 
 
 def get_pip_version():
@@ -81,3 +97,4 @@ VERSION = get_version()
 BASE_VERSION = get_base_version()
 PIP_VERSION = get_pip_version()
 DISPLAY_VERSION = get_display_version()
+FULL_DISPLAY_VERSION = get_full_display_version()

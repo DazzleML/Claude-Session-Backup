@@ -1146,23 +1146,33 @@ def test_setup_missing_dir_errors(tmp_path, capsys):
 # item is actually missing.
 
 
-def _write_plugin_registries(claude_dir, marketplace=True, plugin=True):
+def _write_plugin_registries(claude_dir, marketplace=True, plugin=True,
+                             logger_marketplace=False, logger_plugin=False):
+    """Fake Claude Code plugin registries. csb plugin flags default present;
+    the optional session-logger (#53) defaults absent."""
     import json as _json
     base = Path(claude_dir) / "plugins"
     base.mkdir(parents=True, exist_ok=True)
+    markets = {}
     if marketplace:
-        (base / "known_marketplaces.json").write_text(_json.dumps({
-            "dazzle-claude-session-backup": {"source": {"repo": "DazzleML/Claude-Session-Backup"}},
-        }), encoding="utf-8")
+        markets["dazzle-claude-session-backup"] = {
+            "source": {"repo": "DazzleML/Claude-Session-Backup"}}
+    if logger_marketplace:
+        markets["dazzle-claude-plugins"] = {
+            "source": {"repo": "DazzleML/claude-session-logger"}}
+    if markets:
+        (base / "known_marketplaces.json").write_text(
+            _json.dumps(markets), encoding="utf-8")
+    plugins = {}
     if plugin:
-        (base / "installed_plugins.json").write_text(_json.dumps({
-            "version": 2,
-            "plugins": {
-                "claude-session-backup@dazzle-claude-session-backup": [
-                    {"scope": "user", "version": "0.6.0"},
-                ],
-            },
-        }), encoding="utf-8")
+        plugins["claude-session-backup@dazzle-claude-session-backup"] = [
+            {"scope": "user", "version": "0.6.0"}]
+    if logger_plugin:
+        plugins["session-logger@dazzle-claude-plugins"] = [
+            {"scope": "user", "version": "0.3.6"}]
+    if plugins:
+        (base / "installed_plugins.json").write_text(
+            _json.dumps({"version": 2, "plugins": plugins}), encoding="utf-8")
 
 
 def test_setup_checklist_all_done_shows_no_commands(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
@@ -1170,13 +1180,15 @@ def test_setup_checklist_all_done_shows_no_commands(monkeypatch, mock_claude_dir
     `csb backup` instructions (the user's complaint: don't tell people to
     run what's already done)."""
     _patch_dotgit_check(monkeypatch)
-    _write_plugin_registries(mock_claude_dir_repoless)
+    _write_plugin_registries(mock_claude_dir_repoless,
+                             logger_marketplace=True, logger_plugin=True)
     db = tmp_path / "s.db"
     rc = cmd_setup(_setup_args(mock_claude_dir_repoless, db, auto=True))
     out = capsys.readouterr().out
     assert rc == 0
-    assert out.count("[x]") == 3
+    assert out.count("[x]") == 4      # git store, backup, plugin, logger
     assert "[ ]" not in out
+    assert "[~]" not in out
     assert "claude plugin marketplace add" not in out
     assert "claude plugin install" not in out
 
@@ -1190,8 +1202,8 @@ def test_setup_checklist_missing_plugin_shows_only_missing_commands(monkeypatch,
     out = capsys.readouterr().out
     assert rc == 0
     assert "[ ] auto-backup plugin" in out
-    assert "claude plugin install" in out
-    assert "claude plugin marketplace add" not in out
+    assert "claude plugin install claude-session-backup@dazzle-claude-session-backup" in out
+    assert '"DazzleML/Claude-Session-Backup"' not in out  # csb marketplace already added
     assert "[x] first backup" in out           # --auto ran it
 
 
@@ -1294,3 +1306,82 @@ def test_scan_json_results_are_pure_json(tmp_path, capsys):
     assert isinstance(data, list) and len(data) == 1
     assert data[0]["session_id"] == sid
     assert "Scanning for" not in captured.out
+
+
+
+# ── #53 (v0.6.1): optional session-logger row in the setup checklist ───
+#
+# claude-session-logger enhances csb (search channels, name enrichment)
+# but is NOT required -- absent, it renders as a blue [~] "consider this"
+# row with the install commands, never as a pending [ ] obligation.
+# Installed (by plugin key -- a local-clone install registers the same
+# key), it collapses to a green [x] like any other done row.
+
+
+def test_setup_checklist_logger_absent_shows_optional_row(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_dotgit_check(monkeypatch)
+    _write_plugin_registries(mock_claude_dir_repoless)   # csb yes, logger no
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[~] session logger" in out
+    assert "optional" in out
+    assert '"DazzleML/claude-session-logger"' in out
+    assert "claude plugin install session-logger@dazzle-claude-plugins" in out
+    assert "[ ] session logger" not in out   # optional, never an obligation
+
+
+def test_setup_checklist_logger_installed_is_done(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_dotgit_check(monkeypatch)
+    _write_plugin_registries(mock_claude_dir_repoless,
+                             logger_marketplace=True, logger_plugin=True)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[x] session logger" in out
+    assert "session-logger@dazzle-claude-plugins installed" in out
+    assert "[~]" not in out
+    assert '"DazzleML/claude-session-logger"' not in out  # no re-instruction
+
+
+def test_setup_checklist_logger_marketplace_only_shows_install_line(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Marketplace added but plugin not installed -> only the install
+    command (no marketplace-add re-instruction)."""
+    _patch_dotgit_check(monkeypatch)
+    _write_plugin_registries(mock_claude_dir_repoless, logger_marketplace=True)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[~] session logger" in out
+    assert "claude plugin install session-logger@dazzle-claude-plugins" in out
+    assert '"DazzleML/claude-session-logger"' not in out
+
+
+def test_setup_checklist_logger_plugin_without_marketplace_is_done(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Local-clone installs (marketplace add "./") register the plugin key
+    without the GitHub marketplace entry -- plugin presence alone is done."""
+    _patch_dotgit_check(monkeypatch)
+    _write_plugin_registries(mock_claude_dir_repoless, logger_plugin=True)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[x] session logger" in out
+    assert "[~]" not in out
+
+
+def test_plugin_status_tolerates_bom(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """A BOM'd registry (PowerShell 5.1 Set-Content) must still read as
+    installed -- rejected-as-absent would re-instruct a done step (found
+    by the v0.6.1 tester run)."""
+    import json as _json
+    base = Path(mock_claude_dir_repoless) / "plugins"
+    base.mkdir(parents=True, exist_ok=True)
+    payload = _json.dumps({"version": 2, "plugins": {
+        "session-logger@dazzle-claude-plugins": [{"scope": "user"}]}})
+    (base / "installed_plugins.json").write_bytes(
+        b"\xef\xbb\xbf" + payload.encode("utf-8"))
+    from claude_session_backup.commands import _plugin_status
+    _mkt, plugin = _plugin_status(
+        str(mock_claude_dir_repoless),
+        "dazzle-claude-plugins", "session-logger@dazzle-claude-plugins")
+    assert plugin is True
