@@ -42,6 +42,16 @@ DEFAULT_CONFIG = {
     # Default content filter for distilled output: "convo" (messages
     # only), "tools" (one-line tool calls only), or "both".
     "distill_filter": "both",
+    # Onboarding state (v0.6.0, #52): "full" -- the normal, protected
+    # mode (git repo expected; the no-protection banner nags until one
+    # exists). "index-only" -- the EXPLICIT exception: the user signed
+    # off (via `csb setup --index-only`) that sessions are indexed but
+    # NOT backed up; the banner is silenced, `csb status` still reports
+    # the unprotected state. Never set by csb without that sign-off.
+    "backup_mode": "full",
+    # UTC timestamp of the index-only sign-off (audit trail); None when
+    # backup_mode is "full".
+    "index_only_ack_at": None,
 }
 
 # Environment variable overrides (CLI flag > env var > config file > default)

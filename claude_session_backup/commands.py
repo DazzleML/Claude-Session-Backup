@@ -31,6 +31,7 @@ from .git_ops import (
     SESSION_HISTORY_SCOPES,
     categorize_path_for_uuid,
     ensure_gitattributes,
+    run_git,
     git_commit_noise,
     git_commit_user,
     git_find_deleted_file,
@@ -52,6 +53,7 @@ from .index import (
     get_indexed_mtime,
     get_session,
     get_stats,
+    index_is_unbuilt,
     init_schema,
     list_sessions,
     mark_deleted,
@@ -71,7 +73,7 @@ from .metadata import (
     read_session_state,
 )
 from .pathkit import ClaudePaths
-from .scanner import scan_projects
+from .scanner import count_session_jsonls, scan_projects
 from .timeline import format_session_line, format_timeline, render_timeline_rich, HAS_RICH
 
 
@@ -142,10 +144,23 @@ def cmd_backup(args) -> int:
 def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
     """Inner backup logic (runs under lock)."""
 
-    # Verify git repo
-    if not is_git_repo(claude_dir):
+    # Verify git repo. Without one, `--no-commit` still proceeds in
+    # index-only mode (#52): the index powers every read command (list,
+    # scan, search, resume...), and the recovery moment -- a crashed box
+    # where the user is trying to find their sessions -- is exactly when
+    # setup is most likely broken. Bare `backup` keeps the hard error:
+    # a backup that cannot commit protects nothing, and saying so loudly
+    # beats silently degrading.
+    repoless = not is_git_repo(claude_dir)
+    if repoless and not args.no_commit:
         print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
-        print("Initialize with: git -C ~/.claude init", file=sys.stderr)
+        print("Run `csb setup` for guided configuration "
+              "(or initialize directly: git -C ~/.claude init).", file=sys.stderr)
+        print(
+            "Or run `csb backup --no-commit` to build the search index "
+            "without git (index-only: no backup protection).",
+            file=sys.stderr,
+        )
         return 1
 
     # Defense in depth: ensure .gitattributes has the csb-managed block that
@@ -153,7 +168,8 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
     # Without this, a future commit on a host with `core.autocrlf=true` could
     # store CRLF-corrupted blobs that no amount of restore-side care can fix.
     # Idempotent -- only writes when the block is missing.
-    ensure_gitattributes(claude_dir)
+    if not repoless:
+        ensure_gitattributes(claude_dir)
 
     # Open index
     conn = open_db(config["index_path"])
@@ -283,6 +299,360 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
         if not noise_hash and not user_hash and not args.no_commit:
             print("No changes to commit.")
 
+    # Index-only warning (#52): emitted even under --quiet -- hook runs log
+    # stderr, and "this was NOT a backup" must never be silent. The text
+    # always pairs what happened (indexed) with what did not (protection).
+    if repoless:
+        print(
+            f"[index-only] Indexed {len(sessions)} session(s) -- NO backup "
+            f"protection ({claude_dir} is not a git repository).",
+            file=sys.stderr,
+        )
+        print(
+            f"[index-only] Enable full backup with `csb setup` "
+            f"(or: git -C {claude_dir} init)",
+            file=sys.stderr,
+        )
+
+    return 0
+
+
+# ── csb setup: guided onboarding (v0.6.0, #52) ──────────────────────
+
+
+def _write_config_file_keys(claude_dir, **keys):
+    """Update only the given keys in session-backup-config.json (creating
+    the file if needed). Deliberately NOT ``save_config``: that dumps the
+    whole merged config, freezing resolved defaults (like paths) into the
+    file.
+    """
+    from .config import get_config_path
+
+    path = get_config_path(claude_dir)
+    data = {}
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            data = {}
+    data.update(keys)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _interactive() -> bool:
+    """Whether prompts can be answered (stdin is a real terminal)."""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:  # noqa: BLE001 -- treat unknowable stdin as non-tty
+        return False
+
+
+def _ask(question: str) -> str | None:
+    """One prompt; None on EOF/interrupt (caller aborts cleanly)."""
+    try:
+        return input(question).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+
+def _clear_index_only_ack(config, claude_dir):
+    """A repo now exists (or was just created): the signed index-only
+    exception is stale -- clear it loudly so the config matches reality."""
+    if str(config.get("backup_mode") or "full") == "index-only":
+        _write_config_file_keys(
+            claude_dir, backup_mode="full", index_only_ack_at=None,
+        )
+        print("[setup] Cleared the old index-only sign-off -- backups are the "
+              "mode of record again.")
+
+
+def _style_print(segments, err=False):
+    """Print one line from (text, style) segments -- rich-styled when
+    available (colors only reach real terminals; pipes/captures get plain
+    text), plain print otherwise. Styles follow the timeline renderer's
+    palette: green = done/protected, yellow = pending/exception, red =
+    problem, cyan = a command to run, dim = detail.
+    """
+    stream = sys.stderr if err else sys.stdout
+    if HAS_RICH:
+        from rich.console import Console
+        from rich.text import Text
+
+        line = Text()
+        for text, style in segments:
+            line.append(text, style or "")
+        # soft_wrap: never hard-wrap checklist rows at a fake 80-col width
+        # when the stream isn't a terminal (pipes, tests).
+        Console(file=stream, highlight=False, soft_wrap=True).print(line)
+    else:
+        print("".join(text for text, _ in segments), file=stream)
+
+
+# The csb plugin's identifiers in Claude Code's own registries -- used to
+# detect (not install) the auto-backup hooks during `csb setup`.
+_PLUGIN_KEY = "claude-session-backup@dazzle-claude-session-backup"
+_MARKETPLACE_KEY = "dazzle-claude-session-backup"
+
+
+def _plugin_status(claude_dir):
+    """(marketplace_added, plugin_installed) read from Claude Code's plugin
+    registries (`plugins/known_marketplaces.json` / `installed_plugins.json`).
+    Best-effort: absent or unreadable registries read as not-done -- setup
+    then shows the install commands, which is the safe direction to be
+    wrong in.
+    """
+    base = ClaudePaths.from_dir(claude_dir).plugins
+    marketplace = False
+    plugin = False
+    try:
+        m = json.loads((base / "known_marketplaces.json").read_text(encoding="utf-8"))
+        marketplace = _MARKETPLACE_KEY in (m or {})
+    except (OSError, ValueError):
+        pass
+    try:
+        p = json.loads((base / "installed_plugins.json").read_text(encoding="utf-8"))
+        plugin = bool((p or {}).get("plugins", {}).get(_PLUGIN_KEY))
+    except (OSError, ValueError):
+        pass
+    return marketplace, plugin
+
+
+def _last_backup_summary(config):
+    """One-line summary of the last indexed scan, or None if never ran."""
+    try:
+        conn = open_db(config["index_path"])
+        init_schema(conn)
+        stats = get_stats(conn)
+        conn.close()
+        scan = stats.get("last_scan")
+        if not scan:
+            return None
+        when = scan.get("scanned_at") or "?"
+        try:
+            # Compact local time for the one-line checklist row (the full
+            # ISO form stays available via `csb status`).
+            when = (datetime.fromisoformat(when.replace("Z", "+00:00"))
+                    .astimezone().strftime("%Y-%m-%d %H:%M"))
+        except (ValueError, TypeError):
+            pass
+        commit = (scan.get("git_commit") or "")[:8]
+        return f"last scan {when}" + (f", commit {commit}" if commit else "")
+    except Exception:  # noqa: BLE001 -- checklist is best-effort reporting
+        return None
+
+
+def _checklist_done(label, detail):
+    _style_print([("  [x] ", "bold green"), (f"{label:<22}", "green"),
+                  (f"({detail})", "dim")])
+
+
+def _checklist_todo(label, note):
+    _style_print([("  [ ] ", "bold yellow"), (f"{label:<22}", "yellow"),
+                  (note, "dim")])
+
+
+def _checklist_cmd(command):
+    _style_print([("        -> ", "dim"), (command, "cyan")])
+
+
+def _setup_checklist(config, claude_dir, repo_note):
+    """State-aware closing checklist: [x] for what's already configured,
+    [ ] with the exact command only for what's actually missing -- setup
+    never tells a user to run something that's already done. Green = done,
+    yellow = still to do, cyan = the command that does it.
+    """
+    print()
+    _style_print([("Setup checklist:", "bold")])
+    _checklist_done("git backup store", repo_note)
+
+    backup = _last_backup_summary(config)
+    if backup:
+        _checklist_done("first backup", backup)
+    else:
+        _checklist_todo("first backup", "")
+        _checklist_cmd("csb backup")
+
+    marketplace, plugin = _plugin_status(claude_dir)
+    if marketplace and plugin:
+        _checklist_done("auto-backup plugin", f"{_PLUGIN_KEY} installed")
+    else:
+        _checklist_todo("auto-backup plugin", "(fires on PreCompact + SessionEnd)")
+        if not marketplace:
+            _checklist_cmd('claude plugin marketplace add "DazzleML/Claude-Session-Backup"')
+        _checklist_cmd(f"claude plugin install {_PLUGIN_KEY}")
+
+    print()
+    _style_print([("Anytime: ", "dim"), ("csb list", "cyan"), (" (timeline), ", "dim"),
+                  ("csb status", "cyan"), (" (protection + index state)", "dim")])
+
+
+def _setup_index_only(args, config, claude_dir) -> int:
+    """The EXPLICIT exception path: record a sign-off that csb runs
+    index-only. Interactive runs must type the mode name back (informed
+    consent); the flag itself is the consent in non-TTY/scripted runs.
+    """
+    if is_git_repo(claude_dir):
+        _style_print([(f"A git repository already protects {claude_dir} -- "
+                       f"index-only would be a downgrade for no gain.", "green")])
+        print("Nothing recorded. (Backups continue to work.)")
+        return 0
+
+    _style_print([("Index-only mode means:", "bold")])
+    print("  - sessions are INDEXED: `csb list` / `scan` / `search` / `resume` work")
+    _style_print([("  - nothing is PRESERVED: no commits, no deletion history, "
+                   "no `csb restore`", "red")])
+    print("  - the no-protection banner is silenced -- this sign-off is the record")
+    print("  - `csb setup` re-enables full protection at any time")
+    if _interactive() and not getattr(args, "auto", False):
+        answer = _ask('Type "index-only" to confirm you understand: ')
+        if answer is None or answer.lower() != "index-only":
+            print("Not confirmed -- nothing recorded.")
+            return 2
+    _write_config_file_keys(
+        claude_dir,
+        backup_mode="index-only",
+        index_only_ack_at=_now_iso(),
+    )
+    _style_print([("[setup] ", "bold yellow"),
+                  (f"Recorded index-only sign-off (backup_mode=index-only) "
+                   f"for {claude_dir}.", "yellow")])
+    _style_print([("[setup] ", "bold yellow"),
+                  ("Reminder: NOTHING IS BACKED UP in this mode.", "red")])
+    return 0
+
+
+def _claude_dir_source(args) -> str:
+    """Which mechanism selected the Claude dir, in load_config's precedence
+    order (flag > CLAUDE_DIR > CLAUDE_CONFIG_DIR > config file > default).
+    Shown in setup's header so relocated setups (docker, VMs, host-mounts,
+    worktree isolation -- #45) can confirm the RIGHT dir is about to be
+    configured before anything mutates.
+    """
+    from .config import ENV_CLAUDE_DIR, ENV_CLAUDE_CONFIG_DIR, get_config_path
+
+    if getattr(args, "claude_dir", None):
+        return "--claude-dir"
+    if os.environ.get(ENV_CLAUDE_DIR):
+        return f"{ENV_CLAUDE_DIR} env"
+    if os.environ.get(ENV_CLAUDE_CONFIG_DIR):
+        return f"{ENV_CLAUDE_CONFIG_DIR} env"
+    try:
+        cfg_path = get_config_path(None)
+        if cfg_path.exists() and "claude_dir" in json.loads(
+                cfg_path.read_text(encoding="utf-8")):
+            return "config file"
+    except (OSError, ValueError):
+        pass
+    return "default"
+
+
+def cmd_setup(args) -> int:
+    """Guided onboarding (v0.6.0, #52): configure the git backup store.
+
+    The protected state is the point of csb; this command is THE way to
+    reach it. Detects an existing repo (own or ancestor -- the home-repo
+    layout counts), offers/executes `git init` (interactive Y/n, or
+    `--auto` with no prompts), hardens .gitattributes, offers the first
+    backup, and prints the plugin next-steps. `--index-only` is the
+    explicit signed exception (see _setup_index_only).
+
+    Exit codes: 0 configured (or already protected / ack recorded),
+    1 error, 2 declined / not confirmed / non-interactive without flags.
+    """
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    auto = getattr(args, "auto", False)
+    quiet = getattr(args, "quiet", False)
+
+    _style_print([("csb setup -- Claude dir: ", None), (claude_dir, "bold"),
+                  (f"   (via {_claude_dir_source(args)})", "dim")])
+    if not Path(claude_dir).is_dir():
+        print(f"Error: {claude_dir} does not exist. Is Claude Code installed? "
+              f"(A relocated dir needs --claude-dir / CLAUDE_CONFIG_DIR.)",
+              file=sys.stderr)
+        return 1
+
+    if getattr(args, "index_only", False):
+        return _setup_index_only(args, config, claude_dir)
+
+    # ── Already protected? (is_git_repo walks up: an ancestor repo counts)
+    if is_git_repo(claude_dir):
+        r = run_git(claude_dir, "rev-parse", "--show-toplevel", check=False)
+        root = (r.stdout or "").strip()
+        try:
+            own_root = root and Path(root).resolve() == Path(claude_dir).resolve()
+        except OSError:
+            own_root = False
+        where = "here" if own_root else f"rooted at {root} (an ancestor repo -- that works)"
+        _style_print([(f"Git repo: yes, {where}. Backups are enabled -- "
+                       f"nothing to set up.", "green")])
+        ensure_gitattributes(claude_dir)
+        _clear_index_only_ack(config, claude_dir)
+        repo_note = (f"repo at {claude_dir}" if own_root
+                     else f"via ancestor repo {root}")
+        _setup_checklist(config, claude_dir, repo_note)
+        return 0
+
+    # ── No repo anywhere up the chain
+    _style_print([("Git repo: NO -- sessions are NOT protected.", "bold red")])
+    if not auto:
+        if not _interactive():
+            print("Non-interactive input and no mode flag. Use one of:",
+                  file=sys.stderr)
+            print("  csb setup --auto          # initialize the repo, no prompts",
+                  file=sys.stderr)
+            print("  csb setup --index-only    # explicitly stay unprotected",
+                  file=sys.stderr)
+            return 2
+        answer = _ask(f"Initialize a git repository at {claude_dir}? [Y/n] ")
+        if answer is None:
+            print("Aborted -- nothing changed.")
+            return 2
+        if answer.lower() in ("n", "no"):
+            print("Declined -- nothing changed. To make unprotected operation "
+                  "official (and silence the banner): csb setup --index-only")
+            return 2
+
+    r = run_git(claude_dir, "init", check=False)
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip() or "git not available?"
+        _style_print([(f"Error: git init failed: {detail}", "bold red")], err=True)
+        return 1
+    _style_print([("[setup] ", "bold green"),
+                  (f"Initialized git repository at {claude_dir}", "green")])
+    ensure_gitattributes(claude_dir)
+    _style_print([("[setup] ", "bold green"),
+                  ("Wrote .gitattributes (session files marked binary -- "
+                   "no CRLF corruption).", None)])
+    _clear_index_only_ack(config, claude_dir)
+
+    # ── First backup (the repo is empty until one runs)
+    run_backup = auto
+    if not auto:
+        answer = _ask("Run the first backup now (csb backup)? [Y/n] ")
+        run_backup = answer is not None and answer.lower() not in ("n", "no")
+    if run_backup:
+        import argparse as _argparse
+
+        rc = cmd_backup(_argparse.Namespace(
+            claude_dir=getattr(args, "claude_dir", None),
+            db=getattr(args, "db", None),
+            no_commit=False, quiet=quiet,
+        ))
+        if rc != 0:
+            print("Error: the first backup failed -- see above. The repo is "
+                  "initialized; run `csb backup` again once resolved.",
+                  file=sys.stderr)
+            return 1
+        _style_print([("[setup] ", "bold green"),
+                      ("First backup complete -- sessions are protected.", "green")])
+    else:
+        _style_print([("[setup] ", "bold green"),
+                      ("Repo ready; run ", None), ("csb backup", "cyan"),
+                      (" when you want the first snapshot.", None)])
+    _setup_checklist(config, claude_dir, f"repo at {claude_dir}")
     return 0
 
 
@@ -310,6 +680,47 @@ def deleted_mode(args) -> str:
             _warned_all_deprecated = True
         return "all"
     return getattr(args, "deleted", None) or "live"
+
+
+def _empty_state_guidance(config, path_mode: bool = False) -> list[str]:
+    """Diagnostic lines for an empty result set (#52). Two exclusive cases:
+
+    1. Index never built + transcripts exist on disk -> say so and name the
+       command that fixes it (including the git-free `--no-commit` form --
+       the post-crash recovery box is often the one without a repo).
+    2. Index is fine, but a path-scoped scan matched nothing while sessions
+       exist elsewhere -> redirect. Covers the "I scanned my checkout, but
+       the session ran from another cwd" mental-model gap.
+
+    Returns [] when neither diagnosis applies (or the DB is unreadable) --
+    callers print nothing extra and the classic empty state stands alone.
+    """
+    try:
+        conn = open_db(config["index_path"])
+        init_schema(conn)
+        unbuilt = index_is_unbuilt(conn)
+        conn.close()
+    except Exception:
+        return []
+
+    n = count_session_jsonls(config["claude_dir"])
+    if n <= 0:
+        return []
+    noun = "session file" if n == 1 else "session files"
+    if unbuilt:
+        return [
+            f"  Note: the csb index is empty -- {n} {noun} exist on disk "
+            f"but nothing has been indexed yet.",
+            "  Run `csb backup` to index + back up, or "
+            "`csb backup --no-commit` to index without git.",
+        ]
+    if path_mode:
+        noun = "session exists" if n == 1 else "sessions exist"
+        return [
+            f"  Tip: {n} {noun} under other folders -- "
+            f"try `csb list -n 5` or `csb scan -d <parent-folder>`.",
+        ]
+    return []
 
 
 def cmd_list(args) -> int:
@@ -355,6 +766,13 @@ def cmd_list(args) -> int:
             shortid=getattr(args, "shortid", False),
         ))
 
+    # Empty-index diagnosis (#52): "No sessions found." must never be a
+    # dead end when transcripts exist on disk and the index was simply
+    # never built (e.g. every backup failed silently on a repo-less box).
+    if not sessions and not args.json:
+        for line in _empty_state_guidance(config):
+            print(line)
+
     if deleted_hidden_count > 0:
         # Echo the user's filter back so the count's scope is unambiguous.
         # Example: `csb list amd` -> "(3 deleted sessions matching 'amd'
@@ -391,6 +809,10 @@ def cmd_status(args) -> int:
     print(f"Claude Session Backup Status")
     print(f"  Claude dir:    {claude_dir}")
     print(f"  Git repo:      {'yes' if is_repo else 'NO'}")
+    if not is_repo:
+        print(f"    (backups disabled -- run `csb setup` to configure, or "
+              f"`git -C {claude_dir} init`;")
+        print(f"     `csb backup --no-commit` builds the search index without git)")
     print(f"  Total sessions: {stats['total_sessions']}")
     print(f"  Active:         {stats['active_sessions']}")
     print(f"  Deleted:        {stats['deleted_sessions']}")
@@ -480,18 +902,24 @@ def cmd_check(args) -> int:
     skips a session -- the hook excludes the currently-active one.
 
     Exit codes:
-      0                -- clean: every session is backed up
+      0                -- clean: every session is backed up (or indexed,
+                          in repo-less index-only mode)
       CHECK_GAP_EXIT   -- one or more sessions have un-backed-up changes
-      1                -- error (not a git repo)
+      1                -- error
+
+    Repo-less (#52): gap detection is DB-vs-disk only, so it runs fine
+    without a git repo -- and MUST, because the silent-failure scenario
+    (crashed box, no repo, hooks erroring into log files) is exactly when
+    the SessionStart warning is most needed. The summary adapts: it
+    recommends the git-free `csb backup --no-commit` and names the
+    missing-repo condition instead of pretending a backup is possible.
     """
     config = _get_config(args)
     claude_dir = config["claude_dir"]
     quiet = getattr(args, "quiet", False)
     exclude = getattr(args, "exclude", None)
 
-    if not is_git_repo(claude_dir):
-        print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
-        return 1
+    repoless = not is_git_repo(claude_dir)
 
     conn = open_db(config["index_path"])
     init_schema(conn)
@@ -500,13 +928,23 @@ def cmd_check(args) -> int:
 
     if not stale:
         if not quiet:
-            print("All sessions backed up.")
+            if repoless:
+                print("All sessions indexed (index-only: no git repo, "
+                      "no backup protection).")
+            else:
+                print("All sessions backed up.")
         return 0
 
     # Concise, user-facing summary (the hook puts this in a systemMessage).
     n = len(stale)
-    print(f"csb: {n} session(s) with un-backed-up changes "
-          f"(likely an unclean shutdown -- run `csb backup` to capture now):")
+    if repoless:
+        print(f"csb: {n} session(s) with un-indexed changes, and "
+              f"{claude_dir} is not a git repository (backups are failing). "
+              f"Run `csb backup --no-commit` to index now; "
+              f"`csb setup` enables real backups:")
+    else:
+        print(f"csb: {n} session(s) with un-backed-up changes "
+              f"(likely an unclean shutdown -- run `csb backup` to capture now):")
     for sf, recorded in stale[:5]:
         why = "never indexed" if recorded is None else "changed since last backup"
         print(f"  {sf.session_id[:8]}  ({why})")
@@ -3583,7 +4021,7 @@ def cmd_scan(args) -> int:
 
     return _render_scan_results(
         results, args, config, scope_label=scope_label, quiet=quiet,
-        deleted_filter=deleted_filter,
+        deleted_filter=deleted_filter, path_mode=True,
     )
 
 
@@ -3612,6 +4050,7 @@ def _session_noun(deleted_filter: str, plural: bool = True) -> str:
 def _render_scan_results(
     results, args, config, scope_label: str, quiet: bool,
     deleted_filter: str = "active",
+    path_mode: bool = False,
 ) -> int:
     """Sort, trim, and render scan results. Shared by all scan modes.
 
@@ -3621,8 +4060,9 @@ def _render_scan_results(
     """
     no_usage = getattr(args, "no_usage", False)
     noun = _session_noun(deleted_filter)
+    as_json = bool(args.__dict__.get("json"))
 
-    if not quiet:
+    if not quiet and not as_json:
         print(f"Scanning for {noun} {scope_label}...\n")
 
     # Sort by last activity (most recent first)
@@ -3644,9 +4084,18 @@ def _render_scan_results(
     results = results[:args.n]
 
     if not results:
+        if as_json:
+            print("[]")  # machine-readable empty -- no prose on stdout
+            return 0
         print(f"  No {noun} found.")
         if no_usage:
             print("  Tip: try without -NU to also search by folder usage.")
+        # Empty-state diagnosis + redirection (#52). Active scope only --
+        # deleted-scope queries already imply the user knows what they're
+        # looking for -- and suppressed for --quiet consumers.
+        if deleted_filter == "active" and not quiet:
+            for line in _empty_state_guidance(config, path_mode=path_mode):
+                print(line)
         return 0
 
     cleanup_days = read_cleanup_period(config["claude_dir"])

@@ -119,6 +119,9 @@ class _FakePopen:
 def captured_popen(monkeypatch, tmp_path):
     _FakePopen.calls = []
     monkeypatch.setattr(bh.subprocess, "Popen", _FakePopen)
+    # Repo present by default -- the probe shells out via subprocess.run,
+    # which would otherwise hit the fake Popen. Repo-less tests override.
+    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: True)
     # keep logs out of the real ~/.claude
     monkeypatch.setattr(bh.Path, "home", lambda: tmp_path)
     return _FakePopen
@@ -189,6 +192,40 @@ def test_main_spawns_on_manual(monkeypatch, captured_popen):
     assert len(captured_popen.calls) == 1
 
 
+def test_main_repoless_falls_back_to_no_commit(monkeypatch, captured_popen):
+    """Repo-less box (#52): the spawned backup carries --no-commit so the
+    index stays fresh instead of the run dying at the git precondition."""
+    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: False)
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
+    bh.main()
+    assert len(captured_popen.calls) == 1
+    cmd, _kwargs = captured_popen.calls[0]
+    assert "--no-commit" in cmd
+
+
+def test_main_with_repo_spawns_plain_backup(monkeypatch, captured_popen):
+    """With a git repo, the spawn is the classic full backup -- no
+    --no-commit sneaking in."""
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
+    bh.main()
+    cmd, _kwargs = captured_popen.calls[0]
+    assert "--no-commit" not in cmd
+
+
+def test_main_repoless_gap_still_warns(monkeypatch, captured_popen, capsys):
+    """Repo-less + gap: the systemMessage warning still fires AND the
+    recovery spawn is index-only (#52) -- the crash scenario that used to
+    fail silently."""
+    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: False)
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "startup", "s1"))
+    monkeypatch.setattr(bh, "_run_check", lambda sid: ("gap", "csb: 2 session(s) with un-indexed changes"))
+    bh.main()
+    assert len(captured_popen.calls) == 1
+    cmd, _kwargs = captured_popen.calls[0]
+    assert "--no-commit" in cmd
+    assert "systemMessage" in capsys.readouterr().out
+
+
 def test_main_does_not_wait(monkeypatch, captured_popen):
     """_FakePopen has no .wait(); main() completing proves it never waits."""
     monkeypatch.setattr(bh, "_read_hook_input", lambda: ("PreCompact", "", "s1"))
@@ -226,3 +263,57 @@ def test_main_spawns_detached(monkeypatch, captured_popen):
     assert len(captured_popen.calls) == 1
     _cmd, kwargs = captured_popen.calls[0]
     assert kwargs.get("creationflags") == 0x08000000 | 0x00000200
+
+
+def test_read_hook_input_strips_powershell_bom(monkeypatch):
+    """PowerShell's `|` pipe prepends a UTF-8 BOM; the parse must survive it
+    (a BOM'd payload used to fall back to ("", "", "") -- mis-classifying
+    the event as manual)."""
+    payload = "﻿" + json.dumps(
+        {"hook_event_name": "SessionEnd", "source": "", "session_id": "s9"}
+    )
+    _set_stdin(monkeypatch, payload)
+    assert bh._read_hook_input() == ("SessionEnd", "", "s9")
+
+
+def test_main_writes_fallback_note_before_opening_child_log(monkeypatch, tmp_path):
+    """Regression for the v0.6.0 checklist FV.5 finding: the [index-only]
+    fallback note must be flushed to the log BEFORE the child's output
+    handle is opened -- on Windows the inherited handle writes from the
+    position captured at open time, clobbering later-appended notes. We
+    pin the ordering: every note() written by main() must happen before
+    open_out()'s handle exists."""
+    order = []
+
+    class _OrderedPopen:
+        def __init__(self, cmd, **kwargs):
+            order.append("spawn")
+
+    real_note_target = {}
+
+    monkeypatch.setattr(bh.subprocess, "Popen", _OrderedPopen)
+    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: False)
+    monkeypatch.setattr(bh.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
+
+    # Wrap open() on the run log to record when the child's handle opens.
+    real_open = bh.Path.open
+
+    def tracking_open(self, *a, **k):
+        mode = a[0] if a else k.get("mode", "r")
+        if self.name.startswith("backup-") and str(mode).startswith("a"):
+            order.append(f"open:{mode}")
+        return real_open(self, *a, **k)
+
+    monkeypatch.setattr(bh.Path, "open", tracking_open)
+    bh.main()
+
+    log = tmp_path / ".claude" / "csb-logs" / "backup-SessionEnd.log"
+    content = log.read_text(encoding="utf-8")
+    assert "[index-only] no git repo" in content   # the note survived
+    # The fallback note's open must precede the child-output handle's open
+    # that feeds the spawn. Opens are all append-mode; the LAST open before
+    # "spawn" is the child handle, and the note text is already on disk by
+    # then (asserted above, plus ordering below).
+    assert order[-1] == "spawn"
+    assert order.count("spawn") == 1

@@ -77,7 +77,10 @@ def _read_hook_input():
         raw = sys.stdin.buffer.read().decode("utf-8")
     except Exception:
         return "", "", ""
-    raw = (raw or "").strip()
+    # PowerShell's native pipe prepends a UTF-8 BOM to piped text, which
+    # breaks json.loads AND silently mis-classifies the event (log lands
+    # in backup-manual.log). Strip it defensively (#52 checklist run).
+    raw = (raw or "").lstrip("﻿").strip()
     if not raw:
         return "", "", ""
     try:
@@ -182,14 +185,44 @@ def _emit_sessionstart_warning(detail):
         pass
 
 
-def _spawn_backup(out, note):
+def _git_repo_ok(claude_dir):
+    """Whether claude_dir is inside a git work tree (mirrors csb's
+    is_git_repo). On any probe failure (git missing, timeout), assume OK --
+    `csb backup` makes the authoritative call and logs its own error.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(claude_dir), "rev-parse", "--is-inside-work-tree"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
+        )
+        return r.returncode == 0 and r.stdout.strip() == "true"
+    except Exception:  # noqa: BLE001 -- a hook must never raise into Claude Code
+        return True
+
+
+def _backup_extra_args(note):
+    """Index-only fallback (#52): without a git repo, a bare `csb backup`
+    hard-fails and the hook's fire becomes a silent log-only error -- the
+    failure mode that left days of sessions unindexed. Fall back to
+    `--no-commit` so the index (list/scan/search) stays fresh, and say so
+    loudly in the log: this is indexing, NOT backup protection.
+    """
+    if _git_repo_ok(_claude_dir()):
+        return []
+    note("[index-only] no git repo -- falling back to `backup --no-commit` "
+         "(indexing only, NO backup protection; `git init` the Claude dir "
+         "to enable real backups)")
+    return ["--no-commit"]
+
+
+def _spawn_backup(out, note, extra_args=()):
     """Spawn `csb --quiet backup` detached + window-free, return immediately.
 
     Fire-and-don't-wait: the backup is decoupled from this process tree so it
     SURVIVES SessionEnd teardown and never flashes a console window (see
     _detach_kwargs). Returns True if the spawn was issued.
     """
-    cmd = find_csb() + ["--quiet", "backup"]
+    cmd = find_csb() + ["--quiet", "backup", *extra_args]
     try:
         subprocess.Popen(
             cmd,
@@ -203,6 +236,14 @@ def _spawn_backup(out, note):
         note("csb not found. Install with: pip install claude-session-backup")
     except Exception as e:  # noqa: BLE001 -- a hook must never raise into Claude Code
         note(f"backup spawn error: {e!r}")
+    finally:
+        # Popen duplicated the append-only fd into the child; release the
+        # parent's copy (the child's duplicate is unaffected).
+        if isinstance(out, int) and out not in (subprocess.DEVNULL,):
+            try:
+                os.close(out)
+            except OSError:
+                pass
     return False
 
 
@@ -239,9 +280,47 @@ def main():
             pass
 
     def open_out():
-        # Backup output -> the log (never the session's console).
+        """OS-level append-only fd for the spawned backup's output.
+
+        Kernel-append semantics must survive handle inheritance: every
+        child write lands at the file's CURRENT end. A Python "a"-mode
+        file object is NOT enough on Windows -- CRT O_APPEND is parent-
+        side emulation, and the duplicated handle shares a file pointer
+        snapshotted at open time, so a detached child overwrote notes
+        appended after the open (v0.6.0 checklist FV.5: 1-of-3 fallback
+        notes survived, with mid-line truncation, under rapid fires).
+        POSIX O_APPEND is kernel-level; Windows needs FILE_APPEND_DATA.
+        """
+        if run_log is None:
+            return subprocess.DEVNULL
         try:
-            return run_log.open("a", encoding="utf-8") if run_log is not None else subprocess.DEVNULL
+            if sys.platform == "win32":
+                import ctypes
+                import msvcrt
+                from ctypes import wintypes
+
+                FILE_APPEND_DATA = 0x0004
+                FILE_SHARE_READ_WRITE = 0x1 | 0x2
+                OPEN_ALWAYS = 4
+                FILE_ATTRIBUTE_NORMAL = 0x80
+                create_file = ctypes.windll.kernel32.CreateFileW
+                # Default ctypes restype is a 32-bit int -- a 64-bit HANDLE
+                # would truncate. Declare the real signature.
+                create_file.restype = wintypes.HANDLE
+                create_file.argtypes = [
+                    wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                    ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+                    wintypes.HANDLE,
+                ]
+                handle = create_file(
+                    str(run_log), FILE_APPEND_DATA, FILE_SHARE_READ_WRITE,
+                    None, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, None,
+                )
+                INVALID_HANDLE_VALUE = wintypes.HANDLE(-1).value
+                if handle in (None, INVALID_HANDLE_VALUE):
+                    return subprocess.DEVNULL
+                return msvcrt.open_osfhandle(handle, os.O_APPEND)
+            return os.open(str(run_log), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
         except OSError:
             return subprocess.DEVNULL
 
@@ -260,18 +339,25 @@ def main():
         if status == "gap":
             note(f"SessionStart source={source}: GAP detected -> warn user + recover backup")
             _emit_sessionstart_warning(detail)
-            _spawn_backup(open_out(), note)
+            # Order matters: write the fallback note BEFORE open_out() -- the
+            # child's inherited handle writes from the position captured at
+            # open time (Windows drops CRT O_APPEND across inheritance), so a
+            # note appended after open_out() gets overwritten by child output.
+            extra = _backup_extra_args(note)
+            _spawn_backup(open_out(), note, extra)
             return
         # status == "error": the detector itself failed. Back up defensively
         # (don't risk data loss because the check broke) but DON'T warn the
         # user -- we have no confirmed gap to report.
         note(f"SessionStart source={source}: check failed ({detail!r}) -> defensive backup")
-        _spawn_backup(open_out(), note)
+        extra = _backup_extra_args(note)  # before open_out() -- see gap path
+        _spawn_backup(open_out(), note, extra)
         return
 
     # PreCompact / SessionEnd / manual: always back up (detached).
     note(f"start background backup: event={hook_event_name or 'manual'} source={source or '-'}")
-    _spawn_backup(open_out(), note)
+    extra = _backup_extra_args(note)  # before open_out() -- see gap path
+    _spawn_backup(open_out(), note, extra)
 
 
 if __name__ == "__main__":

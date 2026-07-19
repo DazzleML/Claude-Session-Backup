@@ -609,16 +609,19 @@ def test_check_exclude_skips_session(mock_claude_dir, tmp_path):
     assert rc == 0
 
 
-def test_check_not_git_repo_returns_1(monkeypatch, tmp_path):
-    """A non-git claude dir is an error (rc 1), not a gap. (is_git_repo is
-    mocked False -- on a dev box the temp dir can sit inside the home git
-    repo, so a tmp path isn't reliably repo-free.)"""
+def test_check_not_git_repo_runs_detection_anyway(monkeypatch, tmp_path, capsys):
+    """#52: a non-git claude dir is no longer a hard error -- gap detection
+    is DB-vs-disk only, so check proceeds in index-only mode. An empty
+    projects dir -> clean (rc 0) with the index-only caveat. (is_git_repo
+    is mocked False -- on a dev box the temp dir can sit inside the home
+    git repo, so a tmp path isn't reliably repo-free.)"""
     monkeypatch.setattr(commands_module, "is_git_repo", MagicMock(return_value=False))
     plain = tmp_path / "not-claude"
     (plain / "projects").mkdir(parents=True)
     db = tmp_path / "check.db"
-    rc = cmd_check(_check_args(plain, db))
-    assert rc == 1
+    rc = cmd_check(_check_args(plain, db, quiet=False))
+    assert rc == 0
+    assert "index-only" in capsys.readouterr().out
 
 
 # ── csb status: un-backed-up surfacing (v0.3.9) ────────────────────
@@ -781,3 +784,513 @@ def test_cmd_search_no_min_strength_note_at_default(mock_search_env, capsys):
     cmd_search(args)
     err = capsys.readouterr().err
     assert "--min-strength applies only" not in err
+
+
+# ── #52: repo-less index-only mode + empty-state diagnosis ─────────────
+#
+# The crash-recovery scenario: ~/.claude with sessions on disk but no git
+# repo. `csb backup --no-commit` must index anyway (the read stack depends
+# on it), bare `csb backup` must keep failing loudly (a backup that cannot
+# commit protects nothing), and empty `list`/`scan` results must diagnose
+# an unbuilt index instead of dead-ending. is_git_repo is mocked in the
+# repo-less tests -- on a dev box tmp_path can sit inside an ancestor repo.
+
+from claude_session_backup.commands import (
+    cmd_backup,
+    cmd_list,
+    _empty_state_guidance,
+)
+from claude_session_backup.index import index_is_unbuilt
+from claude_session_backup.scanner import count_session_jsonls
+
+
+def _backup_args(claude_dir, db, no_commit=False, quiet=False):
+    return SimpleNamespace(
+        claude_dir=str(claude_dir), db=str(db),
+        no_commit=no_commit, quiet=quiet,
+    )
+
+
+def _list_args(claude_dir, db, **kw):
+    defaults = dict(
+        claude_dir=str(claude_dir), db=str(db),
+        n=20, json=False, filter=None, sort="last-used",
+        deleted=None, all=False, top=None, all_folders=False,
+        shortid=False, quiet=False,
+    )
+    defaults.update(kw)
+    return SimpleNamespace(**defaults)
+
+
+def _mock_repoless(monkeypatch):
+    monkeypatch.setattr(commands_module, "is_git_repo", MagicMock(return_value=False))
+
+
+def test_backup_no_commit_repoless_indexes(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC1: --no-commit without a git repo indexes the sessions (rc 0) and
+    warns [index-only] instead of dying at the git precondition."""
+    _mock_repoless(monkeypatch)
+    db = tmp_path / "idx.db"
+    rc = cmd_backup(_backup_args(mock_claude_dir_repoless, db, no_commit=True))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "[index-only]" in captured.err
+    assert "NO backup protection" in captured.err
+    conn = open_db(str(db))
+    init_schema(conn)
+    assert not index_is_unbuilt(conn)
+    conn.close()
+
+
+def test_backup_bare_repoless_still_errors_and_mentions_no_commit(
+    monkeypatch, mock_claude_dir_repoless, tmp_path, capsys,
+):
+    """AC5: bare `csb backup` without a repo keeps the hard error, and the
+    error now names the --no-commit escape hatch. Nothing gets indexed."""
+    _mock_repoless(monkeypatch)
+    db = tmp_path / "idx.db"
+    rc = cmd_backup(_backup_args(mock_claude_dir_repoless, db, no_commit=False))
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not a git repository" in captured.err
+    assert "--no-commit" in captured.err
+    conn = open_db(str(db))
+    init_schema(conn)
+    assert index_is_unbuilt(conn)
+    conn.close()
+
+
+def test_backup_no_commit_repoless_quiet_still_warns(
+    monkeypatch, mock_claude_dir_repoless, tmp_path, capsys,
+):
+    """The [index-only] warning survives --quiet -- hook runs log stderr,
+    and 'this was NOT a backup' must never be silent."""
+    _mock_repoless(monkeypatch)
+    db = tmp_path / "idx.db"
+    rc = cmd_backup(_backup_args(mock_claude_dir_repoless, db, no_commit=True, quiet=True))
+    assert rc == 0
+    assert "[index-only]" in capsys.readouterr().err
+
+
+def test_list_empty_index_with_files_hints_backup(
+    monkeypatch, mock_claude_dir_repoless, tmp_path, capsys,
+):
+    """AC3: empty index + transcripts on disk -> `csb list` explains the
+    index was never built and names both backup forms."""
+    db = tmp_path / "idx.db"
+    rc = cmd_list(_list_args(mock_claude_dir_repoless, db))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "No sessions found." in captured.out
+    assert "index is empty" in captured.out
+    assert "csb backup --no-commit" in captured.out
+
+
+def test_list_empty_index_no_files_no_hint(tmp_path, capsys):
+    """AC3: empty index + genuinely no session files -> classic empty state,
+    no misleading hint."""
+    claude = tmp_path / ".claude"
+    (claude / "projects").mkdir(parents=True)
+    db = tmp_path / "idx.db"
+    rc = cmd_list(_list_args(claude, db))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "No sessions found." in captured.out
+    assert "index is empty" not in captured.out
+
+
+def test_list_json_empty_index_no_hint(mock_claude_dir_repoless, tmp_path, capsys):
+    """AC7: --json output stays machine-readable -- no hint text."""
+    db = tmp_path / "idx.db"
+    rc = cmd_list(_list_args(mock_claude_dir_repoless, db, json=True))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "index is empty" not in captured.out
+    import json as _json
+    assert _json.loads(captured.out) == []
+
+
+def test_guidance_unbuilt_index_with_files(mock_claude_dir_repoless, tmp_path):
+    config = {
+        "claude_dir": str(mock_claude_dir_repoless),
+        "index_path": str(tmp_path / "idx.db"),
+    }
+    lines = _empty_state_guidance(config)
+    joined = "\n".join(lines)
+    assert "index is empty" in joined
+    assert "csb backup --no-commit" in joined
+
+
+def test_guidance_built_index_path_mode_redirects(mock_claude_dir, tmp_path):
+    """AC4: index built, path-scoped scan found nothing, sessions exist
+    elsewhere -> redirection tip (the 'scanned my checkout, session ran
+    from another cwd' mental-model gap)."""
+    db = tmp_path / "idx.db"
+    _index_sessions_at_live_mtime(mock_claude_dir, db)
+    config = {"claude_dir": str(mock_claude_dir), "index_path": str(db)}
+    lines = _empty_state_guidance(config, path_mode=True)
+    joined = "\n".join(lines)
+    assert "under other folders" in joined
+    assert "csb list -n 5" in joined
+
+
+def test_guidance_built_index_non_path_mode_silent(mock_claude_dir, tmp_path):
+    """A filtered `csb list` miss on a healthy index gets no guidance --
+    the redirection tip is path-scan-only."""
+    db = tmp_path / "idx.db"
+    _index_sessions_at_live_mtime(mock_claude_dir, db)
+    config = {"claude_dir": str(mock_claude_dir), "index_path": str(db)}
+    assert _empty_state_guidance(config, path_mode=False) == []
+
+
+def test_count_session_jsonls(mock_claude_dir_repoless, tmp_path):
+    assert count_session_jsonls(str(mock_claude_dir_repoless)) == 1
+    empty = tmp_path / "empty-claude"
+    (empty / "projects").mkdir(parents=True)
+    assert count_session_jsonls(str(empty)) == 0
+    assert count_session_jsonls(str(tmp_path / "nonexistent")) == 0
+
+
+def test_check_repoless_gap_mentions_no_commit(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Repo-less check runs gap detection anyway (the hook's systemMessage
+    path depends on it) and recommends the git-free indexing command."""
+    _mock_repoless(monkeypatch)
+    db = tmp_path / "check.db"
+    rc = cmd_check(_check_args(mock_claude_dir_repoless, db))
+    captured = capsys.readouterr()
+    assert rc == CHECK_GAP_EXIT
+    assert "not a git repository" in captured.out
+    assert "csb backup --no-commit" in captured.out
+
+
+def test_check_repoless_clean_when_indexed(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Repo-less + fully indexed -> rc 0, message flags index-only mode."""
+    _mock_repoless(monkeypatch)
+    db = tmp_path / "check.db"
+    _index_sessions_at_live_mtime(mock_claude_dir_repoless, db)
+    rc = cmd_check(_check_args(mock_claude_dir_repoless, db, quiet=False))
+    assert rc == 0
+    assert "index-only" in capsys.readouterr().out
+
+
+def test_status_repoless_shows_advice(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """`csb status` pairs `Git repo: NO` with the way out."""
+    _mock_repoless(monkeypatch)
+    db = tmp_path / "status.db"
+    cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir_repoless), db=str(db)))
+    out = capsys.readouterr().out
+    assert "Git repo:      NO" in out
+    assert "backups disabled" in out
+    assert "csb backup --no-commit" in out
+
+
+# ── v0.6.0 (#52): cmd_setup -- guided onboarding ───────────────────────
+#
+# is_git_repo is patched to a plain `.git`-exists check: deterministic on
+# dev boxes whose tmp dir may sit inside an ancestor repo, while still
+# flipping to True after cmd_setup's real `git init` runs.
+
+from claude_session_backup.commands import cmd_setup
+
+
+def _setup_args(claude_dir, db, **kw):
+    defaults = dict(
+        claude_dir=str(claude_dir), db=str(db),
+        auto=False, index_only=False, quiet=False,
+    )
+    defaults.update(kw)
+    return SimpleNamespace(**defaults)
+
+
+def _patch_dotgit_check(monkeypatch):
+    monkeypatch.setattr(
+        commands_module, "is_git_repo",
+        lambda d: (Path(d) / ".git").exists(),
+    )
+
+
+def _read_cfg(claude_dir):
+    import json as _json
+    p = Path(claude_dir) / "session-backup-config.json"
+    return _json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+
+def test_setup_auto_initializes_and_backs_up(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-S2: --auto on a repo-less dir -> git repo created, gitattributes
+    written, first backup committed, exit 0, zero prompts."""
+    _patch_dotgit_check(monkeypatch)
+    db = tmp_path / "setup.db"
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, db, auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert (mock_claude_dir_repoless / ".git").exists()
+    assert (mock_claude_dir_repoless / ".gitattributes").exists()
+    assert "Initialized git repository" in out
+    assert "First backup complete" in out
+    conn = open_db(str(db))
+    init_schema(conn)
+    assert not index_is_unbuilt(conn)   # the first backup indexed the session
+    conn.close()
+
+
+def test_setup_interactive_accept_defaults(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-S1: pressing Enter at both prompts (defaults) initializes and
+    backs up."""
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    answers = iter(["", ""])   # init? -> default Y; first backup? -> default Y
+    monkeypatch.setattr(commands_module, "_ask", lambda q: next(answers))
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    assert rc == 0
+    assert (mock_claude_dir_repoless / ".git").exists()
+
+
+def test_setup_interactive_decline_leaves_untouched(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    monkeypatch.setattr(commands_module, "_ask", lambda q: "n")
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert not (mock_claude_dir_repoless / ".git").exists()
+    assert "--index-only" in out   # the decline path names the official opt-out
+
+
+def test_setup_interactive_eof_aborts_clean(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    monkeypatch.setattr(commands_module, "_ask", lambda q: None)   # EOF/Ctrl-C
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    assert rc == 2
+    assert not (mock_claude_dir_repoless / ".git").exists()
+
+
+def test_setup_noninteractive_without_flags_exits_2(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-S6: piped/CI `csb setup` with no mode flag -> exit 2 with
+    instructions, no mutation, no hang."""
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: False)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    err = capsys.readouterr().err
+    assert rc == 2
+    assert "--auto" in err and "--index-only" in err
+    assert not (mock_claude_dir_repoless / ".git").exists()
+
+
+def test_setup_index_only_flag_records_signoff(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-S3: the flag is the consent in non-TTY runs; the sign-off (mode +
+    timestamp) lands in the config file and the output states the cost."""
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: False)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", index_only=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    cfg = _read_cfg(mock_claude_dir_repoless)
+    assert cfg["backup_mode"] == "index-only"
+    assert cfg["index_only_ack_at"]
+    assert "NOTHING IS BACKED UP" in out
+
+
+def test_setup_index_only_interactive_requires_typed_confirm(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+
+    # Wrong confirmation -> nothing recorded.
+    monkeypatch.setattr(commands_module, "_ask", lambda q: "yes")
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", index_only=True))
+    assert rc == 2
+    assert _read_cfg(mock_claude_dir_repoless).get("backup_mode") is None
+
+    # Typing the mode name back -> recorded.
+    monkeypatch.setattr(commands_module, "_ask", lambda q: "index-only")
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", index_only=True))
+    assert rc == 0
+    assert _read_cfg(mock_claude_dir_repoless)["backup_mode"] == "index-only"
+
+
+def test_setup_with_repo_reports_protected_and_clears_stale_ack(monkeypatch, mock_claude_dir, tmp_path, capsys):
+    """AC-S5-adjacent: repo already present -> 'nothing to set up'; a stale
+    index-only sign-off is cleared loudly so config matches reality."""
+    import json as _json
+    (mock_claude_dir / "session-backup-config.json").write_text(
+        _json.dumps({"backup_mode": "index-only", "index_only_ack_at": "2026-01-01"}),
+        encoding="utf-8",
+    )
+    rc = cmd_setup(_setup_args(mock_claude_dir, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "nothing to set up" in out
+    assert "Cleared the old index-only sign-off" in out
+    assert _read_cfg(mock_claude_dir)["backup_mode"] == "full"
+
+
+def test_setup_index_only_with_repo_refuses_downgrade(mock_claude_dir, tmp_path, capsys):
+    rc = cmd_setup(_setup_args(mock_claude_dir, tmp_path / "s.db", index_only=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "downgrade" in out
+    assert _read_cfg(mock_claude_dir).get("backup_mode") is None  # nothing recorded
+
+
+def test_setup_missing_dir_errors(tmp_path, capsys):
+    rc = cmd_setup(_setup_args(tmp_path / "nope", tmp_path / "s.db"))
+    assert rc == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+# ── v0.6.0: setup closing checklist is state-aware ([x]/[ ]) ───────────
+#
+# `csb setup` must never instruct a user to run something already done:
+# each checklist item probes real state (git repo, last scan in the DB,
+# Claude Code's plugin registries) and shows the command only when the
+# item is actually missing.
+
+
+def _write_plugin_registries(claude_dir, marketplace=True, plugin=True):
+    import json as _json
+    base = Path(claude_dir) / "plugins"
+    base.mkdir(parents=True, exist_ok=True)
+    if marketplace:
+        (base / "known_marketplaces.json").write_text(_json.dumps({
+            "dazzle-claude-session-backup": {"source": {"repo": "DazzleML/Claude-Session-Backup"}},
+        }), encoding="utf-8")
+    if plugin:
+        (base / "installed_plugins.json").write_text(_json.dumps({
+            "version": 2,
+            "plugins": {
+                "claude-session-backup@dazzle-claude-session-backup": [
+                    {"scope": "user", "version": "0.6.0"},
+                ],
+            },
+        }), encoding="utf-8")
+
+
+def test_setup_checklist_all_done_shows_no_commands(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Everything configured -> three [x] rows and NO `claude plugin` /
+    `csb backup` instructions (the user's complaint: don't tell people to
+    run what's already done)."""
+    _patch_dotgit_check(monkeypatch)
+    _write_plugin_registries(mock_claude_dir_repoless)
+    db = tmp_path / "s.db"
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, db, auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out.count("[x]") == 3
+    assert "[ ]" not in out
+    assert "claude plugin marketplace add" not in out
+    assert "claude plugin install" not in out
+
+
+def test_setup_checklist_missing_plugin_shows_only_missing_commands(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Marketplace added but plugin not installed -> [ ] plugin row with
+    ONLY the install command (no marketplace-add re-instruction)."""
+    _patch_dotgit_check(monkeypatch)
+    _write_plugin_registries(mock_claude_dir_repoless, marketplace=True, plugin=False)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", auto=True))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[ ] auto-backup plugin" in out
+    assert "claude plugin install" in out
+    assert "claude plugin marketplace add" not in out
+    assert "[x] first backup" in out           # --auto ran it
+
+
+def test_setup_checklist_backup_declined_left_unchecked(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Init accepted, first backup declined -> backup row is [ ] with the
+    csb backup pointer."""
+    _patch_dotgit_check(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    answers = iter(["", "n"])   # init? -> Y (default); first backup? -> no
+    monkeypatch.setattr(commands_module, "_ask", lambda q: next(answers))
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[x] git backup store" in out
+    assert "[ ] first backup" in out
+    assert "-> csb backup" in out
+
+
+# ── v0.6.0: setup header names the claude-dir source (relocated setups) ─
+
+
+def test_claude_dir_source_precedence(monkeypatch, tmp_path):
+    """Flag > CLAUDE_DIR > CLAUDE_CONFIG_DIR > default -- mirrors
+    load_config so docker/VM relocations (#45) see which mechanism won."""
+    from claude_session_backup.commands import _claude_dir_source
+    monkeypatch.delenv("CLAUDE_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    # Keep the config-file probe away from the real ~/.claude config.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    flag = SimpleNamespace(claude_dir="C:/x")
+    noflag = SimpleNamespace(claude_dir=None)
+
+    assert _claude_dir_source(flag) == "--claude-dir"
+    assert _claude_dir_source(noflag) == "default"
+
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "C:/relocated")
+    assert _claude_dir_source(noflag) == "CLAUDE_CONFIG_DIR env"
+
+    monkeypatch.setenv("CLAUDE_DIR", "C:/more-specific")
+    assert _claude_dir_source(noflag) == "CLAUDE_DIR env"
+
+    assert _claude_dir_source(flag) == "--claude-dir"  # flag still wins
+
+
+def test_setup_header_shows_source(monkeypatch, mock_claude_dir, tmp_path, capsys):
+    rc = cmd_setup(_setup_args(mock_claude_dir, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "(via --claude-dir)" in out
+
+
+# ── v0.6.0 checklist FV.2c fix: csb scan --json ────────────────────────
+#
+# The render path always supported json output, but the scan parser never
+# registered the flag (found by the tester run). Pin: flag parses, stdout
+# is PURE json in both empty and non-empty cases (no "Scanning for..."
+# preamble, no empty-state prose).
+
+
+def _cli(argv):
+    from claude_session_backup.cli import main as cli_main
+    return cli_main(argv)
+
+
+def test_scan_json_empty_is_pure_json(monkeypatch, mock_claude_dir, tmp_path, capsys):
+    import json as _json
+    scope = tmp_path / "nothing-here"
+    scope.mkdir()
+    rc = _cli(["scan", "-d", str(scope), "--json",
+               "--claude-dir", str(mock_claude_dir), "--db", str(tmp_path / "s.db")])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _json.loads(captured.out) == []
+    assert "Scanning for" not in captured.out
+
+
+def test_scan_json_results_are_pure_json(tmp_path, capsys):
+    import json as _json
+    # A session whose cwd is a REAL local dir, so the live filesystem scan
+    # matches it (the conftest fixture's POSIX cwds don't resolve on
+    # Windows).
+    from claude_session_backup.scanner import sanitize_path
+    work = tmp_path / "work"
+    work.mkdir()
+    claude = tmp_path / ".claude"
+    proj = claude / "projects" / sanitize_path(str(work))
+    proj.mkdir(parents=True)
+    sid = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+    (proj / f"{sid}.jsonl").write_text(
+        _json.dumps({"type": "user", "timestamp": "2026-07-18T10:00:00Z",
+                     "cwd": str(work), "sessionId": sid, "uuid": "u1"}) + "\n",
+        encoding="utf-8",
+    )
+    rc = _cli(["scan", "-d", str(work), "--json",
+               "--claude-dir", str(claude), "--db", str(tmp_path / "s.db")])
+    captured = capsys.readouterr()
+    assert rc == 0
+    data = _json.loads(captured.out)
+    assert isinstance(data, list) and len(data) == 1
+    assert data[0]["session_id"] == sid
+    assert "Scanning for" not in captured.out

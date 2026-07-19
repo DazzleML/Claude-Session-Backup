@@ -16,22 +16,27 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 **csb** preserves every session in your existing `~/.claude` git repository, builds a searchable metadata index, detects deletions, and can restore lost sessions from git history.
 
 > [!NOTE]
-> **Alpha software (cusp of beta) -- nearly feature-complete.** Everything on the original roadmap has shipped: backup, deletion detection, content search (JSONL+sesslogs+FTS5), full session restore (a deleted session's complete footprint recovered from git -- transcript, subagents, tool-results, logger sesslogs -- with original timestamps and symlinks, resumable in Claude Code), a viewer launcher (`csb view`), and a human-readable chat-log layer (`csb distill`).
+> **Beta software (as of v0.6.0) -- feature-complete and in daily use.** Everything on the original roadmap has shipped: backup, deletion detection, content search (JSONL+sesslogs+FTS5), full session restore (a deleted session's complete footprint recovered from git -- transcript, subagents, tool-results, logger sesslogs -- with original timestamps and symlinks, resumable in Claude Code), a viewer launcher (`csb view`), a human-readable chat-log layer (`csb distill`), and guided onboarding (`csb setup`).
 >
-> Staying alpha a little longer while the tires get kicked; beta follows once v0.4.0 has settled. Expect occasional rough edges and breaking changes between minor versions until then. By all means use it (and please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues)) but, as with any backup tool, keep a second copy of anything irreplaceable.
+> Beta means the tool works well for real daily use -- not that the surfaces are frozen. Breaking changes may still land between versions when the design calls for it. Please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues) for anything rough -- and, as with any backup tool, keep a second copy of anything truly irreplaceable.
 
 ## Quick Start
 
-Three commands install everything -- the CLI plus the Claude Code plugin that fires backups automatically on PreCompact and SessionEnd:
+Four commands install everything -- the CLI, the git store that holds the backups, and the Claude Code plugin that fires backups automatically on PreCompact and SessionEnd:
 
 ```bash
 # 1. Install the csb CLI
 pip install claude-session-backup
 
-# 2. Add the DazzleML marketplace (one-time)
+# 2. Guided setup -- detects/initializes the git backup store, hardens
+#    .gitattributes, and runs your first backup. (`csb setup --auto` for
+#    scripts; until setup completes, every csb run reminds you loudly.)
+csb setup
+
+# 3. Add the DazzleML marketplace (one-time)
 claude plugin marketplace add "DazzleML/Claude-Session-Backup"
 
-# 3. Install the plugin -- registers the PreCompact + SessionEnd hooks
+# 4. Install the plugin -- registers the PreCompact + SessionEnd hooks
 claude plugin install claude-session-backup@dazzle-claude-session-backup
 ```
 
@@ -53,6 +58,7 @@ csb backup
 
 ## Features
 
+- **Guided setup**: `csb setup` configures the git backup store (detects ancestor repos, `--auto` for scripts) and closes with a state-aware checklist -- running unprotected requires an explicit `--index-only` sign-off, or csb reminds you on every run
 - **Full session preservation**: Every byte of JSONL, subagent data, tool results backed up via git
 - **Timeline view**: Sessions sorted by last use with relative dates, start folder, and top N working directories
 - **Folder analysis**: See where work actually happened -- the most-used folder is highlighted
@@ -68,6 +74,7 @@ csb backup
 The daily drivers:
 
 ```bash
+csb setup                       # Guided onboarding (git store, first backup, checklist)
 csb backup                      # Scan, index, git commit
 csb list                        # Timeline of sessions (filter, sort, --deleted)
 csb scan -d <path> --deleted    # Find (and bulk-restore) what was purged in a folder
@@ -173,7 +180,7 @@ The Claude Code plugin (from Quick Start above) covers most users: PreCompact fi
 
 - **Python 3.10+**
 - **Git** (for backup storage)
-- **`~/.claude/`** initialized as a git repository (`git -C ~/.claude init`)
+- **`~/.claude/`** initialized as a git repository -- `csb setup` does this for you (guided; `--auto` for scripts). Required for backup/restore; running without one is an explicit exception (`csb setup --index-only`): the search index still works (`list`/`scan`/`search`), but nothing is protected, and csb reminds you on every run until you either set up or sign off
 - Moved your Claude directory? csb follows `CLAUDE_CONFIG_DIR` automatically; `--claude-dir`, `CLAUDE_DIR`, and the `claude_dir` config key also work
 
 ## Installation

@@ -633,7 +633,9 @@ def test_check_subcommand_has_description(capsys):
         parser.parse_args(["_check", "-h"])
     out = capsys.readouterr().out
     assert "health check" in out.lower()
-    assert "csb status" in out
+    # Normalize argparse's line-wrapping -- the phrase must survive re-wraps
+    # that land a break between "csb" and "status" (#52 description edit).
+    assert "csb status" in " ".join(out.split())
 
 
 # == #41: unified --deleted [only|all] grammar across list / search / scan ==
@@ -709,3 +711,157 @@ def test_deleted_mode_all_alias_maps_and_warns_once(capsys):
         assert "deprecated" not in capsys.readouterr().err
     finally:
         cmds._warned_all_deprecated = False
+
+
+# == #52: `python -m claude_session_backup` exit-code propagation ==
+
+
+def test_module_invocation_propagates_exit_code(mock_claude_dir_repoless, tmp_path):
+    """__main__.py must sys.exit(main()) -- a bare main() call always exited
+    0, silently breaking rc-sensitive callers of the module form (notably the
+    backup hook's `python -m ... _check` fallback, where a gap's rc 10
+    collapsing to 0 reads as 'all backed up'). Uses `_check` with one
+    unindexed session: gap detection is repo-independent (#52), so the
+    expected rc 10 holds whether or not tmp sits inside an ancestor repo."""
+    import os
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    env = {**os.environ, "PYTHONPATH": str(repo_root)}
+    r = subprocess.run(
+        [_sys.executable, "-m", "claude_session_backup", "_check", "--quiet",
+         "--claude-dir", str(mock_claude_dir_repoless),
+         "--db", str(tmp_path / "modrc.db")],
+        capture_output=True, text=True, timeout=120, env=env,
+        cwd=str(tmp_path),  # NOT the repo root -- proves PYTHONPATH does the work
+    )
+    assert r.returncode == 10, (r.returncode, r.stdout, r.stderr)
+
+
+# == v0.6.0 (#52): every-run no-protection banner + csb setup ==
+#
+# Unprotected is the EXCEPTION: cli.main() prints a loud stderr banner on
+# EVERY interactive run against a repo-less claude dir until resolved --
+# either a git repo exists, or the user recorded an explicit index-only
+# sign-off (`csb setup --index-only` -> backup_mode in the config file).
+# Internal commands, --quiet runs (the hook), and `setup` itself never
+# show it. is_git_repo is patched at git_ops -- _maybe_repoless_banner
+# imports it lazily, so the patch is picked up.
+
+import json as _json_mod
+
+
+def _cli_main(argv):
+    from claude_session_backup.cli import main as cli_main
+    return cli_main(argv)
+
+
+def _banner_argv(claude, tmp_path, *extra):
+    return ["list", "--claude-dir", str(claude), "--db", str(tmp_path / "fr.db"),
+            *extra]
+
+
+def _patch_repoless(monkeypatch, value=False):
+    import claude_session_backup.git_ops as git_ops
+    monkeypatch.setattr(git_ops, "is_git_repo", lambda d: value)
+
+
+def test_banner_repoless_shows_every_run(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_repoless(monkeypatch)
+    rc = _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "NO BACKUP PROTECTION" in captured.err
+    assert "csb setup" in captured.err
+    assert "NO BACKUP PROTECTION" not in captured.out  # stderr only
+
+    # Second run: STILL shows -- the nag persists until resolved.
+    _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path))
+    assert "NO BACKUP PROTECTION" in capsys.readouterr().err
+
+
+def test_banner_silent_with_repo(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_repoless(monkeypatch, value=True)
+    _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path))
+    assert "NO BACKUP PROTECTION" not in capsys.readouterr().err
+
+
+def test_banner_silenced_by_index_only_ack(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """The recorded sign-off (backup_mode=index-only in the config file) is
+    the ONLY repo-less state that silences the banner."""
+    _patch_repoless(monkeypatch)
+    cfg = mock_claude_dir_repoless / "session-backup-config.json"
+    cfg.write_text(_json_mod.dumps({"backup_mode": "index-only"}), encoding="utf-8")
+    _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path))
+    assert "NO BACKUP PROTECTION" not in capsys.readouterr().err
+
+
+def test_banner_not_shown_on_quiet_run(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """--quiet (how hooks call csb): captured stderr is not user
+    communication -- no banner."""
+    _patch_repoless(monkeypatch)
+    _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path, "--quiet"))
+    assert "NO BACKUP PROTECTION" not in capsys.readouterr().err
+
+
+def test_banner_json_stdout_stays_clean(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _patch_repoless(monkeypatch)
+    rc = _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path, "--json"))
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert _json_mod.loads(captured.out) == []   # banner never corrupts stdout
+    assert "NO BACKUP PROTECTION" in captured.err
+
+
+# == csb setup: parsing + -V shorthand ==
+
+
+def test_parse_setup_defaults():
+    parser = build_parser()
+    args = parser.parse_args(["setup"])
+    assert args.command == "setup"
+    assert args.auto is False
+    assert args.index_only is False
+
+
+def test_parse_setup_flags():
+    parser = build_parser()
+    assert parser.parse_args(["setup", "--auto"]).auto is True
+    assert parser.parse_args(["setup", "--index-only"]).index_only is True
+
+
+def test_version_short_flag_matches_long(capsys):
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["-V"])
+    short = capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--version"])
+    assert short == capsys.readouterr().out
+    assert short.startswith("csb ")
+
+
+# == v0.6.0: `csb help` alias ==
+
+
+def test_help_alias_prints_help(capsys):
+    """`csb help` must behave like `csb --help`, not error with
+    'invalid choice'."""
+    from claude_session_backup.cli import main as cli_main
+    with pytest.raises(SystemExit) as exc:
+        cli_main(["help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage: csb" in out
+
+
+def test_help_alias_with_command(capsys):
+    """`csb help setup` -> `csb setup --help`."""
+    from claude_session_backup.cli import main as cli_main
+    with pytest.raises(SystemExit) as exc:
+        cli_main(["help", "setup"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage: csb setup" in out

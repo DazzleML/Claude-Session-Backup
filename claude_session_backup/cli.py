@@ -156,7 +156,7 @@ def build_parser():
         description="Git-backed Claude Code session backup tool.",
     )
     parser.add_argument(
-        "--version", action="version", version=f"%(prog)s {DISPLAY_VERSION}"
+        "-V", "--version", action="version", version=f"%(prog)s {DISPLAY_VERSION}"
     )
 
     # metavar="<command>" keeps the usage line clean (a generic placeholder
@@ -165,13 +165,44 @@ def build_parser():
     # both the usage line and the command listing.
     sub = parser.add_subparsers(dest="command", metavar="<command>", help="Available commands")
 
+    # setup (v0.6.0, #52): guided onboarding -- THE way to the protected state
+    p_setup = sub.add_parser(
+        "setup",
+        help="Configure the git backup store (guided; --auto for no prompts)",
+        description=(
+            "Guided onboarding: checks the Claude dir, detects an existing git "
+            "repo (including one rooted at an ancestor, e.g. a home-dir repo "
+            "tracking .claude/), offers to initialize one when none exists, "
+            "hardens .gitattributes, and offers the first backup. "
+            "`--auto` performs all of that without prompts (for scripts and "
+            "provisioning). `--index-only` is the EXPLICIT exception path: it "
+            "records your sign-off that sessions are indexed but NOT backed "
+            "up, which is the only way to silence the no-protection banner "
+            "without a repo."
+        ),
+    )
+    _add_common_flags(p_setup)
+    p_setup.add_argument(
+        "--auto",
+        action="store_true",
+        help="Non-interactive: initialize the repo (and run the first backup) "
+             "without prompting",
+    )
+    p_setup.add_argument(
+        "--index-only",
+        action="store_true",
+        help="Explicitly opt out of backup protection: record a sign-off that "
+             "csb runs index-only (list/scan/search work; nothing is preserved)",
+    )
+
     # backup
     p_backup = sub.add_parser("backup", help="Scan sessions, update index, git commit")
     _add_common_flags(p_backup)
     p_backup.add_argument(
         "--no-commit",
         action="store_true",
-        help="Update index but skip git commit",
+        help="Update index but skip git commit (works without a git repo: "
+             "index-only, no backup protection)",
     )
 
     # list
@@ -409,6 +440,7 @@ def build_parser():
              "filter (equivalent to `csb scan -d dirname term2`). Otherwise rejected.",
     )
     p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
+    p_scan.add_argument("--json", action="store_true", help="Output as JSON")
     p_scan.add_argument(
         "--no-usage", "-NU", action="store_true",
         help="Skip folder_usage match; only consider session start_folder",
@@ -750,7 +782,8 @@ def build_parser():
             "Reports sessions whose transcript is newer than the last backup "
             "scan (or were never indexed) -- i.e. sessions with un-backed-up "
             "changes. Exit code: 0 = all backed up, 10 = gap(s) found, "
-            "1 = not a git repo. Hidden from `csb --help` because it's a hook "
+            "1 = error. Works without a git repo (index-only detection, #52). "
+            "Hidden from `csb --help` because it's a hook "
             "mechanism, not a user command -- the user-facing view of the same "
             "data is the `Un-backed-up:` line in `csb status`."
         ),
@@ -782,6 +815,73 @@ def _split_passthrough(argv):
     return list(argv), []
 
 
+def _maybe_repoless_banner(args):
+    """No-protection banner (v0.6.0, #52): unprotected is the EXCEPTION.
+
+    Every interactive csb run against a claude dir with no git repo (and
+    no recorded index-only sign-off) prints a loud stderr banner pointing
+    at `csb setup`. It persists on EVERY run until one of the two
+    resolved states is reached: a git repo exists (protection on), or the
+    user explicitly ran `csb setup --index-only` (signed exception --
+    banner silenced; `csb status` keeps reporting the state).
+
+    Skipped for internal commands (`_check`), `--quiet` runs (the hooks
+    fire `csb --quiet ...` in the background -- captured stderr is not
+    user communication), and `setup` itself (it IS the fix).
+
+    Cost: config load (already cheap) + one `git rev-parse` per
+    interactive run while unresolved; the index-only ack short-circuits
+    before the subprocess. Never raises -- the banner must not break a
+    command.
+    """
+    try:
+        command = getattr(args, "command", None) or ""
+        if command.startswith("_") or command == "setup" or getattr(args, "quiet", False):
+            return
+        from pathlib import Path
+
+        from .config import load_config, resolve_paths
+
+        config = load_config(getattr(args, "claude_dir", None))
+        if getattr(args, "claude_dir", None):
+            config["claude_dir"] = args.claude_dir
+        if str(config.get("backup_mode") or "full") == "index-only":
+            return  # signed exception -- silenced
+        claude_dir = resolve_paths(config)["claude_dir"]
+        if not Path(claude_dir).is_dir():
+            return
+
+        from .git_ops import is_git_repo
+
+        if is_git_repo(claude_dir):
+            return  # protected -- nothing to say
+
+        bar = "=" * 68
+
+        def _warn(text, style=None):
+            # Red where rich + a real terminal allow it; plain otherwise
+            # (pipes/captures/tests see the bare text either way).
+            try:
+                from rich.console import Console
+
+                Console(file=sys.stderr, highlight=False, soft_wrap=True,
+                        markup=False).print(text, style=style)
+            except ImportError:
+                print(text, file=sys.stderr)
+
+        _warn(bar, "red")
+        _warn(f"csb: NO BACKUP PROTECTION -- {claude_dir} has no git repository.",
+              "bold red")
+        _warn("Sessions are indexed at best; nothing is preserved or restorable.")
+        _warn("Run `csb setup` for guided configuration (`csb setup --auto` for")
+        _warn("no prompts). To stay unprotected ON PURPOSE, record your sign-off")
+        _warn("with `csb setup --index-only` -- that is the only way to silence")
+        _warn("this banner without a repo. Details: `csb status`.")
+        _warn(bar, "red")
+    except Exception:  # noqa: BLE001 -- the banner must never break a command
+        pass
+
+
 def main(argv=None):
     """Entry point for csb CLI."""
     # Hoist common flags from before the subcommand to after it.
@@ -795,6 +895,11 @@ def main(argv=None):
     # is never mistaken for one of csb's own options. argparse never sees the
     # `--` -- the tail is reattached to the namespace as `args.passthrough`.
     argv, passthrough = _split_passthrough(argv)
+
+    # `csb help` / `csb help <command>` -> argparse's --help forms. Users
+    # type it constantly; "invalid choice: 'help'" is a hostile answer.
+    if argv and argv[0] == "help":
+        argv = argv[1:2] + ["--help"] if len(argv) > 1 else ["--help"]
 
     argv = _hoist_common_flags(argv)
 
@@ -818,8 +923,15 @@ def main(argv=None):
         )
         return 2
 
+    # Onboarding enforcement: unprotected-and-unacknowledged cannot be
+    # quiet -- banner every interactive run until resolved (v0.6.0, #52).
+    _maybe_repoless_banner(args)
+
     # Import handlers lazily to keep startup fast
-    if args.command == "backup":
+    if args.command == "setup":
+        from .commands import cmd_setup
+        return cmd_setup(args)
+    elif args.command == "backup":
         from .commands import cmd_backup
         return cmd_backup(args)
     elif args.command == "list":

@@ -63,7 +63,7 @@ def test_provenance_sets_partition_all_names():
     assert sum(len(t) for t in tiers) == len(union), "tiers overlap"
     declared = {
         ClaudePaths.PROJECTS, ClaudePaths.FILE_HISTORY, ClaudePaths.TASKS,
-        ClaudePaths.SESSION_ENV, ClaudePaths.SETTINGS_FILE,
+        ClaudePaths.SESSION_ENV, ClaudePaths.SETTINGS_FILE, ClaudePaths.PLUGINS,
         ClaudePaths.SESSION_STATES, ClaudePaths.SESSLOGS,
         ClaudePaths.DISTILLED, ClaudePaths.FTS_DIR, ClaudePaths.DEFAULT_DB,
         ClaudePaths.LOCK_FILE, ClaudePaths.CONFIG_FILE, ClaudePaths.GITATTRIBUTES,

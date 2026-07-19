@@ -18,8 +18,11 @@ The day-to-day patterns, expanded from the README's quick list:
 ## Full command list
 
 ```bash
+csb setup                             # Guided onboarding: detect/init the git store, first backup
+csb setup --auto                      # Same, no prompts (scripts / provisioning)
+csb setup --index-only                # EXPLICIT opt-out of protection (records your sign-off)
 csb backup                            # Scan, index, git commit (noise + user)
-csb backup --no-commit                # Scan and index only
+csb backup --no-commit                # Scan and index only (works without a git repo)
 csb list [-n 20]                      # Timeline view (default sort: last-used)
 csb list [keyword]                    # Filter by keyword in name/project/folders
 csb list --sort expiration            # Sort by soonest-to-purge first
@@ -60,6 +63,8 @@ csb config settings:cleanupPeriodDays 365     # Set the TTL (writes ~/.claude/se
 ```
 
 Common flags (`--quiet`, `--claude-dir`, `--db`) work before OR after the subcommand.
+
+**No git repo yet? Protection is the rule; index-only is the signed exception (#52, v0.6.0).** `csb setup` is the way in: it detects an existing repo (including one rooted at an ancestor, e.g. a home-dir repo tracking `.claude/`), offers to `git init` when none exists (`--auto` skips the prompts), hardens `.gitattributes`, and runs your first backup. Until the dir is protected -- or you record an explicit sign-off with `csb setup --index-only` -- **every interactive csb run prints a NO BACKUP PROTECTION banner**. Meanwhile the tool still functions: `csb backup --no-commit` scans and indexes every session even without a repo (so `list`, `scan`, `search`, `resume`, `distill` all work), saying loudly that this is `[index-only] ... NO backup protection`; this exists for the recovery moment -- a crashed or freshly rebuilt box where you need to find your sessions *before* setup is fixed. Bare `csb backup` still requires the repo and points at `csb setup`. The automation hooks fall back to index-only runs on a repo-less box, so the index stays fresh either way. Running `csb setup` after signing off index-only re-enables protection and clears the sign-off.
 
 **Relocated `~/.claude`?** csb follows Claude Code's `CLAUDE_CONFIG_DIR` automatically (container / host-mount / worktree-isolated setups need zero csb configuration). Precedence: `--claude-dir` > `CLAUDE_DIR` > `CLAUDE_CONFIG_DIR` > `claude_dir` config key > `~/.claude`; the default DB location follows the relocation too.
 

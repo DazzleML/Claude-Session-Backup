@@ -103,6 +103,32 @@ def scan_projects(claude_dir: str) -> list[SessionFiles]:
     return sessions
 
 
+def count_session_jsonls(claude_dir: str) -> int:
+    """Cheap count of session transcripts on disk (projects/*/<uuid>.jsonl).
+
+    Used by empty-state diagnostics (#52) to distinguish "the index was
+    never built" from "there are genuinely no sessions" -- a count only,
+    no stat calls or metadata extraction, so it's safe to run on every
+    empty `csb list` / `csb scan` result.
+    """
+    projects_dir = ClaudePaths.from_dir(claude_dir).projects
+    if not projects_dir.exists():
+        return 0
+
+    count = 0
+    try:
+        for project_dir in projects_dir.iterdir():
+            if not project_dir.is_dir():
+                continue
+            for item in project_dir.iterdir():
+                if (item.suffix == ".jsonl" and UUID_PATTERN.match(item.stem)
+                        and item.is_file()):
+                    count += 1
+    except OSError:
+        pass
+    return count
+
+
 def scan_session_states(claude_dir: str) -> dict[str, Path]:
     """
     Scan ~/.claude/session-states/ for all known session IDs.

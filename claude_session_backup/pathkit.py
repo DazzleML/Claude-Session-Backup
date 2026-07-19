@@ -107,6 +107,7 @@ class ClaudePaths:
     TASKS: ClassVar[str] = "tasks"              # task v2 state
     SESSION_ENV: ClassVar[str] = "session-env"  # shell env snapshots
     SETTINGS_FILE: ClassVar[str] = "settings.json"
+    PLUGINS: ClassVar[str] = "plugins"          # plugin/marketplace registries
 
     # claude-session-logger companion: present ONLY when the logger plugin
     # is installed. csb treats these as optional everywhere.
@@ -127,7 +128,7 @@ class ClaudePaths:
     # reasoning (diagnostics, future doctor command). Must partition the
     # names above -- pinned by test.
     CORE_NAMES: ClassVar[frozenset] = frozenset({
-        PROJECTS, FILE_HISTORY, TASKS, SESSION_ENV, SETTINGS_FILE,
+        PROJECTS, FILE_HISTORY, TASKS, SESSION_ENV, SETTINGS_FILE, PLUGINS,
     })
     COMPANION_NAMES: ClassVar[frozenset] = frozenset({SESSION_STATES, SESSLOGS})
     CSB_NAMES: ClassVar[frozenset] = frozenset({
@@ -157,6 +158,10 @@ class ClaudePaths:
     @property
     def sesslogs(self) -> Path:
         return self.root / self.SESSLOGS
+
+    @property
+    def plugins(self) -> Path:
+        return self.root / self.PLUGINS
 
     @property
     def distilled(self) -> Path:

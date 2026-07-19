@@ -962,6 +962,16 @@ def get_active_session_ids(conn: sqlite3.Connection) -> set[str]:
     return {row["session_id"] for row in rows}
 
 
+def index_is_unbuilt(conn: sqlite3.Connection) -> bool:
+    """True when the sessions table has zero rows -- i.e. the index has
+    never been populated (or was wiped). Distinguishes "nothing matched
+    your query" from "there is nothing to query", so empty-state messages
+    can point at `csb backup` instead of dead-ending (#52).
+    """
+    row = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()
+    return (row["c"] or 0) == 0
+
+
 def get_stats(conn: sqlite3.Connection) -> dict:
     """Return summary statistics."""
     total = conn.execute("SELECT COUNT(*) as c FROM sessions").fetchone()["c"]

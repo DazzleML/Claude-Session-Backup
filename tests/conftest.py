@@ -47,9 +47,10 @@ def hermetic_git_config():
         pass
 
 
-@pytest.fixture
-def mock_claude_dir(tmp_path):
-    """Create a mock ~/.claude directory structure for testing."""
+def _build_claude_layout(tmp_path):
+    """Build the standard mock ~/.claude layout (projects, session-states,
+    one session) WITHOUT git. Shared by ``mock_claude_dir`` (which adds the
+    git repo) and ``mock_claude_dir_repoless`` (#52 index-only mode)."""
     claude = tmp_path / ".claude"
     projects = claude / "projects"
     states = claude / "session-states"
@@ -91,6 +92,14 @@ def mock_claude_dir(tmp_path):
     name_cache = states / f"{session_id}.name-cache"
     name_cache.write_text("test-session", encoding="utf-8")
 
+    return claude
+
+
+@pytest.fixture
+def mock_claude_dir(tmp_path):
+    """Create a mock ~/.claude directory structure for testing."""
+    claude = _build_claude_layout(tmp_path)
+
     # Initialize as git repo (no GPG signing in tests)
     import os
     import subprocess
@@ -110,6 +119,17 @@ def mock_claude_dir(tmp_path):
     )
 
     return claude
+
+
+@pytest.fixture
+def mock_claude_dir_repoless(tmp_path):
+    """The same layout as ``mock_claude_dir`` but with NO git repo -- the
+    crash-recovery box that motivated #52 (index-only mode). NOTE: on a dev
+    machine tmp_path may sit inside some ancestor git repo, so tests that
+    depend on is_git_repo() being False should mock it rather than trust
+    the filesystem.
+    """
+    return _build_claude_layout(tmp_path)
 
 
 @pytest.fixture
