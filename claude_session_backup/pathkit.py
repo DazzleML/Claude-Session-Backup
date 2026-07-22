@@ -121,6 +121,7 @@ class ClaudePaths:
     LOCK_FILE: ClassVar[str] = ".csb-backup.lock"
     CONFIG_FILE: ClassVar[str] = "session-backup-config.json"
     GITATTRIBUTES: ClassVar[str] = ".gitattributes"  # csb-managed block within
+    GIT_DIR: ClassVar[str] = ".git"       # the backup store csb creates/probes
     CSB_LOGS: ClassVar[str] = "csb-logs"  # hook logs; backup-hook.py mirrors
     #                                       this name (it can't import csb)
 
@@ -133,7 +134,7 @@ class ClaudePaths:
     COMPANION_NAMES: ClassVar[frozenset] = frozenset({SESSION_STATES, SESSLOGS})
     CSB_NAMES: ClassVar[frozenset] = frozenset({
         DISTILLED, FTS_DIR, DEFAULT_DB, LOCK_FILE, CONFIG_FILE,
-        GITATTRIBUTES, CSB_LOGS,
+        GITATTRIBUTES, GIT_DIR, CSB_LOGS,
     })
 
     @classmethod
@@ -162,6 +163,10 @@ class ClaudePaths:
     @property
     def plugins(self) -> Path:
         return self.root / self.PLUGINS
+
+    @property
+    def git_dir(self) -> Path:
+        return self.root / self.GIT_DIR
 
     @property
     def distilled(self) -> Path:

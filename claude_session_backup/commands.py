@@ -31,6 +31,7 @@ from .git_ops import (
     SESSION_HISTORY_SCOPES,
     categorize_path_for_uuid,
     ensure_gitattributes,
+    git_repo_state,
     run_git,
     git_commit_noise,
     git_commit_user,
@@ -42,7 +43,6 @@ from .git_ops import (
     git_restore_file,
     git_show_file_bytes,
     git_status,
-    is_git_repo,
 )
 from .lockfile import backup_lock
 from .index import (
@@ -144,18 +144,30 @@ def cmd_backup(args) -> int:
 def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
     """Inner backup logic (runs under lock)."""
 
-    # Verify git repo. Without one, `--no-commit` still proceeds in
-    # index-only mode (#52): the index powers every read command (list,
-    # scan, search, resume...), and the recovery moment -- a crashed box
-    # where the user is trying to find their sessions -- is exactly when
-    # setup is most likely broken. Bare `backup` keeps the hard error:
-    # a backup that cannot commit protects nothing, and saying so loudly
-    # beats silently degrading.
-    repoless = not is_git_repo(claude_dir)
+    # Verify git repo. Without an ACCEPTED one, `--no-commit` still
+    # proceeds in index-only mode (#52): the index powers every read
+    # command, and the recovery moment is exactly when setup is most
+    # likely broken. Bare `backup` keeps the hard error -- but the error
+    # must state what git ACTUALLY said: "refused" (repo exists, git
+    # declines it -- ownership/safety) is not "absent", and prescribing
+    # `git init` for a refusal is the wrong medicine (it reinforces the
+    # loop: init "succeeds", nothing changes).
+    repo_state, repo_detail = git_repo_state(claude_dir)
+    repoless = repo_state != "ok"
     if repoless and not args.no_commit:
-        print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
-        print("Run `csb setup` for guided configuration "
-              "(or initialize directly: git -C ~/.claude init).", file=sys.stderr)
+        if repo_state == "refused":
+            print(f"Error: a git repository EXISTS at {claude_dir}, but git "
+                  f"REFUSES it in this shell:", file=sys.stderr)
+            for line in (repo_detail or "").splitlines():
+                print(f"    {line}", file=sys.stderr)
+            print("Run `csb setup` for diagnosis and fixes. Do NOT re-initialize "
+                  "-- the repository and its history are intact.", file=sys.stderr)
+        elif repo_state == "error":
+            print(f"Error: git itself failed: {repo_detail}", file=sys.stderr)
+        else:
+            print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
+            print("Run `csb setup` for guided configuration "
+                  "(or initialize directly: git -C ~/.claude init).", file=sys.stderr)
         print(
             "Or run `csb backup --no-commit` to build the search index "
             "without git (index-only: no backup protection).",
@@ -301,18 +313,25 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
 
     # Index-only warning (#52): emitted even under --quiet -- hook runs log
     # stderr, and "this was NOT a backup" must never be silent. The text
-    # always pairs what happened (indexed) with what did not (protection).
+    # always pairs what happened (indexed) with what did not (protection),
+    # and states the TRUE reason (absent vs refused vs git error).
     if repoless:
+        if repo_state == "refused":
+            why = (f"a repo EXISTS at {claude_dir} but git REFUSES it "
+                   f"in this shell")
+            fix = "Run `csb setup` for diagnosis -- do NOT re-initialize."
+        elif repo_state == "error":
+            why = f"git itself failed: {repo_detail}"
+            fix = "Fix the git installation, then run `csb setup`."
+        else:
+            why = f"{claude_dir} is not a git repository"
+            fix = f"Enable full backup with `csb setup` (or: git -C {claude_dir} init)"
         print(
             f"[index-only] Indexed {len(sessions)} session(s) -- NO backup "
-            f"protection ({claude_dir} is not a git repository).",
+            f"protection ({why}).",
             file=sys.stderr,
         )
-        print(
-            f"[index-only] Enable full backup with `csb setup` "
-            f"(or: git -C {claude_dir} init)",
-            file=sys.stderr,
-        )
+        print(f"[index-only] {fix}", file=sys.stderr)
 
     return 0
 
@@ -531,16 +550,87 @@ def _setup_checklist(config, claude_dir, repo_note):
                   ("csb status", "cyan"), (" (protection + index state)", "dim")])
 
 
+def _setup_refusal(args, config, claude_dir, state, detail) -> int:
+    """Setup's path for "git can see the repo but declines it" (refused)
+    and "git itself is broken" (error). NEVER offers `git init` here --
+    the repository and its history are intact; re-initializing is at best
+    a no-op that restarts the loop, and telling users to do it teaches
+    them to distrust every other csb message.
+    """
+    if state == "error":
+        _style_print([(f"Git: ERROR -- {detail}", "bold red")])
+        print("csb needs a working `git` on PATH. Fix the git installation, "
+              "then re-run `csb setup`.")
+        return 1
+
+    _style_print([("Git repo: PRESENT -- but git REFUSES it in this shell.",
+                   "bold red")])
+    print("Your repository and backup history are intact. git said:")
+    for line in (detail or "(no detail)").splitlines():
+        _style_print([(f"    {line}", "dim")])
+    print()
+    print("The usual cause: directory ownership. If the Claude dir is owned by")
+    print("Administrators/another account, git's safety check accepts it in")
+    print("ELEVATED shells and refuses it in standard ones -- so csb can look")
+    print("broken in one window and fine in another.")
+    print()
+    print("Fixes, most durable first:")
+    print(f"  1. Make your own account the OWNER of {claude_dir}")
+    print("     (elevated: Explorer > Properties > Security > Advanced > Owner,")
+    print("      or icacls /setowner -- careful: the dir can contain symlinks/")
+    print("      junctions; avoid blind recursive takeown).")
+    safe_dir_value = str(claude_dir).replace("\\", "/")
+    print("  2. Band-aid: tell git to trust the path as-is (applies wherever")
+    print("     this git config is read; hides the ownership oddity):")
+    _style_print([("       ", None),
+                  (f'git config --global --add safe.directory "{safe_dir_value}"',
+                   "cyan")])
+
+    # Explained, DEFAULT-NO offer (decision ledger: never automatic -- it
+    # weakens a git security control on csb's behalf). Interactive only;
+    # --auto must not mutate the user's git config.
+    if _interactive() and not getattr(args, "auto", False):
+        answer = _ask("Run that safe.directory command now? [y/N] ")
+        if answer is not None and answer.lower() in ("y", "yes"):
+            r = run_git(claude_dir, "config", "--global", "--add",
+                        "safe.directory", safe_dir_value, check=False)
+            if r.returncode != 0:
+                print(f"Error: git config failed: "
+                      f"{(r.stderr or '').strip()}", file=sys.stderr)
+                return 1
+            new_state, _ = git_repo_state(claude_dir)
+            if new_state == "ok":
+                _style_print([("[setup] ", "bold green"),
+                              ("git now accepts the repository -- backups are "
+                               "enabled again.", "green")])
+                ensure_gitattributes(claude_dir)
+                _clear_index_only_ack(config, claude_dir)
+                _setup_checklist(config, claude_dir, f"repo at {claude_dir}")
+                return 0
+            print("git still refuses the repository -- the refusal is coming "
+                  "from something else; see git's message above.")
+            return 1
+    print()
+    print("Re-run `csb setup` after fixing -- it is safe to run repeatedly.")
+    return 1
+
+
 def _setup_index_only(args, config, claude_dir) -> int:
     """The EXPLICIT exception path: record a sign-off that csb runs
     index-only. Interactive runs must type the mode name back (informed
     consent); the flag itself is the consent in non-TTY/scripted runs.
     """
-    if is_git_repo(claude_dir):
+    state, _detail = git_repo_state(claude_dir)
+    if state == "ok":
         _style_print([(f"A git repository already protects {claude_dir} -- "
                        f"index-only would be a downgrade for no gain.", "green")])
         print("Nothing recorded. (Backups continue to work.)")
         return 0
+    if state == "refused":
+        _style_print([("Note: a git repository EXISTS here -- git is refusing "
+                       "it in this shell. `csb setup` can likely fix that; "
+                       "signing off index-only would abandon working backups.",
+                       "yellow")])
 
     _style_print([("Index-only mode means:", "bold")])
     print("  - sessions are INDEXED: `csb list` / `scan` / `search` / `resume` work")
@@ -620,8 +710,14 @@ def cmd_setup(args) -> int:
     if getattr(args, "index_only", False):
         return _setup_index_only(args, config, claude_dir)
 
-    # ── Already protected? (is_git_repo walks up: an ancestor repo counts)
-    if is_git_repo(claude_dir):
+    repo_state, repo_detail = git_repo_state(claude_dir)
+
+    # ── Repo present but git declines it / git broken: NEVER offer init.
+    if repo_state in ("refused", "error"):
+        return _setup_refusal(args, config, claude_dir, repo_state, repo_detail)
+
+    # ── Already protected? (the probe walks up: an ancestor repo counts)
+    if repo_state == "ok":
         r = run_git(claude_dir, "rev-parse", "--show-toplevel", check=False)
         root = (r.stdout or "").strip()
         try:
@@ -665,6 +761,17 @@ def cmd_setup(args) -> int:
         return 1
     _style_print([("[setup] ", "bold green"),
                   (f"Initialized git repository at {claude_dir}", "green")])
+    # Re-probe before proceeding: `git init` succeeds even where git then
+    # REFUSES the resulting repo (ownership/safety -- init is exempt from
+    # the check). Without this gate, setup walks straight into a failing
+    # first backup and contradicts itself one line after "Initialized"
+    # (the 2026-07-22 incident, verbatim).
+    post_state, post_detail = git_repo_state(claude_dir)
+    if post_state != "ok":
+        print()
+        print("The repository was created, but git immediately refuses it -- "
+              "this is an environment problem (usually ownership), not csb:")
+        return _setup_refusal(args, config, claude_dir, post_state, post_detail)
     ensure_gitattributes(claude_dir)
     _style_print([("[setup] ", "bold green"),
                   ("Wrote .gitattributes (session files marked binary -- "
@@ -843,7 +950,8 @@ def cmd_status(args) -> int:
     init_schema(conn)
     stats = get_stats(conn)
 
-    is_repo = is_git_repo(claude_dir)
+    repo_state, repo_detail = git_repo_state(claude_dir)
+    is_repo = repo_state == "ok"
     # Per-session "un-backed-up" detection (transcripts newer than the index).
     # Only meaningful inside a git repo (where backups commit); skip otherwise.
     unbacked = find_unbacked_sessions(conn, claude_dir) if is_repo else []
@@ -851,8 +959,19 @@ def cmd_status(args) -> int:
 
     print(f"Claude Session Backup Status")
     print(f"  Claude dir:    {claude_dir}")
-    print(f"  Git repo:      {'yes' if is_repo else 'NO'}")
-    if not is_repo:
+    if repo_state == "refused":
+        print(f"  Git repo:      REFUSED (a repo exists; git declines it "
+              f"in this shell)")
+        first = (repo_detail or "").splitlines()[:1]
+        if first:
+            print(f"    git said: {first[0]}")
+        print(f"    (run `csb setup` for diagnosis and fixes -- do NOT "
+              f"re-initialize)")
+    elif repo_state == "error":
+        print(f"  Git repo:      GIT ERROR ({repo_detail})")
+    else:
+        print(f"  Git repo:      {'yes' if is_repo else 'NO'}")
+    if repo_state == "absent":
         print(f"    (backups disabled -- run `csb setup` to configure, or "
               f"`git -C {claude_dir} init`;")
         print(f"     `csb backup --no-commit` builds the search index without git)")
@@ -962,7 +1081,8 @@ def cmd_check(args) -> int:
     quiet = getattr(args, "quiet", False)
     exclude = getattr(args, "exclude", None)
 
-    repoless = not is_git_repo(claude_dir)
+    repo_state, _repo_detail = git_repo_state(claude_dir)
+    repoless = repo_state != "ok"
 
     conn = open_db(config["index_path"])
     init_schema(conn)
@@ -971,7 +1091,10 @@ def cmd_check(args) -> int:
 
     if not stale:
         if not quiet:
-            if repoless:
+            if repo_state == "refused":
+                print("All sessions indexed (git refuses the existing repo "
+                      "in this context -- run `csb setup` for diagnosis).")
+            elif repoless:
                 print("All sessions indexed (index-only: no git repo, "
                       "no backup protection).")
             else:
@@ -980,7 +1103,12 @@ def cmd_check(args) -> int:
 
     # Concise, user-facing summary (the hook puts this in a systemMessage).
     n = len(stale)
-    if repoless:
+    if repo_state == "refused":
+        print(f"csb: {n} session(s) with un-indexed changes -- a git repo "
+              f"EXISTS at {claude_dir} but git REFUSES it in this context "
+              f"(backups failing here; do NOT re-initialize). "
+              f"Run `csb setup` for diagnosis and fixes:")
+    elif repoless:
         print(f"csb: {n} session(s) with un-indexed changes, and "
               f"{claude_dir} is not a git repository (backups are failing). "
               f"Run `csb backup --no-commit` to index now; "
@@ -2336,8 +2464,16 @@ def cmd_backfill_deleted(args) -> int:
     quiet = getattr(args, "quiet", False)
     dry_run = getattr(args, "dry_run", False)
 
-    if not is_git_repo(claude_dir):
-        print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
+    bf_state, bf_detail = git_repo_state(claude_dir)
+    if bf_state != "ok":
+        if bf_state == "refused":
+            print(f"Error: a git repository exists at {claude_dir} but git "
+                  f"refuses it in this shell ({bf_detail.splitlines()[0] if bf_detail else 'no detail'}). "
+                  f"Run `csb setup` for diagnosis.", file=sys.stderr)
+        elif bf_state == "error":
+            print(f"Error: git itself failed: {bf_detail}", file=sys.stderr)
+        else:
+            print(f"Error: {claude_dir} is not a git repository.", file=sys.stderr)
         return 1
 
     with backup_lock(claude_dir) as acquired:

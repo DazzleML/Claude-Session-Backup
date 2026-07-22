@@ -185,33 +185,52 @@ def _emit_sessionstart_warning(detail):
         pass
 
 
-def _git_repo_ok(claude_dir):
-    """Whether claude_dir is inside a git work tree (mirrors csb's
-    is_git_repo). On any probe failure (git missing, timeout), assume OK --
-    `csb backup` makes the authoritative call and logs its own error.
+def _git_repo_state(claude_dir):
+    """"ok" / "absent" / "refused" -- a cheap mirror of csb's
+    git_repo_state (the hook can't import the package). "refused" =
+    git says no but a .git entry exists (ownership/safety refusal --
+    e.g. elevation-dependent on Windows); the distinction matters in
+    the log: "no git repo" about an intact repository is the false
+    diagnosis that muddied the 2026-07-22 incident. On probe failure
+    (git missing, timeout), assume "ok" -- `csb backup` makes the
+    authoritative call and logs its own error.
     """
     try:
         r = subprocess.run(
             ["git", "-C", str(claude_dir), "rev-parse", "--is-inside-work-tree"],
             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
         )
-        return r.returncode == 0 and r.stdout.strip() == "true"
+        if r.returncode == 0 and r.stdout.strip() == "true":
+            return "ok"
     except Exception:  # noqa: BLE001 -- a hook must never raise into Claude Code
-        return True
+        return "ok"
+    try:
+        if (Path(claude_dir) / ".git").exists():
+            return "refused"
+    except OSError:
+        pass
+    return "absent"
 
 
 def _backup_extra_args(note):
-    """Index-only fallback (#52): without a git repo, a bare `csb backup`
-    hard-fails and the hook's fire becomes a silent log-only error -- the
-    failure mode that left days of sessions unindexed. Fall back to
-    `--no-commit` so the index (list/scan/search) stays fresh, and say so
-    loudly in the log: this is indexing, NOT backup protection.
+    """Index-only fallback (#52): without an ACCEPTED git repo, a bare
+    `csb backup` hard-fails and the hook's fire becomes a silent log-only
+    error -- the failure mode that left days of sessions unindexed. Fall
+    back to `--no-commit` so the index (list/scan/search) stays fresh,
+    and say so loudly -- naming the TRUE reason -- in the log.
     """
-    if _git_repo_ok(_claude_dir()):
+    state = _git_repo_state(_claude_dir())
+    if state == "ok":
         return []
-    note("[index-only] no git repo -- falling back to `backup --no-commit` "
-         "(indexing only, NO backup protection; `git init` the Claude dir "
-         "to enable real backups)")
+    if state == "refused":
+        note("[index-only] git REFUSES the existing repo in this context "
+             "(ownership/safety check -- repo intact, do NOT re-init; run "
+             "`csb setup` for diagnosis) -- falling back to `backup "
+             "--no-commit` (indexing only)")
+    else:
+        note("[index-only] no git repo -- falling back to `backup --no-commit` "
+             "(indexing only, NO backup protection; run `csb setup` "
+             "to enable real backups)")
     return ["--no-commit"]
 
 

@@ -89,10 +89,57 @@ def run_git(claude_dir: str, *args, check: bool = True) -> subprocess.CompletedP
     )
 
 
+def git_repo_state(claude_dir: str) -> tuple[str, str]:
+    """Four-state repo detection: what git ACTUALLY said, not a bool.
+
+    Returns ``(state, detail)``:
+
+      "ok"      -- git accepts the work tree (rc 0, stdout "true").
+      "absent"  -- git says no AND no ``.git`` entry exists at claude_dir:
+                   there is genuinely nothing here. detail = git's stderr.
+      "refused" -- git says no BUT a ``.git`` entry (dir or worktree-pointer
+                   file) EXISTS: git can see the repo and is declining it
+                   (e.g. the post-2.35.2 dubious-ownership check, which is
+                   elevation-dependent on Windows for Administrators-owned
+                   dirs). detail = git's stderr, which typically carries
+                   git's own remediation command.
+      "error"   -- git itself could not run (not on PATH, OS error).
+
+    Why four states and not two: collapsing "refused" into "absent" made
+    csb assert "has no git repository" about a repo with an unbroken
+    commit history and prescribe `git init` -- factually wrong twice, in
+    the loudest messages we have (the incident behind this: same repo,
+    same git, same config; accepted elevated, refused non-elevated).
+    State derivation deliberately uses ONLY rc + stdout + on-disk .git
+    presence -- never stderr text, which is localized. Known limitation:
+    a claude_dir protected via an ANCESTOR repo that git refuses reads as
+    "absent" (no local .git to distinguish by); detail still carries
+    git's words for any caller that prints it.
+    """
+    try:
+        result = run_git(claude_dir, "rev-parse", "--is-inside-work-tree", check=False)
+    except FileNotFoundError:
+        return "error", "git was not found on PATH"
+    except OSError as e:
+        return "error", f"git could not be run: {e}"
+
+    if result.returncode == 0 and result.stdout.strip() == "true":
+        return "ok", ""
+
+    detail = (result.stderr or result.stdout or "").strip()
+    if ClaudePaths.from_dir(claude_dir).git_dir.exists():
+        return "refused", detail or "git did not accept this repository"
+    return "absent", detail
+
+
 def is_git_repo(claude_dir: str) -> bool:
-    """Check if claude_dir is a git repository."""
-    result = run_git(claude_dir, "rev-parse", "--is-inside-work-tree", check=False)
-    return result.returncode == 0 and result.stdout.strip() == "true"
+    """Check if claude_dir is an ACCEPTED git repository (state "ok").
+
+    Callers that need to distinguish "nothing here" from "git refuses
+    what's here" must use ``git_repo_state`` -- this bool exists only for
+    happy-path gates where the distinction doesn't change behavior.
+    """
+    return git_repo_state(claude_dir)[0] == "ok"
 
 
 def git_status(claude_dir: str) -> str:

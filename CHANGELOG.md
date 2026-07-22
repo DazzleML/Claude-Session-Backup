@@ -9,6 +9,22 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.6.2] -- 2026-07-22 (beta)
+
+**Four-state repo detection: "git refuses the repo" is not "no repo" (#54).** Three days after v0.6.0 shipped, its own author hit the banner claiming `NO BACKUP PROTECTION -- ~/.claude has no git repository` about a repo with an unbroken commit history -- and `csb setup` obligingly offered `git init`, which "succeeded" and changed nothing. Root cause: git 2.35.2+'s dubious-ownership check is **elevation-dependent on Windows** for Administrators-owned dirs (a fresh-box provisioning artifact), so the same repo was accepted in elevated shells (hook backups kept committing daily) and refused in a standard cmd -- and csb collapsed git's refusal into "absent", swallowing the stderr that carried git's exact remediation command.
+
+### Fixed
+- **`git_repo_state()` -- four states, git's words surfaced.** `ok` / `absent` / `refused` (git says no but a `.git` entry exists -- detail carries git's stderr) / `error` (git itself unusable). Derivation uses rc + stdout + on-disk `.git` presence only, never localized stderr text. `is_git_repo` remains as the happy-path bool shim.
+- **Every surface now tells the truth under refusal.** Banner: `BACKUPS BLOCKED IN THIS SHELL -- a git repository EXISTS ... git said: <fatal: detected dubious ownership...>` (never the false "no repository" / "nothing is preserved" -- other contexts may be committing fine). `csb status`: `Git repo: REFUSED` + git's first line. Bare `csb backup`, `csb _check` (the hook's systemMessage source), backfill-deleted, and the hook's fallback log all name refusal as refusal, with "do NOT re-initialize".
+- **`csb setup` is refusal-aware and multi-run safe.** A refused repo gets a diagnosis page (ownership-first guidance -- with a junction/symlink caution -- then git's `safe.directory` band-aid as an **explained, default-No, interactive-only offer**; `--auto` never mutates git config; accepting re-probes and completes the normal protected flow). Setup never offers `git init` when a `.git` exists, and after a fresh `git init` it **re-probes before proceeding** -- `git init` succeeds even where git then refuses the result, which was exactly the incident's self-contradicting loop ("Initialized ... Error: not a git repository").
+- `csb setup --index-only` under refusal warns that a working repo exists before accepting the sign-off.
+
+### Tests
+- 17 new (1039 pass): `git_repo_state` state derivation (ok / absent-vs-refused by `.git` dir AND worktree-pointer file / git-missing); refusal wording on backup (bare + `--no-commit`), banner (+ git-error variant), `_check`, `status` (+ GIT ERROR); setup refusal page (no init offer, `--auto` runs zero git commands, offer default-No, offer-accept recovery into the checklist); the post-init re-probe loop guard; hook fallback wording (refused vs absent). Patch seams migrated from bool `is_git_repo` to `git_repo_state` across the suite. `ClaudePaths` gains `GIT_DIR` (layout guard enforced routing, again).
+
+### Design
+- `2026-07-22__01-59-49__git-refuses-repo-context-dependent-dubious-ownership.md` -- the DWP: ground-truth timeline (failures bracket exactly the sessions launched from the non-elevated shell), elevation confirmed as the differential (same git binary, same config), candidates A-E, decision ledger (auto-`safe.directory` rejected as automatic; `csb doctor` deferred).
+
 ## [0.6.1] -- 2026-07-19 (beta)
 
 **`csb setup` detects claude-session-logger (#53).** The setup checklist gains an optional row for [claude-session-logger](https://github.com/DazzleML/claude-session-logger) -- csb consumes its output (`.convo`/`.sesslog` search channels, session-name enrichment) and backs up / restores its files, so setup now surfaces it as an enhancement worth considering without implying it's required.
@@ -935,7 +951,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...HEAD
 [0.5.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0
 [0.4.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7

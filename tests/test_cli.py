@@ -765,7 +765,13 @@ def _banner_argv(claude, tmp_path, *extra):
 
 def _patch_repoless(monkeypatch, value=False):
     import claude_session_backup.git_ops as git_ops
-    monkeypatch.setattr(git_ops, "is_git_repo", lambda d: value)
+    state = ("ok", "") if value else ("absent", "")
+    monkeypatch.setattr(git_ops, "git_repo_state", lambda d: state)
+
+
+def _patch_refused(monkeypatch, detail="fatal: detected dubious ownership in repository at 'X'"):
+    import claude_session_backup.git_ops as git_ops
+    monkeypatch.setattr(git_ops, "git_repo_state", lambda d: ("refused", detail))
 
 
 def test_banner_repoless_shows_every_run(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
@@ -865,3 +871,26 @@ def test_help_alias_with_command(capsys):
     assert exc.value.code == 0
     out = capsys.readouterr().out
     assert "usage: csb setup" in out
+
+
+def test_banner_refused_names_refusal_not_absence(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-R1 (banner): a refused repo gets the BLOCKED variant with git's
+    words -- never the false "has no git repository" claim."""
+    _patch_refused(monkeypatch)
+    _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path))
+    err = capsys.readouterr().err
+    assert "BACKUPS BLOCKED" in err
+    assert "EXISTS" in err
+    assert "dubious ownership" in err
+    assert "do NOT re-initialize" in err
+    assert "has no git repository" not in err
+
+
+def test_banner_git_error_variant(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    import claude_session_backup.git_ops as git_ops
+    monkeypatch.setattr(git_ops, "git_repo_state",
+                        lambda d: ("error", "git was not found on PATH"))
+    _cli_main(_banner_argv(mock_claude_dir_repoless, tmp_path))
+    err = capsys.readouterr().err
+    assert "BACKUP STATE UNKNOWN" in err
+    assert "has no git repository" not in err

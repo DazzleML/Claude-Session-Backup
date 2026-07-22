@@ -615,7 +615,8 @@ def test_check_not_git_repo_runs_detection_anyway(monkeypatch, tmp_path, capsys)
     projects dir -> clean (rc 0) with the index-only caveat. (is_git_repo
     is mocked False -- on a dev box the temp dir can sit inside the home
     git repo, so a tmp path isn't reliably repo-free.)"""
-    monkeypatch.setattr(commands_module, "is_git_repo", MagicMock(return_value=False))
+    monkeypatch.setattr(commands_module, "git_repo_state",
+                        lambda d: ("absent", ""))
     plain = tmp_path / "not-claude"
     (plain / "projects").mkdir(parents=True)
     db = tmp_path / "check.db"
@@ -823,7 +824,24 @@ def _list_args(claude_dir, db, **kw):
 
 
 def _mock_repoless(monkeypatch):
-    monkeypatch.setattr(commands_module, "is_git_repo", MagicMock(return_value=False))
+    # Four-state seam (was: bool is_git_repo). "absent" = genuinely no repo.
+    monkeypatch.setattr(
+        commands_module, "git_repo_state",
+        lambda d: ("absent", "fatal: not a git repository (or any of the "
+                             "parent directories): .git"))
+
+
+_REFUSAL_STDERR = (
+    "fatal: detected dubious ownership in repository at 'C:/Users/T/.claude'\n"
+    "To add an exception for this directory, call:\n\n"
+    "\tgit config --global --add safe.directory C:/Users/T/.claude"
+)
+
+
+def _mock_refused(monkeypatch):
+    monkeypatch.setattr(
+        commands_module, "git_repo_state",
+        lambda d: ("refused", _REFUSAL_STDERR))
 
 
 def test_backup_no_commit_repoless_indexes(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
@@ -1004,8 +1022,8 @@ def _setup_args(claude_dir, db, **kw):
 
 def _patch_dotgit_check(monkeypatch):
     monkeypatch.setattr(
-        commands_module, "is_git_repo",
-        lambda d: (Path(d) / ".git").exists(),
+        commands_module, "git_repo_state",
+        lambda d: ("ok", "") if (Path(d) / ".git").exists() else ("absent", ""),
     )
 
 
@@ -1385,3 +1403,193 @@ def test_plugin_status_tolerates_bom(monkeypatch, mock_claude_dir_repoless, tmp_
         str(mock_claude_dir_repoless),
         "dazzle-claude-plugins", "session-logger@dazzle-claude-plugins")
     assert plugin is True
+
+
+# ── Four-state git_repo_state + refusal-aware surfaces (2026-07-22) ────
+#
+# Incident: git REFUSED an intact repo in non-elevated shells
+# (Administrators-owned .claude + elevation-dependent ownership check).
+# csb collapsed "refused" into "absent", asserted "has no git repository"
+# about a repo with unbroken history, and prescribed `git init`. These
+# tests pin: the four states derive correctly, every surface names
+# refusal as refusal, and setup can never init over (or proceed past) a
+# repo git declines.
+
+import claude_session_backup.git_ops as git_ops_module
+from claude_session_backup.git_ops import git_repo_state as _real_grs
+
+
+class _FakeGitResult:
+    def __init__(self, rc, out="", err=""):
+        self.returncode = rc
+        self.stdout = out
+        self.stderr = err
+
+
+def test_git_repo_state_ok(mock_claude_dir):
+    assert _real_grs(str(mock_claude_dir)) == ("ok", "")
+
+
+def test_git_repo_state_absent_vs_refused_by_dotgit_presence(monkeypatch, tmp_path):
+    """Same git failure -> "absent" without .git on disk, "refused" with it
+    (dir OR worktree-pointer file). Derivation never reads stderr text."""
+    monkeypatch.setattr(
+        git_ops_module, "run_git",
+        lambda *a, **k: _FakeGitResult(128, err=_REFUSAL_STDERR))
+    plain = tmp_path / "no-repo"
+    plain.mkdir()
+    assert _real_grs(str(plain))[0] == "absent"
+
+    withgit = tmp_path / "with-repo"
+    (withgit / ".git").mkdir(parents=True)
+    state, detail = _real_grs(str(withgit))
+    assert state == "refused"
+    assert "dubious ownership" in detail   # git's words pass through
+
+    withfile = tmp_path / "with-gitfile"
+    withfile.mkdir()
+    (withfile / ".git").write_text("gitdir: ../elsewhere\n", encoding="utf-8")
+    assert _real_grs(str(withfile))[0] == "refused"
+
+
+def test_git_repo_state_error_when_git_missing(monkeypatch, tmp_path):
+    def _boom(*a, **k):
+        raise FileNotFoundError("git")
+    monkeypatch.setattr(git_ops_module, "run_git", _boom)
+    state, detail = _real_grs(str(tmp_path))
+    assert state == "error"
+    assert "not found" in detail
+
+
+def test_backup_bare_refused_names_refusal_not_absence(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-R1: the bare-backup error under refusal quotes git and never
+    claims the repository doesn't exist."""
+    _mock_refused(monkeypatch)
+    rc = cmd_backup(_backup_args(mock_claude_dir_repoless, tmp_path / "b.db"))
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "REFUSES" in err
+    assert "dubious ownership" in err          # git's stderr surfaced
+    assert "Do NOT re-initialize" in err
+    assert "is not a git repository." not in err
+
+
+def test_backup_no_commit_refused_index_only_warning_is_truthful(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _mock_refused(monkeypatch)
+    rc = cmd_backup(_backup_args(mock_claude_dir_repoless, tmp_path / "b.db", no_commit=True))
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "[index-only]" in err
+    assert "REFUSES" in err
+    assert "is not a git repository" not in err
+
+
+def test_setup_refused_never_offers_init(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """AC-R2 core: refusal path shows git's words + remediation and NEVER
+    reaches the init prompt (non-interactive here -> no offer either)."""
+    _mock_refused(monkeypatch)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: False)
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "REFUSES" in out
+    assert "dubious ownership" in out
+    assert "safe.directory" in out             # remediation shown
+    assert "Initialize a git repository" not in out
+    assert "safe to run repeatedly" in out
+
+
+def test_setup_refused_auto_never_mutates_git_config(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """--auto must not write the user's git config (decision ledger:
+    the safe.directory offer is interactive-only, default No)."""
+    _mock_refused(monkeypatch)
+    calls = []
+    monkeypatch.setattr(commands_module, "run_git",
+                        lambda *a, **k: calls.append(a) or _FakeGitResult(0))
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db", auto=True))
+    assert rc == 1
+    assert calls == []                          # no git invocations at all
+
+
+def test_setup_refused_offer_accept_recovers(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Interactive accept of the default-No offer: config written, state
+    re-probed, and setup completes into the normal protected flow."""
+    fixed = {"done": False}
+    monkeypatch.setattr(
+        commands_module, "git_repo_state",
+        lambda d: ("ok", "") if fixed["done"] else ("refused", _REFUSAL_STDERR))
+
+    def fake_run_git(claude_dir, *a, **k):
+        if a[:2] == ("config", "--global"):
+            fixed["done"] = True
+        return _FakeGitResult(0)
+    monkeypatch.setattr(commands_module, "run_git", fake_run_git)
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    monkeypatch.setattr(commands_module, "_ask", lambda q: "y")
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "git now accepts the repository" in out
+    assert "Setup checklist:" in out
+
+
+def test_setup_refused_offer_default_is_no(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """Pressing Enter at the offer means No -- nothing written."""
+    _mock_refused(monkeypatch)
+    calls = []
+    monkeypatch.setattr(commands_module, "run_git",
+                        lambda *a, **k: calls.append(a) or _FakeGitResult(0))
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    monkeypatch.setattr(commands_module, "_ask", lambda q: "")
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    assert rc == 1
+    assert calls == []
+
+
+def test_setup_post_init_reprobe_gates_refusal(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    """The 2026-07-22 loop, pinned: init "succeeds" but git refuses the new
+    repo -> setup STOPS with the refusal diagnosis instead of walking into
+    a failing first backup one line after "Initialized"."""
+    states = iter([("absent", ""), ("refused", _REFUSAL_STDERR)])
+    monkeypatch.setattr(commands_module, "git_repo_state",
+                        lambda d: next(states))
+    monkeypatch.setattr(commands_module, "run_git",
+                        lambda *a, **k: _FakeGitResult(0))
+    monkeypatch.setattr(commands_module, "_interactive", lambda: True)
+    # init? -> yes; then the refusal path's safe.directory offer -> decline.
+    # NO other prompts are permitted (a third _ask would StopIteration).
+    answers = iter(["y", ""])
+    monkeypatch.setattr(commands_module, "_ask", lambda q: next(answers))
+    rc = cmd_setup(_setup_args(mock_claude_dir_repoless, tmp_path / "s.db"))
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "git immediately refuses it" in out
+    assert "Run the first backup now" not in out   # never reached the prompt
+
+
+def test_check_refused_summary_names_refusal(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _mock_refused(monkeypatch)
+    rc = cmd_check(_check_args(mock_claude_dir_repoless, tmp_path / "c.db"))
+    out = capsys.readouterr().out
+    assert rc == CHECK_GAP_EXIT
+    assert "REFUSES" in out
+    assert "do NOT re-initialize" in out
+    assert "is not a git repository" not in out
+
+
+def test_status_refused_line(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    _mock_refused(monkeypatch)
+    cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir_repoless),
+                               db=str(tmp_path / "st.db")))
+    out = capsys.readouterr().out
+    assert "Git repo:      REFUSED" in out
+    assert "git said: fatal: detected dubious ownership" in out
+    assert "backups disabled" not in out   # absent-only advice stays absent-only
+
+
+def test_status_git_error_line(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
+    monkeypatch.setattr(commands_module, "git_repo_state",
+                        lambda d: ("error", "git was not found on PATH"))
+    cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir_repoless),
+                               db=str(tmp_path / "st.db")))
+    assert "GIT ERROR" in capsys.readouterr().out

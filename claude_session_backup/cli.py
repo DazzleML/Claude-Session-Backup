@@ -852,9 +852,10 @@ def _maybe_repoless_banner(args):
         if not Path(claude_dir).is_dir():
             return
 
-        from .git_ops import is_git_repo
+        from .git_ops import git_repo_state
 
-        if is_git_repo(claude_dir):
+        state, detail = git_repo_state(claude_dir)
+        if state == "ok":
             return  # protected -- nothing to say
 
         bar = "=" * 68
@@ -871,13 +872,30 @@ def _maybe_repoless_banner(args):
                 print(text, file=sys.stderr)
 
         _warn(bar, "red")
-        _warn(f"csb: NO BACKUP PROTECTION -- {claude_dir} has no git repository.",
-              "bold red")
-        _warn("Sessions are indexed at best; nothing is preserved or restorable.")
-        _warn("Run `csb setup` for guided configuration (`csb setup --auto` for")
-        _warn("no prompts). To stay unprotected ON PURPOSE, record your sign-off")
-        _warn("with `csb setup --index-only` -- that is the only way to silence")
-        _warn("this banner without a repo. Details: `csb status`.")
+        if state == "refused":
+            # The repo EXISTS -- saying "no repository" here would be false
+            # (and "nothing is preserved" doubly so: other contexts may be
+            # committing fine). State the refusal and git's own words.
+            _warn(f"csb: BACKUPS BLOCKED IN THIS SHELL -- a git repository "
+                  f"EXISTS at {claude_dir}, but git refuses it here.",
+                  "bold red")
+            first = (detail or "").splitlines()[:1]
+            if first:
+                _warn(f"git said: {first[0]}")
+            _warn("Your history is intact; do NOT re-initialize. Run `csb setup`")
+            _warn("for diagnosis and fixes. Details: `csb status`.")
+        elif state == "error":
+            _warn(f"csb: BACKUP STATE UNKNOWN -- git itself failed: {detail}",
+                  "bold red")
+            _warn("Fix the git installation, then run `csb setup`.")
+        else:
+            _warn(f"csb: NO BACKUP PROTECTION -- {claude_dir} has no git repository.",
+                  "bold red")
+            _warn("Sessions are indexed at best; nothing is preserved or restorable.")
+            _warn("Run `csb setup` for guided configuration (`csb setup --auto` for")
+            _warn("no prompts). To stay unprotected ON PURPOSE, record your sign-off")
+            _warn("with `csb setup --index-only` -- that is the only way to silence")
+            _warn("this banner without a repo. Details: `csb status`.")
         _warn(bar, "red")
     except Exception:  # noqa: BLE001 -- the banner must never break a command
         pass

@@ -67,7 +67,7 @@ def test_provenance_sets_partition_all_names():
         ClaudePaths.SESSION_STATES, ClaudePaths.SESSLOGS,
         ClaudePaths.DISTILLED, ClaudePaths.FTS_DIR, ClaudePaths.DEFAULT_DB,
         ClaudePaths.LOCK_FILE, ClaudePaths.CONFIG_FILE, ClaudePaths.GITATTRIBUTES,
-        ClaudePaths.CSB_LOGS,
+        ClaudePaths.GIT_DIR, ClaudePaths.CSB_LOGS,
     }
     assert union == declared
 

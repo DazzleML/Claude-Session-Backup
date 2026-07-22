@@ -121,7 +121,7 @@ def captured_popen(monkeypatch, tmp_path):
     monkeypatch.setattr(bh.subprocess, "Popen", _FakePopen)
     # Repo present by default -- the probe shells out via subprocess.run,
     # which would otherwise hit the fake Popen. Repo-less tests override.
-    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: True)
+    monkeypatch.setattr(bh, "_git_repo_state", lambda d: "ok")
     # keep logs out of the real ~/.claude
     monkeypatch.setattr(bh.Path, "home", lambda: tmp_path)
     return _FakePopen
@@ -195,7 +195,7 @@ def test_main_spawns_on_manual(monkeypatch, captured_popen):
 def test_main_repoless_falls_back_to_no_commit(monkeypatch, captured_popen):
     """Repo-less box (#52): the spawned backup carries --no-commit so the
     index stays fresh instead of the run dying at the git precondition."""
-    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: False)
+    monkeypatch.setattr(bh, "_git_repo_state", lambda d: "absent")
     monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
     bh.main()
     assert len(captured_popen.calls) == 1
@@ -216,7 +216,7 @@ def test_main_repoless_gap_still_warns(monkeypatch, captured_popen, capsys):
     """Repo-less + gap: the systemMessage warning still fires AND the
     recovery spawn is index-only (#52) -- the crash scenario that used to
     fail silently."""
-    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: False)
+    monkeypatch.setattr(bh, "_git_repo_state", lambda d: "absent")
     monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionStart", "startup", "s1"))
     monkeypatch.setattr(bh, "_run_check", lambda sid: ("gap", "csb: 2 session(s) with un-indexed changes"))
     bh.main()
@@ -292,7 +292,7 @@ def test_main_writes_fallback_note_before_opening_child_log(monkeypatch, tmp_pat
     real_note_target = {}
 
     monkeypatch.setattr(bh.subprocess, "Popen", _OrderedPopen)
-    monkeypatch.setattr(bh, "_git_repo_ok", lambda d: False)
+    monkeypatch.setattr(bh, "_git_repo_state", lambda d: "absent")
     monkeypatch.setattr(bh.Path, "home", lambda: tmp_path)
     monkeypatch.setattr(bh, "_read_hook_input", lambda: ("SessionEnd", "", "s1"))
 
@@ -317,3 +317,24 @@ def test_main_writes_fallback_note_before_opening_child_log(monkeypatch, tmp_pat
     # then (asserted above, plus ordering below).
     assert order[-1] == "spawn"
     assert order.count("spawn") == 1
+
+
+def test_backup_extra_args_refused_wording(monkeypatch, tmp_path):
+    """Hook log under refusal says REFUSES (repo intact), not "no git
+    repo" -- the mislabel that muddied the 2026-07-22 incident."""
+    monkeypatch.setattr(bh, "_git_repo_state", lambda d: "refused")
+    notes = []
+    extra = bh._backup_extra_args(notes.append)
+    assert extra == ["--no-commit"]
+    assert len(notes) == 1
+    assert "REFUSES" in notes[0]
+    assert "do NOT re-init" in notes[0]
+    assert "no git repo" not in notes[0]
+
+
+def test_backup_extra_args_absent_wording(monkeypatch, tmp_path):
+    monkeypatch.setattr(bh, "_git_repo_state", lambda d: "absent")
+    notes = []
+    extra = bh._backup_extra_args(notes.append)
+    assert extra == ["--no-commit"]
+    assert "no git repo" in notes[0]
