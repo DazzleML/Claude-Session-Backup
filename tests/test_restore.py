@@ -3308,6 +3308,7 @@ def test_cmd_resume_pruned_with_restore_pruned_flag_restores_then_attempts_resum
         return real_run(*a, **kw)
 
     monkeypatch.setattr("subprocess.run", _mock_run)
+    monkeypatch.setattr("shutil.which", lambda name: name)  # #55 identity
 
     args = _make_resume_args(
         session_id=uuid,
@@ -3366,6 +3367,7 @@ def test_cmd_resume_pruned_restore_failure_does_not_launch_claude(
         return real_run(*a, **kw)
 
     monkeypatch.setattr("subprocess.run", _mock_run)
+    monkeypatch.setattr("shutil.which", lambda name: name)  # #55 identity
 
     args = _make_resume_args(
         session_id=uuid,
@@ -3404,6 +3406,7 @@ def test_cmd_resume_pruned_tty_prompt_yes(mock_claude_dir, tmp_path, capsys, mon
         return real_run(*a, **kw)
 
     monkeypatch.setattr("subprocess.run", _mock_run)
+    monkeypatch.setattr("shutil.which", lambda name: name)  # #55 identity
 
     args = _make_resume_args(
         session_id=uuid,
@@ -3471,6 +3474,7 @@ def test_cmd_resume_alive_session_unchanged_regression(
         return real_run(*a, **kw)
 
     monkeypatch.setattr("subprocess.run", _mock_run)
+    monkeypatch.setattr("shutil.which", lambda name: name)  # #55 identity
     # Prompt MUST NOT fire for alive sessions
     monkeypatch.setattr("builtins.input", lambda prompt="": pytest.fail("alive session should not prompt"))
 

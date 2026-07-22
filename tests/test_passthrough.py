@@ -95,6 +95,9 @@ def mock_resume_env(monkeypatch):
     import subprocess as subprocess_module
     run_mock = MagicMock(return_value=SimpleNamespace(returncode=0))
     monkeypatch.setattr(subprocess_module, "run", run_mock)
+    # Identity which (#55): keep argv[0] == "claude" for these assertions;
+    # without this the REAL which resolves (or fails on claude-less CI).
+    monkeypatch.setattr(commands_module.shutil, "which", lambda name: name)
     monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
     monkeypatch.setattr(commands_module, "init_schema", MagicMock())
     monkeypatch.setattr(commands_module, "_resolve_session_or_exit",

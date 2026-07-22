@@ -291,8 +291,14 @@ def mock_resume_env(monkeypatch):
         commands_module, "_transcript_is_resumable", preflight_mock,
     )
 
+    # which() resolution (#55): identity by default so existing assertions
+    # on argv[0] == "claude" keep holding; resolution-specific tests
+    # override to a fake shim path or None.
+    which_mock = MagicMock(side_effect=lambda name: name)
+    monkeypatch.setattr(commands_module.shutil, "which", which_mock)
+
     return SimpleNamespace(run=run_mock, resolver=resolver_mock,
-                           preflight=preflight_mock)
+                           preflight=preflight_mock, which=which_mock)
 
 
 def _make_args(session_id="abcd1234", **kwargs):
@@ -1593,3 +1599,50 @@ def test_status_git_error_line(monkeypatch, mock_claude_dir_repoless, tmp_path, 
     cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir_repoless),
                                db=str(tmp_path / "st.db")))
     assert "GIT ERROR" in capsys.readouterr().out
+
+
+# ── #55: resume resolves `claude` via which() before spawning ──────────
+#
+# Bare-name CreateProcess searches PATH for .exe ONLY; npm-shim installs
+# (claude.cmd, no claude.exe) were invisible to it even though every
+# shell finds them via PATHEXT -- csb then claimed "not found in PATH"
+# about a command the same shell runs fine. which() applies PATHEXT and
+# the resolved full path spawns correctly (CreateProcess runs a .cmd by
+# full path via %COMSPEC%).
+
+
+def test_resume_spawns_which_resolved_path(monkeypatch, mock_resume_env):
+    """argv[0] must be the RESOLVED path (e.g. the npm .cmd shim), not the
+    bare name CreateProcess cannot find."""
+    shim = r"C:\Users\T\AppData\Roaming\npm\claude.CMD"
+    mock_resume_env.which.side_effect = None
+    mock_resume_env.which.return_value = shim
+    session = _make_session(session_id="full-uuid-123", start_folder="/work/amdead")
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+
+    rc = cmd_resume(_make_args())
+
+    assert rc == 0
+    mock_resume_env.run.assert_called_once_with(
+        [shim, "--resume", "full-uuid-123"],
+        cwd="/work/amdead",
+        check=False,
+    )
+    mock_resume_env.which.assert_called_once_with("claude")
+
+
+def test_resume_which_none_errors_without_spawn(monkeypatch, mock_resume_env, capsys):
+    """which() -> None is the one case where 'not found in PATH' is TRUE:
+    error + manual command, and subprocess is never invoked."""
+    mock_resume_env.which.side_effect = None
+    mock_resume_env.which.return_value = None
+    session = _make_session(start_folder="/work/amdead")
+    monkeypatch.setattr(commands_module, "get_session", MagicMock(return_value=session))
+
+    rc = cmd_resume(_make_args())
+
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "'claude' command not found in PATH" in err
+    assert "Run manually:" in err
+    mock_resume_env.run.assert_not_called()

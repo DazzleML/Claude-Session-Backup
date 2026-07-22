@@ -454,6 +454,8 @@ def _intercept_claude(monkeypatch, launched):
         return real_run(*a, **kw)
 
     monkeypatch.setattr(subprocess_module, "run", _mock_run)
+    # Identity which (#55): see test_passthrough fixture note.
+    monkeypatch.setattr("shutil.which", lambda name: name)
 
 
 def test_cmd_resume_by_exact_session_name(tmp_path, capsys, monkeypatch):

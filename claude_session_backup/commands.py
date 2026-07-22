@@ -7,6 +7,7 @@ Each cmd_* function receives parsed args and returns an exit code.
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -3836,7 +3837,23 @@ def cmd_resume(args) -> int:
     #
     # Trade-off: the python process stays alive in memory while claude
     # runs (~30MB cost). When claude exits, its return code propagates.
+    #
+    # Resolve the binary via PATH x PATHEXT BEFORE spawning (#55): a bare
+    # name goes to Win32 CreateProcess, which searches PATH for .exe ONLY
+    # -- an npm-shim install (claude.cmd, no claude.exe) is invisible to
+    # it even though every shell resolves it via PATHEXT. shutil.which()
+    # returns the shim's full path, which CreateProcess CAN run (a .cmd
+    # by full path routes through %COMSPEC% automatically). On POSIX,
+    # which() mirrors execvp's PATH walk -- identical outcome, resolved
+    # a moment earlier. which() returning None is the one case where
+    # "not found in PATH" is actually true.
     import subprocess
+    claude_exe = shutil.which("claude")
+    if claude_exe is None:
+        print("Error: 'claude' command not found in PATH.", file=sys.stderr)
+        print(f"Run manually: {launch_str}", file=sys.stderr)
+        return 1
+    claude_cmd[0] = claude_exe
     try:
         result = subprocess.run(
             claude_cmd,
@@ -3847,7 +3864,7 @@ def cmd_resume(args) -> int:
     except FileNotFoundError as e:
         # FileNotFoundError can fire from two places:
         #   (a) the cwd= path doesn't exist (target folder deleted)
-        #   (b) the `claude` binary isn't in PATH
+        #   (b) the resolved binary vanished between which() and spawn (rare)
         # Disambiguate by checking whether the target itself is the issue.
         if target and not os.path.isdir(target):
             print(f"Error: cannot cd to {target}: {e}", file=sys.stderr)

@@ -9,7 +9,15 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
-## [0.6.2] -- 2026-07-22 (beta)
+## [0.6.3] -- 2026-07-22 (beta)
+
+**`csb resume` works on npm-shim installs (#55).** On Windows boxes where Claude Code is installed via npm, `claude` exists only as shims (`claude` + `claude.cmd` -- no `claude.exe`). `csb resume` spawned the bare name, which goes to Win32 `CreateProcess` -- and CreateProcess searches PATH **for `.exe` only**, never applying `PATHEXT`. Result: `Error: 'claude' command not found in PATH.` while the identical command line worked when typed in the same shell (cmd searches PATH x PATHEXT). Install-method dependence: native-installer boxes worked, npm boxes didn't.
+
+### Fixed
+- **Resolve `claude` via `shutil.which()` before spawning** and pass the full resolved path as argv[0] -- `which()` applies `PATHEXT` (finds the `.cmd` shim), and CreateProcess runs a `.cmd` by full path via `%COMSPEC%` automatically. `which()` returning `None` is now the only route to the "not found in PATH" message -- the one case where it's actually true. POSIX behavior is byte-identical (`which()` mirrors `execvp`'s PATH walk with the same `X_OK` test, resolved a moment earlier). Verified live on an npm-shim box, including `--` passthrough (`-- --fork-session`).
+
+### Tests
+- 2 new (1041 pass): argv[0] is the which-resolved shim path; `which()`->None errors with the manual-run line and never invokes subprocess. Resume fixture gains an identity `which` mock so existing launch assertions hold unchanged.
 
 **Four-state repo detection: "git refuses the repo" is not "no repo" (#54).** Three days after v0.6.0 shipped, its own author hit the banner claiming `NO BACKUP PROTECTION -- ~/.claude has no git repository` about a repo with an unbroken commit history -- and `csb setup` obligingly offered `git init`, which "succeeded" and changed nothing. Root cause: git 2.35.2+'s dubious-ownership check is **elevation-dependent on Windows** for Administrators-owned dirs (a fresh-box provisioning artifact), so the same repo was accepted in elevated shells (hook backups kept committing daily) and refused in a standard cmd -- and csb collapsed git's refusal into "absent", swallowing the stderr that carried git's exact remediation command.
 
@@ -951,7 +959,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...HEAD
 [0.5.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0
 [0.4.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7
