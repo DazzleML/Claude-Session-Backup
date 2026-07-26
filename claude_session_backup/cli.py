@@ -237,6 +237,113 @@ def build_parser():
         help="Show every tracked folder per session (no cap).",
     )
 
+    # tree (v0.7.0, #31): fork-lineage forest
+    p_tree = sub.add_parser(
+        "tree",
+        help="Fork lineage: which session spawned which, as an indented tree",
+        description=(
+            "Render the fork forest -- every chain of sessions linked by "
+            "/branch, /rewind-continue, or `claude --fork-session -r`. "
+            "With no FILTER, the whole forest renders. With a FILTER, every "
+            "family containing a match renders with the matches marked, so "
+            "you see a session's ancestors AND descendants at once. "
+            "PATH (or -d/-D) narrows to families that worked under a folder "
+            "-- combining `csb list <filter>` with `csb scan <path>`."
+        ),
+    )
+    _add_common_flags(p_tree)
+    p_tree.add_argument(
+        "filter", nargs="?", default=None,
+        help="Filter by keyword in session name, project, id, or folder paths "
+             "(same vocabulary as `csb list <filter>`). Trailing '*' anchors a "
+             "prefix (NAME*); a bare '*' means everything; -E switches to "
+             "regex. A path-shaped value here (e.g. `csb tree .`) is taken as "
+             "the folder scope instead.",
+    )
+    p_tree.add_argument(
+        "path", nargs="?", default=None,
+        help="Optional folder scope -- must look like a path (absolute, "
+             "contains a separator, or starts with ./). Equivalent to -d PATH.",
+    )
+    p_tree.add_argument(
+        "-E", "--regex", action="store_true",
+        help="Interpret FILTER as a Python regular expression",
+    )
+    p_tree.add_argument(
+        "-s", "--case-sensitive", action="store_true",
+        help="Case-sensitive FILTER match (default: case-insensitive)",
+    )
+    p_tree_dir = p_tree.add_mutually_exclusive_group()
+    p_tree_dir.add_argument(
+        "-d", "--directories-below", metavar="PATH", default=None,
+        help="Only families where some session worked under PATH "
+             "(folder + descendants)",
+    )
+    p_tree_dir.add_argument(
+        "-D", "--directory-only", metavar="PATH", default=None,
+        help="Same as -d but PATH only -- subdirectories excluded",
+    )
+    p_tree.add_argument(
+        "--root", metavar="ID", default=None,
+        help="Render only the family containing this session (UUID prefix, "
+             "suffix, or name -- same resolver as `csb show`)",
+    )
+    p_tree.add_argument(
+        "--orphans", action="store_true",
+        help="Only root sessions that never forked (no children)",
+    )
+    p_tree.add_argument(
+        "--lineage", action="store_true",
+        help="Show only a match's own ancestors and descendants, omitting "
+             "its siblings and cousins (default: the whole family)",
+    )
+    p_tree.add_argument(
+        "-n", type=int, default=None, metavar="N",
+        help="Show at most N trees (families). Default: no limit.",
+    )
+    p_tree.add_argument(
+        "--max-nodes", type=int, default=None, metavar="N",
+        help="Collapse a family larger than N sessions (default: 50). "
+             "0 disables the cap.",
+    )
+    p_tree.add_argument(
+        "--sort",
+        choices=["last-used", "expiration", "started", "oldest", "messages", "size"],
+        default="last-used",
+        help="Order of ROOTS (children always read in fork order)",
+    )
+    add_deleted_flag(p_tree, "show")
+    p_tree.add_argument(
+        "-f", "--full-info", action="count", default=0,
+        help="Per-node detail: -f adds started + purge countdown, "
+             "-ff adds folders and the message/version meta line",
+    )
+    p_tree.add_argument(
+        "-u", "--uuid", action="store_true",
+        help="Show the full UUID beside each name (paste-ready for "
+             "`claude --resume`). By default a NAMED session shows just its "
+             "name, to keep the tree readable; unnamed sessions always show "
+             "their UUID.",
+    )
+    p_tree.add_argument(
+        "--shortid", "-sid", action="store_true",
+        help="Show the compact UUID form (<head>-...-<tail>) beside each name",
+    )
+    p_tree.add_argument("--json", action="store_true",
+                        help="Output nested JSON (one object per root)")
+    p_tree.add_argument("--ascii", action="store_true",
+                        help="Force ASCII connectors (auto when the console "
+                             "cannot encode box-drawing characters)")
+    p_tree_folders = p_tree.add_mutually_exclusive_group()
+    p_tree_folders.add_argument(
+        "--top", type=int, metavar="N", default=None,
+        help="With -ff, show top N other folders per node (default: 3)",
+    )
+    p_tree_folders.add_argument(
+        "--all-folders", action="store_true",
+        help="With -ff, show every tracked folder per node",
+    )
+
     # status
     p_status = sub.add_parser("status", help="Summary of sessions, deletions, git state")
     _add_common_flags(p_status)
@@ -956,6 +1063,9 @@ def main(argv=None):
     elif args.command == "list":
         from .commands import cmd_list
         return cmd_list(args)
+    elif args.command == "tree":
+        from .commands import cmd_tree
+        return cmd_tree(args)
     elif args.command == "status":
         from .commands import cmd_status
         return cmd_status(args)

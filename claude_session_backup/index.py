@@ -11,7 +11,7 @@ from typing import Optional
 
 from .metadata import SessionMetadata
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     last_scanned_at TEXT,
     deleted_at TEXT,
     last_git_commit TEXT,
-    metadata_validated_at TEXT
+    metadata_validated_at TEXT,
+    parent_session_id TEXT,
+    parent_message_uuid TEXT,
+    is_fork INTEGER NOT NULL DEFAULT 0,
+    forked_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS folder_usage (
@@ -94,6 +98,13 @@ CREATE INDEX IF NOT EXISTS idx_session_sources_fts5 ON session_sources(fts5_inde
 CREATE INDEX IF NOT EXISTS idx_git_deleted_jsonls_session ON git_deleted_jsonls(session_id);
 CREATE INDEX IF NOT EXISTS idx_git_deleted_jsonls_extracted ON git_deleted_jsonls(extracted_metadata);
 """
+# NOTE: indexes over columns that arrived via a MIGRATION must NOT live in
+# SCHEMA_SQL. This script is executed against EXISTING databases too, where
+# `CREATE TABLE IF NOT EXISTS` is a no-op and the column does not exist yet
+# -- so a `CREATE INDEX` naming it raises "no such column" before migrations
+# get a chance to add it. Those indexes live in their migration, and
+# `migrations.create_migration_indexes()` re-creates them for fresh
+# databases (which skip the migration run entirely).
 
 
 def open_db(db_path: str) -> sqlite3.Connection:
@@ -131,6 +142,10 @@ def init_schema(conn: sqlite3.Connection, quiet: bool = False):
         "SELECT value FROM schema_info WHERE key = 'schema_version'"
     ).fetchone()
     if existing is None:
+        # Fresh DB: the baseline DDL above already created every current
+        # table and column, so migrations are skipped -- but indexes owned
+        # by migrations (see the SCHEMA_SQL note) still need creating.
+        migrations.create_migration_indexes(conn)
         conn.execute(
             "INSERT OR REPLACE INTO schema_info (key, value) VALUES (?, ?)",
             ("schema_version", str(SCHEMA_VERSION)),
@@ -170,8 +185,9 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
             session_id, project, session_name, start_folder,
             started_at, last_active_at, last_user_at, message_count, tool_call_count,
             claude_version, jsonl_path, jsonl_size, jsonl_mtime, last_scanned_at, deleted_at,
-            metadata_validated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+            metadata_validated_at,
+            parent_session_id, parent_message_uuid, is_fork, forked_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             session_name = COALESCE(excluded.session_name, sessions.session_name),
             start_folder = COALESCE(excluded.start_folder, sessions.start_folder),
@@ -185,13 +201,24 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
             jsonl_mtime = excluded.jsonl_mtime,
             last_scanned_at = excluded.last_scanned_at,
             deleted_at = CASE WHEN ? THEN NULL ELSE sessions.deleted_at END,
-            metadata_validated_at = excluded.metadata_validated_at
+            metadata_validated_at = excluded.metadata_validated_at,
+            -- Fork lineage (v0.7.0): COALESCE-preserve. A re-scan that can't
+            -- see the boundary row (truncated / partially-restored file) must
+            -- not erase a parent pointer we already established.
+            parent_session_id = COALESCE(excluded.parent_session_id,
+                                         sessions.parent_session_id),
+            parent_message_uuid = COALESCE(excluded.parent_message_uuid,
+                                           sessions.parent_message_uuid),
+            is_fork = MAX(excluded.is_fork, sessions.is_fork),
+            forked_at = COALESCE(excluded.forked_at, sessions.forked_at)
     """, (
         meta.session_id, meta.project, meta.session_name, meta.start_folder,
         meta.started_at, meta.last_active_at, meta.last_user_at,
         meta.message_count, meta.tool_call_count,
         meta.claude_version, jsonl_path, jsonl_size, jsonl_mtime, scanned_at,
         scanned_at,  # metadata_validated_at == scanned_at: we just re-extracted
+        meta.parent_session_id, meta.parent_message_uuid,
+        1 if meta.is_fork else 0, meta.forked_at,
         1 if is_valid_transcript else 0,  # restore-verify gate (v0.3.16)
     ))
 

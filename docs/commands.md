@@ -38,6 +38,12 @@ csb scan -d <pattern> <term>          # Scope-then-filter combined
 csb scan -d <pattern>* / -D <pattern>* / -s <pattern>*  # Trailing-* wildcard
 csb scan ... -NU                      # Skip folder-usage search (start_folder only)
 csb scan ... --json                   # Output as JSON (pure stdout; empty scope prints [])
+csb tree                              # Fork lineage: which session spawned which
+csb tree <filter>                     # Families containing a match (ancestors + descendants)
+csb tree <filter> <path>              # ...also scoped to a folder (list + scan in one)
+csb tree --root <id>                  # Just one family
+csb tree --orphans                    # Sessions that never forked
+csb tree -f / -ff                     # Per-node detail (same levels as list/scan)
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
 csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
@@ -114,6 +120,51 @@ csb search "SC:N" "SI:N" "SA:N" -d . --match all     # ...that were also active 
 
 For metadata search (folder paths, project, session name), use `csb list <filter>` or `csb scan <term>` -- those are the right tools for "find sessions in this folder" rather than "find sessions about this topic."
 
+## Fork lineage (csb tree)
+
+Forking a session -- `/branch`, continuing a `/rewind`, or `claude --fork-session -r` -- mints a **new** session that inherits the old one's history. `csb tree` shows how those sessions relate:
+
+```bash
+csb tree                              # the whole forest
+csb tree search                       # families containing a match (match marked *)
+csb tree "CLAUDE-SESSION-BACKUP*"     # trailing-* anchors a prefix
+csb tree -E "^v\d-release"            # regex filter
+csb tree .                            # families that worked in the current folder
+csb tree search "C:\code\myproject"   # ...a filter AND a folder, in one command
+csb tree --root 722c24c2              # one family
+csb tree --orphans                    # sessions that never forked
+csb tree -u                           # show full UUIDs (paste into claude --resume)
+csb tree -ff --shortid                # per-node detail, compact UUIDs
+```
+
+```
+CLAUDE-SESSION-BACKUP__adding-transcript-search  2 months ago
+└── CLAUDE-SESSION-BACKUP__phase-1-grep-first  2 months ago  forked 2026-05-18, at 09:12
+    ├── CLAUDE-SESSION-BACKUP__phase-2-fts5-index  6 weeks ago  forked 2026-05-24, at 14:03
+    │   └── CLAUDE-SESSION-BACKUP__fts5-escaping-fix  1 month ago  forked 2026-06-21, at 17:11
+    └── CLAUDE-SESSION-BACKUP__multi-term-boolean  1 month ago  forked 2026-06-21, at 19:03  *
+
+DAZZLECMD__mode-symlinks  4 weeks ago
+└── DAZZLECMD__2026-6-18__Groupables  1 month ago  forked 2026-06-18, at 01:21
+    └── DAZZLECMD__2026-6-21__committing-tools  3 weeks ago  forked 2026-06-21, at 15:31
+
+2 trees | 8 sessions | 96 never forked (--orphans to list)
+```
+
+Selection works like the rest of csb: the FILTER uses the same vocabulary as `csb list <filter>` (session name, project, UUID, folder paths) with trailing-`*` and `-E` regex added, and the folder scope behaves like `csb scan -d/-D`. A filter renders the whole **family** around each match so you see ancestors *and* descendants at once; `--lineage` narrows that to the match's own line of descent, dropping cousins.
+
+**Folder scope is slightly wider than `csb scan`'s, on purpose.** `csb scan` treats its `--top N` display cap (default 3) as a match gate, so a session whose 4th-most-used folder is the target doesn't match. `csb tree` applies no such gate — its unit is a *family*, and the question is "did any member ever work here", so gating would hide a real chain. `csb tree <path>` can therefore surface a session `csb scan <path>` omits; never the reverse.
+
+**Positionals are order-forgiving.** A path-shaped first argument is read as the folder scope, so `csb tree .` means "families that worked here" — the same `./`-promotion `csb scan` does. A bare `*` in the filter slot means "everything", so `csb tree * .` works too if you prefer being explicit. Anything that isn't obviously a path stays a filter, and a non-path *second* positional is rejected with a message naming `-d` rather than silently scoping to nothing.
+
+**Identity is economical.** Named sessions show just their name — a UUID per row costs 36 columns in a view already spending width on indentation. Add `-u`/`--uuid` for full paste-ready UUIDs, or `--shortid` for the compact `<head>-...-<tail>` form; unnamed sessions always show their UUID. When a terminal is attached, names render bright and the dates/fork stamps dim, matching `csb list` and `csb scan`.
+
+**Reading the display.** Matched sessions carry `*`. Sessions outside the current scope render dimmed as *structural connectors* -- a purged ancestor still appears (marked `[purged]`) so a chain never looks headless, and a parent csb has never indexed appears as `[not indexed]` so its children still group as siblings (try `csb update backfill-deleted` to recover it from git history). Otherwise the deleted scope matches `csb list`: active-only by default, `--deleted all` / `--deleted only` to widen or flip. Roots follow `--sort`; children always read in fork order. A family larger than `--max-nodes` (default 50) collapses with a `csb tree --root <id>` hint. Box-drawing characters are used when the console can encode them, ASCII otherwise (`--ascii` forces it).
+
+`csb show <id>` shows the same relationships for a single session as `Forked from:` / `Forks:` lines.
+
+**Lineage needs one backup to appear.** It is read from each transcript during indexing, so after upgrading to v0.7.0 run `csb backup` (or `csb update rebuild-index`) once for already-indexed sessions.
+
 ## Reading conversations (distill)
 
 `csb search` finds the needle; `csb distill` lets you read the haystack comfortably -- an instant-messenger-style log with timestamped speaker turns (`<User>`, `<Claude>`, `<Agent:explore>`), generous separation, and one-line tool calls (`[Read] path`, `[Bash] command`) instead of walls of tool output. Markdown-friendly (Typora) and editor-friendly (Vim-jumpable file references).
@@ -161,7 +212,7 @@ When Claude Code purges a session you wanted to keep, csb can recover it from yo
 
 ```bash
 csb list --deleted                  # Every session csb has flagged deleted, all projects
-csb list amd --deleted              # Filtered: only deleted sessions matching "amd"
+csb list auth --deleted             # Filtered: only deleted sessions matching "auth"
 csb scan --deleted                  # Deleted sessions touching cwd (or any folder)
 csb scan --deleted all              # Live AND deleted together (same grammar as list/search)
 csb scan -d /path/to/proj --deleted # Scoped to a specific folder (folder + descendants)

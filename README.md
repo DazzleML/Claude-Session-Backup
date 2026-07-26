@@ -65,6 +65,7 @@ csb backup
 - **Deletion detection**: Know when Claude Code removes a session you previously tracked
 - **Session restore**: Recover deleted sessions from git history with `csb restore`
 - **Readable chat logs**: `csb distill` renders any session as an IM-style log -- the full JSONL stays preserved regardless
+- **Fork lineage**: `csb tree` shows which session spawned which as an indented tree -- including purged ancestors csb still remembers, so a chain never reads headless
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
 - **Unattended operation**: `--no-gpg-sign`, `--quiet`, lock file -- designed for cron and Task Scheduler
 - **Cross-platform**: Works on Windows, Linux, macOS, BSD
@@ -79,6 +80,7 @@ csb backup                      # Scan, index, git commit
 csb list                        # Timeline of sessions (filter, sort, --deleted)
 csb scan -d <path> --deleted    # Find (and bulk-restore) what was purged in a folder
 csb search "oauth callback"     # Full-text search across every conversation
+csb tree [filter] [path]        # Fork lineage: which session spawned which
 csb distill <query>             # Read a session as a chat log -> ~/.claude/distilled/
 csb resume <query>              # Reopen in Claude Code (UUID, prefix, name, keyword...)
 csb view <query>                # Open in Claude Code History Viewer
@@ -134,6 +136,23 @@ csb distill <anything-that-identifies-a-session>     # writes ~/.claude/distille
 ```
 
 The distilled file is a *reading layer* -- the full JSONL remains the preserved record. Filters, channels, and the `distill_policy` config: **[docs/commands.md](docs/commands.md#reading-conversations-distill)**.
+
+### Fork lineage (tree)
+
+Forking a session -- `/branch`, continuing a `/rewind`, or `claude --fork-session -r` -- mints a **new** session that inherits the old one's history. `csb tree` shows how they relate:
+
+```
+$ csb tree multi-term
+CLAUDE-SESSION-BACKUP__adding-transcript-search  2 months ago
+└── CLAUDE-SESSION-BACKUP__phase-1-grep-first  2 months ago  forked 2026-05-18, at 09:12
+    ├── CLAUDE-SESSION-BACKUP__phase-2-fts5-index  6 weeks ago  forked 2026-05-24, at 14:03
+    │   └── CLAUDE-SESSION-BACKUP__fts5-escaping-fix  1 month ago  forked 2026-06-21, at 17:11
+    └── CLAUDE-SESSION-BACKUP__multi-term-boolean  1 month ago  forked 2026-06-21, at 19:03  *
+
+1 tree | 5 sessions | 96 never forked (--orphans to list)
+```
+
+A filter renders the whole **family** around each match (`*`), so you see ancestors *and* descendants at once. `csb tree .` scopes to the folder you're standing in; `csb tree search "C:\code\myproject"` combines both. Purged ancestors still render, dimmed -- csb remembers chains Claude Code has already deleted, so a lineage never reads headless. Per-node detail (`-f`/`-ff`), `--root`, `--orphans`, `--json`: **[docs/commands.md](docs/commands.md#fork-lineage-csb-tree)**.
 
 ### Recovery
 

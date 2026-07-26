@@ -9,6 +9,28 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.7.0] -- 2026-07-26 (beta)
+
+**`csb tree` -- see which session forked from which (#31).** Every time you run `/branch`, continue a `/rewind`, or `claude --fork-session -r`, Claude Code mints a new session that inherits the old one's history. csb has always backed those up; now it shows you how they relate. 1089 tests pass (was 1041 at v0.6.3; +48).
+
+### Added
+- **`csb tree [FILTER] [PATH]`** -- renders the fork forest as an indented tree (DOS/Linux `tree` style, arbitrary depth). With no FILTER the whole forest renders; with one, every **family** containing a match renders with the matches marked, so a session's ancestors *and* descendants are visible at once. A second positional that looks like a path (absolute, contains a separator, or `./`-prefixed) scopes to families that worked under that folder -- combining `csb list <filter>` with `csb scan <path>` in one command. A non-path second positional is rejected with a message naming `-d` rather than silently mis-scoping.
+- **Flags mirror the sibling verbs** so muscle memory transfers: `-f`/`-ff` per-node detail (started + purge countdown; then folders + `N messages | vX.Y.Z`), `--shortid`, `--sort` (orders roots; children always read in fork order), `-d`/`-D`, `--deleted [only|all]`, `--json`, `-n`. New to tree: `--root <id>` (one family), `--orphans` (sessions that never forked), `--lineage` (a match's own ancestors/descendants without its cousins), `--max-nodes` (per-family collapse, default 50), `-E` regex and trailing-`*` prefix filters, `-u`/`--uuid`, and `--ascii`.
+- **Readable by default.** A named session shows just its name -- a full UUID per row costs 36 columns in a view already spending width on indentation -- with `-u`/`--uuid` (paste-ready) or `--shortid` (compact) to bring identity back; unnamed sessions always show their UUID. On a terminal, names render bright and dates/fork stamps dim, matching `csb list`/`csb scan`, and matched rows are highlighted.
+- **Order-forgiving positionals.** A path-shaped first argument is taken as the folder scope, so `csb tree .` means "families that worked here" (the same `./` promotion `csb scan` does), and a bare `*` in the filter slot means "everything" so `csb tree * .` also works. A non-path second positional is rejected with a message naming `-d`.
+- **Three-tier display.** Matched nodes are marked `*`; in-scope sessions render normally; **structural connectors render dim** -- a purged ancestor keeps its chain from appearing headless (marked `[purged]`), and a parent the index has never seen becomes a placeholder (`[not indexed]`) so its children still group as siblings instead of scattering as unrelated roots. The default scope stays at parity with `csb list`/`csb scan` (active sessions), so a purged *leaf* with no in-scope descendants stays hidden until `--deleted all`.
+- **`csb show` gains `Forked from:` / `Forks:` lines** when a session has lineage (with a `csb tree --root <id>` pointer), and stays visually unchanged when it doesn't. Names render cyan and a purged relative's `[purged]` marker red, matching the view's existing `DELETED at:` convention.
+- **`csb show` and `csb tree --root` now accept a session NAME** (or path / keyword), not just a UUID prefix -- the same vocabulary `csb resume` has taken since #42, now shared through one helper. This closes a dead end the tree itself created: it prints names, so `csb show <that name>` has to work. UUID prefixes and ambiguity reporting are unchanged.
+- **Schema v6**: `parent_session_id`, `parent_message_uuid`, `is_fork`, and `forked_at` on `sessions`, plus an index on the parent pointer. Populated during normal backup -- and from historical git blobs during `csb update backfill-deleted`, so purged ancestors get lineage too. Migration is additive and idempotent; **existing indexes need one `csb backup` (or `csb update rebuild-index`) to populate lineage for sessions already indexed.**
+
+### Notes on the data model
+- Lineage comes from the `forkedFrom` pointer Claude Code writes on a fork's `compact_boundary` event. In-place compaction, microcompact, and `/clear` write no such pointer and correctly produce no edge.
+- **The pointer is not always on line 1.** A census of the dev vault found 32 forks, 4 of which carry the boundary row after leading `custom-title`/`agent-name` rows -- so extraction scans events rather than assuming position (reading only line 1 would have missed 12.5% of them). Those same 4 are exactly the sessions where `started_at` and the fork moment diverge (by up to 7.5 hours), which is why `forked_at` is its own column rather than reusing `started_at`.
+- Since a session has at most one parent, the graph is a **forest**, not a general DAG -- the walk needs no join table. A cycle (only reachable through index corruption) is broken with a warning rather than hanging.
+
+### Tests
+- 48 new in `tests/test_lineage.py`: extraction (fork detected; boundary-without-pointer, non-boundary mention, and later-in-file cases; first-boundary-wins), migration v6 (columns + idempotency), forest construction (empty, single child, deep chain, multi-root, fork-order sorting, cycle guard, phantom grouping), the three deleted-scope tiers, filtering (component vs `--lineage`, prefix, regex, UUID/folder vocabulary, scope ids, orphans, root, truncation), and rendering (both charsets, cumulative info levels, shortid, markers, truncation hint, JSON shape, encoding probe). Extraction and migration tests are red-green verified against the v0.6.3 baseline.
+
 ## [0.6.3] -- 2026-07-22 (beta)
 
 **`csb resume` works on npm-shim installs (#55).** On Windows boxes where Claude Code is installed via npm, `claude` exists only as shims (`claude` + `claude.cmd` -- no `claude.exe`). `csb resume` spawned the bare name, which goes to Win32 `CreateProcess` -- and CreateProcess searches PATH **for `.exe` only**, never applying `PATHEXT`. Result: `Error: 'claude' command not found in PATH.` while the identical command line worked when typed in the same shell (cmd searches PATH x PATHEXT). Install-method dependence: native-installer boxes worked, npm boxes didn't.
@@ -959,7 +981,12 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0
+[0.6.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0
 [0.4.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7

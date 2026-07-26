@@ -29,6 +29,15 @@ class SessionMetadata:
     # a symlink-target path string). Used by the restore-verify gate (v0.3.16)
     # to decide whether a reappeared JSONL is a genuine revival.
     event_count: int = 0
+    # Fork lineage (v0.7.0, #22/#31). Populated from the first
+    # ``compact_boundary`` event carrying a top-level ``forkedFrom`` --
+    # the signature Claude Code writes when a session is forked
+    # (``/branch``, ``/rewind``-continue, ``claude --fork-session -r``).
+    # All None/0 for a root session.
+    parent_session_id: Optional[str] = None
+    parent_message_uuid: Optional[str] = None
+    forked_at: Optional[str] = None  # the boundary event's own timestamp
+    is_fork: bool = False
 
 
 def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
@@ -48,6 +57,9 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     event_count = 0
     version = None
     session_name = None
+    fork_parent = None
+    fork_message_uuid = None
+    fork_at = None
 
     for line in lines:
         line = line.strip()
@@ -64,6 +76,21 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
         # Extract session name from custom-title event
         if event.get("type") == "custom-title":
             session_name = event.get("customTitle")
+
+        # Fork lineage (v0.7.0): a forked session's boundary row carries a
+        # top-level forkedFrom pointer at its parent. Take the FIRST one --
+        # it is the fork that minted THIS file. In practice it is line 1,
+        # but we don't assume position: some sessions lead with
+        # custom-title / agent-name rows. In-place compaction and
+        # microcompact write boundary rows WITHOUT forkedFrom, and /clear
+        # mints a fresh UUID with no boundary at all -- neither is a fork,
+        # and both are correctly skipped by the forkedFrom requirement.
+        if fork_parent is None and event.get("subtype") == "compact_boundary":
+            forked = event.get("forkedFrom")
+            if isinstance(forked, dict) and forked.get("sessionId"):
+                fork_parent = forked.get("sessionId")
+                fork_message_uuid = forked.get("messageUuid")
+                fork_at = event.get("timestamp")
 
         # Track timestamps
         ts = event.get("timestamp")
@@ -110,6 +137,10 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     meta.tool_call_count = tool_count
     meta.event_count = event_count
     meta.claude_version = version
+    meta.parent_session_id = fork_parent
+    meta.parent_message_uuid = fork_message_uuid
+    meta.forked_at = fork_at
+    meta.is_fork = fork_parent is not None
 
     # Persist every cwd we saw, sorted by usage count descending so the
     # SQLite ORDER BY is consistent with the in-memory counter ordering.

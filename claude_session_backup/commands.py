@@ -942,6 +942,341 @@ def cmd_list(args) -> int:
     return 0
 
 
+def _looks_like_path(value: str) -> bool:
+    """True when a bare positional should be read as a folder, not a filter.
+
+    Conservative on purpose (`csb tree FILTER PATH`): only an unambiguous
+    path shape counts -- an explicit ``./`` / ``.\\`` prefix, a bare ``.``,
+    an absolute path, or anything containing a separator. A plain word is
+    NEVER guessed to be a path; the caller errors and names ``-d`` instead,
+    so a mistyped filter can't silently become a folder scope that matches
+    nothing.
+    """
+    if not value:
+        return False
+    if value in (".", "./", ".\\", "..") or value.startswith(("./", ".\\", "../", "..\\")):
+        return True
+    if "/" in value or "\\" in value:
+        return True
+    return bool(Path(value).is_absolute())
+
+
+def _tree_scope_ids(conn, args) -> tuple[set[str] | None, str | None, int]:
+    """Resolve ``csb tree``'s folder scope to a set of session ids.
+
+    Reuses ``csb scan``'s pattern resolution and SQL matching, so PATH
+    SYNTAX is identical across the two commands: trailing-``*`` wildcards,
+    LIKE escaping, and descendants (``-d``) vs folder-only (``-D``).
+
+    **One deliberate difference in ELIGIBILITY.** ``csb scan`` passes its
+    display cap (``--top``, default 3) into ``find_sessions_by_directory``'s
+    ``top_n``, where it doubles as a match gate -- a session whose 4th-most-
+    used folder is the target does not match ``scan``. Tree passes None
+    (no gate), because its unit is a FAMILY and its question is "did any
+    member ever work here", not "is this folder prominent for this
+    session". Gating would hide a real chain, and wiring the display cap
+    into scope would let ``--top 1`` silently change WHICH families appear.
+    Consequence: ``csb tree <path>`` can include a session ``csb scan
+    <path>`` omits -- never the reverse.
+
+    Returns ``(scope_ids, resolved_path, exit_code)``. ``scope_ids`` is None
+    when no scope was requested.
+    """
+    from .index import find_sessions_by_directory
+
+    below = getattr(args, "directories_below", None)
+    only = getattr(args, "directory_only", None)
+    positional = getattr(args, "path", None)
+
+    pattern = below or only
+    include_descendants = only is None
+
+    # `csb tree .` / `csb tree ./sub` -- a path-shaped FIRST positional is
+    # the path, not a filter. Same promotion `csb scan` does, so the muscle
+    # memory carries over and no flag (or argument-order flag) is needed.
+    # Only promote when the slot it would move into is free.
+    if (positional is None and pattern is None
+            and args.filter and _looks_like_path(args.filter)):
+        positional = args.filter
+        args.filter = None
+
+    if positional is not None:
+        if pattern is not None:
+            print("Error: PATH given both positionally and via -d/-D. Use one.",
+                  file=sys.stderr)
+            return None, None, 2
+        if not _looks_like_path(positional):
+            print(
+                f"Error: second positional {positional!r} does not look like a "
+                f"path (expected an absolute path, one containing a separator, "
+                f"or a ./ prefix). Use -d {positional!r} to force it as a "
+                f"folder scope, or pass it as the FILTER instead.",
+                file=sys.stderr,
+            )
+            return None, None, 2
+        pattern = positional
+
+    if pattern is None:
+        return None, None, 0
+
+    resolved, exact_value, like_match, like_exclude = _resolve_directory_pattern(
+        pattern, include_descendants,
+    )
+    rows = find_sessions_by_directory(
+        conn, exact_value, like_match, like_exclude, None,
+        limit=100_000, deleted_filter="all",
+    )
+    return {r["session_id"] for r in rows}, resolved, 0
+
+
+def cmd_tree(args) -> int:
+    """Render the fork-lineage forest (#31).
+
+    Builds the parent/child forest from ``sessions.parent_session_id`` and
+    prints it as an indented tree. Selection composes ``csb list``'s keyword
+    filter with ``csb scan``'s directory scope; per-node detail mirrors
+    ``csb list -f/-ff``.
+    """
+    import json as _json
+    import re as _re
+
+    from .lineage import DEFAULT_MAX_NODES_PER_ROOT, build_forest
+    from .lineage_render import forest_summary, print_forest, to_json
+
+    # Session names can carry characters the console cannot encode. Relax
+    # the error handler so those degrade to '?' instead of raising -- but do
+    # NOT force the encoding to UTF-8: writing UTF-8 bytes to a cp437 /
+    # cp1252 console turns the box-drawing connectors into mojibake
+    # (Γö£ΓöÇ...). Keeping the console's own encoding lets the renderer's
+    # probe pick the charset that will actually display correctly.
+    console_encoding = getattr(sys.stdout, "encoding", None)
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn, quiet=getattr(args, "quiet", False))
+
+    scope_ids, resolved_path, rc = _tree_scope_ids(conn, args)
+    if rc:
+        conn.close()
+        return rc
+
+    root_id = None
+    raw_root = getattr(args, "root", None)
+    if raw_root:
+        root_session, rc = _resolve_session_flexible(
+            conn, raw_root, config["claude_dir"],
+        )
+        if root_session is None:
+            conn.close()
+            return rc
+        root_id = root_session["session_id"]
+
+    max_nodes = getattr(args, "max_nodes", None)
+    if max_nodes is None:
+        max_nodes = DEFAULT_MAX_NODES_PER_ROOT
+
+    try:
+        forest = build_forest(
+            conn,
+            filter_term=args.filter,
+            regex=getattr(args, "regex", False),
+            case_sensitive=getattr(args, "case_sensitive", False),
+            scope_ids=scope_ids,
+            deleted_filter=_tree_deleted_filter(args),
+            root=root_id,
+            orphans_only=getattr(args, "orphans", False),
+            component_view=not getattr(args, "lineage", False),
+            max_nodes_per_root=max_nodes,
+        )
+    except _re.error as e:
+        print(f"Error: invalid regex {args.filter!r}: {e}", file=sys.stderr)
+        conn.close()
+        return 2
+
+    # Roots order follows --sort; children always read in fork order.
+    _sort_roots(forest, getattr(args, "sort", "last-used"))
+
+    # Most sessions never fork, so an unfiltered forest is mostly one-node
+    # "trees" that bury the real chains. Collapse those into a count (#31's
+    # "(orphan root, no children: N sessions)") unless the user asked for
+    # them with --orphans -- or unless the session MATCHED the filter, in
+    # which case hiding it would silently answer the wrong question.
+    solo_count = 0
+    if not getattr(args, "orphans", False):
+        solo_count = sum(
+            1 for r in forest.roots if not r.children and not r.matched
+        )
+        forest.roots = [r for r in forest.roots if r.children or r.matched]
+        forest.total_nodes = sum(1 for _ in forest.walk())
+
+    limit = getattr(args, "n", None)
+    if limit is not None and limit >= 0:
+        forest.roots = forest.roots[:limit]
+        forest.total_nodes = sum(1 for _ in forest.walk())
+
+    cleanup_days = read_cleanup_period(config["claude_dir"])
+    # Diagnostic signal for the empty states: an index that has NEVER
+    # recorded a fork pointer is almost certainly one that predates v0.7.0
+    # (lineage is extracted during indexing), not a vault without forks.
+    any_lineage = conn.execute(
+        "SELECT 1 FROM sessions WHERE parent_session_id IS NOT NULL LIMIT 1"
+    ).fetchone() is not None
+    conn.close()
+
+    if getattr(args, "json", False):
+        print(_json.dumps(to_json(forest), indent=2, default=str))
+        return 0
+
+    if not forest.roots:
+        if solo_count:
+            # Careful with the wording: these sessions matched but ended up
+            # with no RENDERED relatives. That is not the same as "never
+            # forked" -- under a narrowed scope (e.g. --deleted only) a real
+            # fork partner can simply sit outside the population.
+            scoped = _tree_deleted_filter(args) != "active" or bool(
+                args.filter or resolved_path or getattr(args, "root", None))
+            if scoped:
+                print(f"No fork relationships within this scope -- "
+                      f"{solo_count} session(s) matched, but any sessions they "
+                      f"forked from or into fall outside it.")
+            else:
+                print(f"No fork lineage found -- {solo_count} session(s) "
+                      f"matched but none of them forked.")
+            if not any_lineage:
+                _print_reindex_hint()
+            elif scoped:
+                print("  Widen the scope (e.g. --deleted all) to see partners "
+                      "outside it, or --orphans to list the matches.",
+                      file=sys.stderr)
+            else:
+                print("  Use --orphans to list them.", file=sys.stderr)
+            return 0
+        _tree_empty_message(args, resolved_path, any_lineage)
+        return 0
+
+    level = min(getattr(args, "full_info", 0) or 0, 2)
+    top_folders = None if getattr(args, "all_folders", False) else (
+        getattr(args, "top", None) or 3
+    )
+    print_forest(
+        forest,
+        level=level,
+        shortid=getattr(args, "shortid", False),
+        show_uuid=getattr(args, "uuid", False),
+        cleanup_days=cleanup_days,
+        top_folders=top_folders,
+        charset="ascii" if getattr(args, "ascii", False) else None,
+        encoding=console_encoding,
+    )
+    print()
+    summary = forest_summary(forest)
+    if solo_count:
+        summary += (f" | {solo_count} never forked (--orphans to list)")
+    print(summary)
+    if forest.cycles_broken:
+        print(
+            f"Warning: broke {len(forest.cycles_broken)} parent-pointer cycle(s) "
+            f"({', '.join(c[:8] for c in forest.cycles_broken)}) -- the index may "
+            f"be corrupt; `csb update rebuild-index` re-derives lineage from "
+            f"the transcripts.",
+            file=sys.stderr,
+        )
+    if forest.phantom_parents:
+        print(
+            f"Note: {len(forest.phantom_parents)} parent session(s) are not in "
+            f"the index (shown dimmed as '(unknown session)'). "
+            f"`csb update backfill-deleted` may recover them from git history.",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def _tree_deleted_filter(args) -> str:
+    """Map the shared ``--deleted`` grammar onto the lineage vocabulary."""
+    mode = deleted_mode(args)
+    if mode == "only":
+        return "deleted"
+    if mode == "all":
+        return "all"
+    return "active"
+
+
+#: Root-ordering vocabulary -- deliberately the same keys ``index.SORT_SQL``
+#: accepts, so ``csb tree --sort`` and ``csb list --sort`` can never drift.
+#: ``(field, descending)``; a missing value always sorts last, mirroring the
+#: ``NULLS LAST`` in the SQL the other verbs use.
+_TREE_SORT_FIELDS = {
+    "last-used":  ("last_active_at", True),
+    "expiration": ("jsonl_mtime", False),   # soonest purge first
+    "started":    ("started_at", True),
+    "oldest":     ("started_at", False),
+    "messages":   ("message_count", True),
+    "size":       ("jsonl_size", True),
+}
+
+
+def _sort_roots(forest, sort_key: str) -> None:
+    """Order roots by the same vocabulary ``csb list --sort`` uses.
+
+    Sorted in Python rather than SQL because the roots are already
+    materialized objects. Rows missing the sort field are partitioned out
+    and appended, which reproduces SQL's ``NULLS LAST`` without needing a
+    sentinel value that would differ per column type.
+    """
+    field, descending = _TREE_SORT_FIELDS.get(
+        sort_key, _TREE_SORT_FIELDS["last-used"],
+    )
+
+    def value(node):
+        raw = node.session.get(field)
+        return None if raw in (None, "", 0) else raw
+
+    have = [n for n in forest.roots if value(n) is not None]
+    missing = [n for n in forest.roots if value(n) is None]
+    have.sort(key=value, reverse=descending)
+    forest.roots = have + missing
+
+
+def _print_reindex_hint() -> None:
+    """Explain the one-time upgrade step for a pre-v0.7.0 index.
+
+    Fork lineage is read from each transcript while indexing, so sessions
+    indexed before v0.7.0 carry no pointer until they are re-scanned. An
+    index with ZERO recorded pointers is far more likely to be in that
+    state than to be a vault where nobody ever forked -- so say the useful
+    thing instead of implying there is nothing to find.
+    """
+    print(
+        "  Note: fork lineage is read from transcripts during indexing, and "
+        "this index has none recorded yet -- sessions indexed before v0.7.0 "
+        "need one pass to pick it up. Run `csb backup` (or "
+        "`csb update rebuild-index`) and try again.",
+        file=sys.stderr,
+    )
+
+
+def _tree_empty_message(args, resolved_path, any_lineage: bool = True) -> None:
+    """Explain an empty forest the way list/scan explain empty results."""
+    bits = []
+    if args.filter:
+        bits.append(f"filter {args.filter!r}")
+    if resolved_path:
+        bits.append(f"path {resolved_path}")
+    if getattr(args, "root", None):
+        bits.append(f"root {args.root!r}")
+    if getattr(args, "orphans", False):
+        bits.append("--orphans")
+    scope = f" for {' + '.join(bits)}" if bits else ""
+    print(f"No fork lineage found{scope}.")
+    if not any_lineage:
+        _print_reindex_hint()
+
+
 def cmd_status(args) -> int:
     """Summary of sessions, deletions, git state."""
     config = _get_config(args)
@@ -1125,6 +1460,40 @@ def cmd_check(args) -> int:
     return CHECK_GAP_EXIT
 
 
+def _resolve_session_flexible(conn, query: str, claude_dir):
+    """Resolve a session by UUID/prefix OR name / path / keyword.
+
+    The two-step idiom established for `csb resume` by #42: try the
+    historical hex resolver first (prefix / suffix matching with proper
+    ambiguity reporting), and on a non-ID-shaped input fall through to the
+    multi-modal :func:`_resolve_session_query`.
+
+    Factored out so every command that takes "a session" accepts the same
+    vocabulary. That matters more since v0.7.0: `csb tree` displays session
+    NAMES by default, so the obvious next command (`csb show <that name>`)
+    has to accept what the user just read off the screen.
+
+    Returns ``(session_dict, 0)`` on success, or ``(None, exit_code)``
+    after printing the appropriate error / candidate list.
+    """
+    full_id, exit_code = _resolve_session_or_exit(conn, query, miss_ok=True)
+    if full_id is None and exit_code:
+        return None, exit_code
+    session = get_session(conn, full_id) if full_id else None
+    if session is not None:
+        return session, 0
+
+    result, method = _resolve_session_query(query, conn, claude_dir)
+    if result is None:
+        print(f"Error: {method}", file=sys.stderr)
+        return None, 1
+    if isinstance(result, list):
+        label = method.split(":", 1)[1] if ":" in method else method
+        _show_view_candidates(result, query, label)
+        return None, 1
+    return result, 0
+
+
 def _resolve_session_or_exit(
     conn, query: str, miss_ok: bool = False
 ) -> tuple[str | None, int]:
@@ -1174,12 +1543,20 @@ def cmd_show(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    full_id, exit_code = _resolve_session_or_exit(conn, args.session_id)
-    if full_id is None:
+    # Accepts a UUID/prefix OR a session name / path / keyword -- the same
+    # vocabulary `csb resume` takes, and the vocabulary `csb tree` prints.
+    session, exit_code = _resolve_session_flexible(
+        conn, args.session_id, config["claude_dir"],
+    )
+    if session is None:
         conn.close()
         return exit_code
+    full_id = session["session_id"]
 
-    session = get_session(conn, full_id)
+    if session:
+        # Fork lineage (v0.7.0, #22 Phase 1) -- resolved before the
+        # connection closes so the renderer stays DB-free.
+        session["_lineage"] = _fetch_lineage(conn, full_id, session)
     conn.close()
 
     if not session:
@@ -1190,6 +1567,90 @@ def cmd_show(args) -> int:
 
     _render_show(session)
     return 0
+
+
+def _fetch_lineage(conn, full_id: str, session: dict) -> dict:
+    """Look up this session's parent and its direct forks.
+
+    Returns ``{"parent": {...}|None, "parent_missing": <uuid>|None,
+    "forks": [...]}``. ``parent_missing`` carries the UUID when the pointer
+    names a session the index has never seen (pre-csb history, another
+    machine) -- worth showing, because it still tells the user this session
+    WAS forked from something.
+    """
+    out: dict = {"parent": None, "parent_missing": None, "forks": []}
+
+    parent_id = session.get("parent_session_id")
+    if parent_id:
+        row = conn.execute(
+            "SELECT session_id, session_name, deleted_at FROM sessions "
+            "WHERE session_id = ?", (parent_id,),
+        ).fetchone()
+        if row is not None:
+            out["parent"] = dict(row)
+        else:
+            out["parent_missing"] = parent_id
+
+    out["forks"] = [
+        dict(r) for r in conn.execute(
+            "SELECT session_id, session_name, forked_at, deleted_at "
+            "FROM sessions WHERE parent_session_id = ? "
+            "ORDER BY forked_at, session_id", (full_id,),
+        ).fetchall()
+    ]
+    return out
+
+
+def _lineage_lines(session: dict) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Build ``(label, segments)`` rows for the show view's lineage block.
+
+    ``segments`` is a list of ``(text, style)`` so each part can carry its
+    own color, matching this view's existing conventions: names cyan, the
+    purged marker RED (same as the `DELETED at:` line above), timestamps
+    dim. Returning one flat string would force a single color on the whole
+    row and paint `[purged]` the same as the name.
+
+    Empty when the session neither was forked nor has forks -- the common
+    case stays visually unchanged.
+    """
+    # Compact date form (timeline's, shared with `csb tree`) -- the verbose
+    # local+tz+ISO form used by the fields above wraps these lines badly.
+    from .timeline import format_timestamp as _compact_ts
+
+    info = session.get("_lineage") or {}
+    lines: list[tuple[str, list[tuple[str, str]]]] = []
+
+    def row(uuid: str, name: str, deleted, stamp_iso):
+        segs = [(uuid, ""), ("  ", ""), (name, "cyan")]
+        if deleted:
+            segs.append((" [purged]", "red"))
+        if stamp_iso:
+            segs.append((f"  (forked {_compact_ts(stamp_iso)})", "dim"))
+        return segs
+
+    forked_at = session.get("forked_at")
+
+    parent = info.get("parent")
+    if parent:
+        lines.append(("Forked from:", row(
+            parent["session_id"], parent.get("session_name") or "(unnamed)",
+            parent.get("deleted_at"), forked_at)))
+    elif info.get("parent_missing"):
+        segs = [
+            (info["parent_missing"], ""),
+            ("  (not in index -- try csb update backfill-deleted)", "dim"),
+        ]
+        if forked_at:
+            segs.append((f"  (forked {_compact_ts(forked_at)})", "dim"))
+        lines.append(("Forked from:", segs))
+
+    for i, fork in enumerate(info.get("forks") or []):
+        lines.append((
+            "Forks:" if i == 0 else "",
+            row(fork["session_id"], fork.get("session_name") or "(unnamed)",
+                fork.get("deleted_at"), fork.get("forked_at")),
+        ))
+    return lines
 
 
 def _format_timestamp(iso_str: str | None) -> str:
@@ -1257,6 +1718,12 @@ def _render_show(session: dict) -> None:
         if session.get("deleted_at"):
             print(f"  DELETED at:    {_format_timestamp(session['deleted_at'])}")
             print(f"  Restore with:  csb restore {full_id}")
+        lineage = _lineage_lines(session)
+        if lineage:
+            print()
+            for label, segments in lineage:
+                print(f"  {label:<14} {''.join(t for t, _ in segments)}")
+            print(f"  {'':<14} (full tree: csb tree --root {full_id})")
         print(f"\n  Resume:        claude --resume {full_id}")
         if folders:
             print(f"\n  Working directories:")
@@ -1305,6 +1772,20 @@ def _render_show(session: dict) -> None:
         restore_line.append("  Restore with:  ", style="dim")
         restore_line.append(f"csb restore {full_id}", style="bold yellow")
         console.print(restore_line)
+
+    lineage = _lineage_lines(session)
+    if lineage:
+        console.print()
+        for label, segments in lineage:
+            line = Text()
+            line.append(f"  {label:<14}", style="dim")
+            for text, style in segments:
+                line.append(text, style=style)
+            console.print(line)
+        hint = Text()
+        hint.append(f"  {'':<14}", style="dim")
+        hint.append(f"(full tree: csb tree --root {full_id})", style="dim")
+        console.print(hint)
 
     console.print()
     resume_line = Text()

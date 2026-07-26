@@ -120,6 +120,67 @@ def _v5_add_metadata_validated_at(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN metadata_validated_at TEXT")
 
 
+def _v6_add_fork_lineage(conn: sqlite3.Connection) -> None:
+    """Add fork-lineage columns on sessions (v0.7.0, #22 schema for #31).
+
+    Claude Code mints a new session file for a fork (``/branch``,
+    ``/rewind``-continue, ``claude --fork-session -r``). The new file's
+    FIRST event is a ``compact_boundary`` system row carrying a top-level
+    ``forkedFrom: {sessionId, messageUuid}`` pointer at the parent.
+    In-place compaction, microcompact, and ``/clear`` produce no such
+    pointer, so the presence of one is the fork discriminator.
+
+    Columns:
+      - ``parent_session_id``   -- ``forkedFrom.sessionId`` (NULL for roots)
+      - ``parent_message_uuid`` -- ``forkedFrom.messageUuid`` (the fork point
+        WITHIN the parent; stored now, consumed by future message-level UI)
+      - ``is_fork``             -- 0/1 convenience flag (a fork is any row
+        with a parent pointer; kept explicit so "was forked" survives even
+        if a parent UUID is later found unresolvable)
+      - ``forked_at``           -- the boundary row's own timestamp = the
+        moment of the fork. Distinct from ``started_at``, which for a fork
+        is the first INHERITED event's timestamp (pre-fork, often days
+        earlier), so only this column can order siblings by fork time.
+
+    The index on ``parent_session_id`` powers the children lookup that the
+    lineage walk does once per node.
+
+    Idempotent: each column is added only if absent (PRAGMA introspection),
+    so partial deployments converge.
+    """
+    cols = {row["name"] for row in
+            conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    for name, decl in (
+        ("parent_session_id", "TEXT"),
+        ("parent_message_uuid", "TEXT"),
+        ("is_fork", "INTEGER NOT NULL DEFAULT 0"),
+        ("forked_at", "TEXT"),
+    ):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {decl}")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_parent "
+        "ON sessions(parent_session_id)"
+    )
+
+
+def create_migration_indexes(conn: sqlite3.Connection) -> None:
+    """(Re)create indexes that belong to migration-added columns.
+
+    Such indexes cannot live in ``index.SCHEMA_SQL``: that script also runs
+    against EXISTING databases, where the migration's column does not exist
+    yet, so a ``CREATE INDEX`` naming it fails before ``apply_pending`` can
+    add the column. They therefore live in their migration -- and fresh
+    databases, which skip migrations entirely, get them from here.
+
+    Idempotent (``IF NOT EXISTS``); safe to call on every open.
+    """
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sessions_parent "
+        "ON sessions(parent_session_id)"
+    )
+
+
 # Target version -> migration function.
 # When adding a new migration, bump SCHEMA_VERSION in index.py to match.
 # IMPORTANT: never modify an existing migration after it has shipped --
@@ -129,6 +190,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     3: _v3_add_session_sources,
     4: _v4_add_git_deleted_jsonls,
     5: _v5_add_metadata_validated_at,
+    6: _v6_add_fork_lineage,
 }
 
 
