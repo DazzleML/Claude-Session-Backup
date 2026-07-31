@@ -511,7 +511,7 @@ def test_scan_rejects_two_positionals_when_first_not_dot_prefix(monkeypatch, cap
         directories_below=None,
         directory_only=None,
         start_dir_only=None,
-        no_usage=False,
+        no_index=False,
         n=20,
         json=False,
         quiet=False,
@@ -523,6 +523,85 @@ def test_scan_rejects_two_positionals_when_first_not_dot_prefix(monkeypatch, cap
     assert rc == 2
     captured = capsys.readouterr()
     assert "too many positional arguments" in captured.err.lower()
+
+
+# -- cmd_scan must not pass the display top-N as a MATCH gate (#56) --
+#
+# `--top N` / _resolve_top_folders decide how many folders get PRINTED.
+# find_sessions_by_directory's `top_n` decides which folders can make a
+# session MATCH. cmd_scan passed the former as the latter.
+#
+# Harmless while a session recorded ~1 folder; after #56 began harvesting
+# every touched folder (50-80 per active session) it hid ~2/3 of real
+# results -- `-d C:\\Users\\Extreme` found 4 of 14 sessions. The full
+# suite passed the entire time, which is why this test exists at the
+# CALLER level: the index-layer tests cannot see which value is passed.
+
+
+def test_scan_does_not_gate_matches_by_display_top_n(monkeypatch, tmp_path):
+    """cmd_scan must call find_sessions_by_directory with top_n=None even
+    when the display top-N is a small number.
+
+    Reads the argument through the real signature rather than off
+    ``call_args.kwargs``, because cmd_scan passes it POSITIONALLY -- a
+    kwargs-only assertion would silently pass no matter what was sent.
+    """
+    import inspect
+    import claude_session_backup.index as index_module
+    import claude_session_backup.scanner as scanner_module
+    from claude_session_backup.commands import cmd_scan
+
+    real_sig = inspect.signature(index_module.find_sessions_by_directory)
+    spy = MagicMock(return_value=[])
+
+    # tmp_path so the "resolved path exists" check passes on any machine --
+    # a hardcoded C:\code would make this test pass or fail by accident of
+    # what the developer happens to have on disk.
+    target = tmp_path / "proj"
+    target.mkdir()
+
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+    monkeypatch.setattr(
+        commands_module, "_get_config",
+        MagicMock(return_value={
+            "claude_dir": str(tmp_path / "claude"),
+            "index_path": str(tmp_path / "index.db"),
+        }),
+    )
+    # Display setting is deliberately small -- it must NOT leak into the query.
+    monkeypatch.setattr(commands_module, "_resolve_top_folders", MagicMock(return_value=3))
+    # cmd_scan imports these at call time (`from .index import ...`), so the
+    # patches have to land on the source modules, not on commands.
+    monkeypatch.setattr(index_module, "find_sessions_by_directory", spy)
+    monkeypatch.setattr(scanner_module, "scan_for_path", MagicMock(return_value=[]))
+
+    args = SimpleNamespace(
+        term=None,
+        term2=None,
+        directories_below=str(target),
+        directory_only=None,
+        start_dir_only=None,
+        no_index=False,
+        n=20,
+        json=False,
+        quiet=True,
+        claude_dir=None,
+        db=None,
+    )
+    cmd_scan(args)
+
+    # cmd_scan wraps the query in `except Exception: pass`, so a silent
+    # failure here would look like "no results" rather than an error.
+    assert spy.called, "cmd_scan never reached the directory query"
+
+    bound = real_sig.bind(*spy.call_args.args, **spy.call_args.kwargs)
+    bound.apply_defaults()
+    assert bound.arguments["top_n"] is None, (
+        "cmd_scan passed top_n=%r -- the display top-N must never gate "
+        "which sessions match a directory search"
+        % (bound.arguments["top_n"],)
+    )
 
 
 # ── _format_timestamp: ISO → local + ISO display ─────────────────────
@@ -1646,3 +1725,206 @@ def test_resume_which_none_errors_without_spawn(monkeypatch, mock_resume_env, ca
     assert "'claude' command not found in PATH" in err
     assert "Run manually:" in err
     mock_resume_env.run.assert_not_called()
+
+
+# -- scan scope label must describe the search that actually ran -------
+#
+# `-D .` printed "Scanning for sessions UNDER <path>" -- which is -d's
+# wording. The two flags ask different questions ("was this exact folder
+# touched?" vs "this folder or anything below it?"), and when they return
+# different counts the label is the only thing telling the user why.
+
+
+def _scan_label(monkeypatch, tmp_path, flag_value, directory_only):
+    """Run cmd_scan against an empty index and capture the scope label."""
+    import claude_session_backup.index as index_module
+    import claude_session_backup.scanner as scanner_module
+    from claude_session_backup.commands import cmd_scan
+
+    captured = {}
+
+    def fake_render(results, args, config, scope_label="", **kw):
+        captured["label"] = scope_label
+        return 0
+
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+    monkeypatch.setattr(
+        commands_module, "_get_config",
+        MagicMock(return_value={
+            "claude_dir": str(tmp_path / "claude"),
+            "index_path": str(tmp_path / "index.db"),
+        }),
+    )
+    monkeypatch.setattr(commands_module, "_resolve_top_folders", MagicMock(return_value=3))
+    monkeypatch.setattr(commands_module, "_render_scan_results", fake_render)
+    monkeypatch.setattr(
+        index_module, "find_sessions_by_directory", MagicMock(return_value=[]))
+    monkeypatch.setattr(scanner_module, "scan_for_path", MagicMock(return_value=[]))
+
+    args = SimpleNamespace(
+        term=None, term2=None,
+        directories_below=None if directory_only else flag_value,
+        directory_only=flag_value if directory_only else None,
+        start_dir_only=None, no_index=False, n=20, json=False, quiet=True,
+        claude_dir=None, db=None,
+    )
+    cmd_scan(args)
+    return captured.get("label", "")
+
+
+def test_scan_label_says_under_for_descendant_search(monkeypatch, tmp_path):
+    target = tmp_path / "proj"
+    target.mkdir()
+    label = _scan_label(monkeypatch, tmp_path, str(target), directory_only=False)
+    assert label.startswith("under "), label
+
+
+def test_scan_label_does_not_say_under_for_folder_only_search(monkeypatch, tmp_path):
+    """-D is not a descendant search; calling it "under" misreports it."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    label = _scan_label(monkeypatch, tmp_path, str(target), directory_only=True)
+    assert not label.startswith("under "), (
+        "-D labelled as a descendant search: %r" % label
+    )
+    assert "exactly" in label, label
+
+
+def test_scan_label_marks_folder_only_wildcard(monkeypatch, tmp_path):
+    """`-d *` and `-D *` both said "matching pattern X" -- identical text
+    for two different searches."""
+    target = tmp_path / "proj"
+    target.mkdir()
+    d_label = _scan_label(monkeypatch, tmp_path, str(target) + "*", directory_only=False)
+    big_d_label = _scan_label(monkeypatch, tmp_path, str(target) + "*", directory_only=True)
+
+    assert d_label != big_d_label, "wildcard -d and -D produced the same label"
+    assert "no descendants" in big_d_label, big_d_label
+
+
+# -- scan_for_path must honor -d vs -D (v0.7.1 checklist, HIGH) --------
+#
+# Claude Code sanitizes a start folder into a project directory name:
+# `C:\code` -> `C--code`, `C:\code\notepad-cleanup` -> `C--code-notepad-cleanup`.
+# scan_for_path's descendant test is `name.startswith(prefix + "-")`, which
+# therefore matches child directories BY DESIGN.
+#
+# cmd_scan called it identically for -d and -D, so the filesystem half of the
+# query always included descendants while the SQL half correctly excluded
+# them. Measured on the dev vault: `csb scan -D "C:\code"` returned 11
+# sessions where 10 had the exact folder -- the extra one's only connection
+# was a start folder of `C:\code\notepad-cleanup`.
+
+
+def _make_project_dirs(tmp_path, names):
+    """Build a fake ~/.claude/projects/ with the given project dir names."""
+    projects = tmp_path / "projects"
+    projects.mkdir(parents=True)
+    for n in names:
+        (projects / n).mkdir()
+    return str(tmp_path)
+
+
+def test_scan_for_path_includes_descendants_by_default(tmp_path, monkeypatch):
+    """-d semantics: the exact project dir AND its children."""
+    from claude_session_backup import scanner as scanner_mod
+
+    claude_dir = _make_project_dirs(
+        tmp_path, ["C--code", "C--code-notepad-cleanup", "C--other"])
+    seen = []
+    monkeypatch.setattr(scanner_mod, "_scan_project_dir",
+                        lambda cd, pd: seen.append(pd.name) or [])
+
+    scanner_mod.scan_for_path(claude_dir, "C:\\code")
+
+    assert set(seen) == {"C--code", "C--code-notepad-cleanup"}
+
+
+def test_scan_for_path_excludes_descendants_when_asked(tmp_path, monkeypatch):
+    """-D semantics: the exact project dir ONLY.
+
+    This is the regression. Without the flag the child directory came back
+    and -D silently contradicted its own documented contract.
+    """
+    from claude_session_backup import scanner as scanner_mod
+
+    claude_dir = _make_project_dirs(
+        tmp_path, ["C--code", "C--code-notepad-cleanup", "C--other"])
+    seen = []
+    monkeypatch.setattr(scanner_mod, "_scan_project_dir",
+                        lambda cd, pd: seen.append(pd.name) or [])
+
+    scanner_mod.scan_for_path(claude_dir, "C:\\code", include_descendants=False)
+
+    assert seen == ["C--code"], (
+        "-D pulled in a descendant project dir: %r" % (seen,)
+    )
+
+
+def test_scan_threads_include_descendants_into_the_filesystem_pass(
+        monkeypatch, tmp_path):
+    """cmd_scan must PASS the flag, not just accept one.
+
+    Caller-level, because the scanner can be correct while cmd_scan still
+    calls it with the default -- which is exactly what shipped.
+    """
+    import claude_session_backup.index as index_module
+    import claude_session_backup.scanner as scanner_module
+    from claude_session_backup.commands import cmd_scan
+
+    spy = MagicMock(return_value=[])
+    target = tmp_path / "proj"
+    target.mkdir()
+
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+    monkeypatch.setattr(
+        commands_module, "_get_config",
+        MagicMock(return_value={
+            "claude_dir": str(tmp_path / "claude"),
+            "index_path": str(tmp_path / "index.db"),
+        }),
+    )
+    monkeypatch.setattr(commands_module, "_resolve_top_folders", MagicMock(return_value=3))
+    monkeypatch.setattr(index_module, "find_sessions_by_directory",
+                        MagicMock(return_value=[]))
+    monkeypatch.setattr(scanner_module, "scan_for_path", spy)
+
+    def _args(directory_only):
+        return SimpleNamespace(
+            term=None, term2=None,
+            directories_below=None if directory_only else str(target),
+            directory_only=str(target) if directory_only else None,
+            start_dir_only=None, no_index=False, n=20, json=False, quiet=True,
+            claude_dir=None, db=None,
+        )
+
+    cmd_scan(_args(directory_only=False))
+    assert spy.call_args.kwargs.get("include_descendants") is True, (
+        "-d must ask for descendants: %r" % (spy.call_args,))
+
+    spy.reset_mock()
+    cmd_scan(_args(directory_only=True))
+    assert spy.call_args.kwargs.get("include_descendants") is False, (
+        "-D must NOT ask for descendants: %r" % (spy.call_args,))
+
+
+# -- show's hidden-tier hint must name a flag show actually has --------
+#
+# It said "--all-folders to show". `csb show` has no such flag (that one is
+# on list/scan/tree and means "don't truncate to top-N"). Typing it verbatim
+# produced `unrecognized arguments: --all-folders`. Found by a tester
+# following the hint literally.
+
+def test_low_value_hint_names_a_flag_show_accepts(capsys):
+    """The hint is a user instruction; it has to be executable."""
+    from claude_session_backup.commands import _print_low_value_note
+
+    _print_low_value_note(
+        [{"folder_path": "C:\\code\\x", "usage_count": 0}], show_all=False)
+    out = capsys.readouterr().out
+
+    assert "--all-folders" not in out, (
+        "show's hint names --all-folders, which show does not accept: %r" % out)
+    assert "--all" in out

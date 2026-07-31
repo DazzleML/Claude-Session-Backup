@@ -164,6 +164,56 @@ def _v6_add_fork_lineage(conn: sqlite3.Connection) -> None:
     )
 
 
+def _v7_add_tool_folder_provenance(conn: sqlite3.Connection) -> None:
+    """Folder provenance + work-unit semantics (v0.7.1, #56).
+
+    Before this, ``folder_usage`` was fed ONLY by each event's ``cwd``, and
+    ``usage_count`` counted transcript EVENTS. Current Claude Code stamps
+    ``cwd`` with the launch directory and follows it only into descendants,
+    so a session working in another repository recorded exactly one folder
+    -- and because a transcript carries ~5x more events than tool calls,
+    the launch directory outranked the real workplace *by construction*.
+
+    Two things change:
+
+    - ``usage_count`` becomes WORK UNITS -- one per tool call, credited to
+      the folder that call actually operated in. Existing rows keep their
+      old event-based values until the session is re-indexed, which is why
+      ``sessions.tool_paths_extracted_at`` exists: it is the only way to
+      tell a stale event-count row from a fresh work-unit row. NULL means
+      "never harvested", and consumers must render that as *unmeasured*,
+      never as zero.
+    - Folders touched by a call but not its primary are still recorded
+      (``usage_count`` 0), so ``csb scan`` keeps finding them. Measured:
+      33% of touched folders are never any call's primary; dropping them
+      would recreate the bug this fixes.
+
+    ``path_exists`` / ``path_verified_at`` are a CONFIDENCE HINT, never a
+    filter. A folder that was genuinely worked in and later deleted is
+    real history. NULL ``path_verified_at`` means the probe never ran;
+    NULL ``path_exists`` with a set timestamp means the probe itself
+    failed (unreachable network path) -- "unknown", which must not render
+    as "missing".
+
+    Purely additive; idempotent via PRAGMA introspection.
+    """
+    fu_cols = {row["name"] for row in
+               conn.execute("PRAGMA table_info(folder_usage)").fetchall()}
+    for name, decl in (
+        ("path_exists", "INTEGER"),
+        ("path_verified_at", "TEXT"),
+    ):
+        if name not in fu_cols:
+            conn.execute(f"ALTER TABLE folder_usage ADD COLUMN {name} {decl}")
+
+    s_cols = {row["name"] for row in
+              conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "tool_paths_extracted_at" not in s_cols:
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN tool_paths_extracted_at TEXT"
+        )
+
+
 def create_migration_indexes(conn: sqlite3.Connection) -> None:
     """(Re)create indexes that belong to migration-added columns.
 
@@ -191,6 +241,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     4: _v4_add_git_deleted_jsonls,
     5: _v5_add_metadata_validated_at,
     6: _v6_add_fork_lineage,
+    7: _v7_add_tool_folder_provenance,
 }
 
 

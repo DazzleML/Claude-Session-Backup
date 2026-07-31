@@ -857,3 +857,96 @@ def test_upsert_invalid_transcript_does_not_invent_deleted_at(mock_db):
     upsert_session(mock_db, _make_meta("sess-alive", "name"), "p.jsonl", 50, 0.0, "t2",
                    is_valid_transcript=False)
     assert get_session(mock_db, "sess-alive")["deleted_at"] is None
+
+
+# -- Top-N gating must not restrict MATCHING (#56 regression) --------
+#
+# `--top N` governs how many folders get PRINTED per session. cmd_scan
+# also passed that same number as the `top_n` gate below, which decides
+# which folders can make a session MATCH. Those are different questions.
+#
+# The conflation was invisible while a session recorded ~1 folder
+# (cwd-only indexing). Once #56 began harvesting every folder a session
+# touched -- 50-80 for an active session -- the gate hid the majority:
+# `csb scan -d C:\Users\Extreme` returned 4 sessions where 14 matched.
+# The whole suite passed throughout, because nothing covered it.
+
+def _busy_session_meta():
+    """A session whose 4th-busiest folder is the one we search for."""
+    return _make_meta_with_folders(
+        "s1", "busy-session", r"C:\code\hot-1",
+        {
+            r"C:\code\hot-1": 100,
+            r"C:\code\hot-2": 90,
+            r"C:\code\hot-3": 80,
+            r"C:\code\needle": 1,   # 4th -- outside a top-3 gate
+        },
+    )
+
+
+def test_top_n_gate_does_not_hide_matching_sessions(mock_db):
+    """A path outside the session's busiest N folders must still match."""
+    upsert_session(mock_db, _busy_session_meta(), "p.jsonl", 100, 0.0, "t1")
+
+    results = find_sessions_by_directory(
+        mock_db, exact_value=r"C:\code\needle", like_match=None,
+        like_exclude=None, top_n=None,
+    )
+    assert {r["session_id"] for r in results} == {"s1"}, (
+        "a folder outside the top-N must still make the session match"
+    )
+
+
+def test_top_n_gate_still_narrows_when_a_caller_asks_for_it(mock_db):
+    """The gate is not removed -- cmd_scan simply stopped passing one.
+
+    Pinned so a future reader doesn't "restore" the gate in cmd_scan on
+    the theory that it went missing by accident.
+    """
+    upsert_session(mock_db, _busy_session_meta(), "p.jsonl", 100, 0.0, "t1")
+
+    gated = find_sessions_by_directory(
+        mock_db, exact_value=r"C:\code\needle", like_match=None,
+        like_exclude=None, top_n=3,
+    )
+    assert gated == [], "top_n=3 should still exclude the 4th-ranked folder"
+
+
+def test_descendant_search_finds_folders_outside_top_n(mock_db):
+    """-d must reach descendants that are nowhere near the busiest folders.
+
+    This is the shape that actually failed in the field: the searched
+    parent had many low-count descendants, none of them top-ranked.
+    """
+    upsert_session(mock_db, _busy_session_meta(), "p.jsonl", 100, 0.0, "t1")
+
+    results = find_sessions_by_directory(
+        mock_db, exact_value=r"C:\code",
+        like_match=r"C:\code\%", like_exclude=None, top_n=None,
+    )
+    assert {r["session_id"] for r in results} == {"s1"}
+
+
+def test_presence_row_with_zero_work_still_matches(mock_db):
+    """#56 AC13: a folder that was touched but was never any call's
+    PRIMARY is stored with 0 work units, and MUST stay findable.
+
+    A third of real folders (354/1049 measured across 14 sessions) are
+    only ever secondary touches; if 0-work rows were invisible to scan,
+    the presence half of the design would buy nothing.
+    """
+    upsert_session(
+        mock_db,
+        _make_meta_with_folders(
+            "s1", "secondary-toucher", r"C:\code\launch",
+            {r"C:\code\launch": 5, r"C:\code\only-touched": 0},
+        ),
+        "p.jsonl", 100, 0.0, "t1",
+    )
+    results = find_sessions_by_directory(
+        mock_db, exact_value=r"C:\code\only-touched", like_match=None,
+        like_exclude=None, top_n=None,
+    )
+    assert {r["session_id"] for r in results} == {"s1"}, (
+        "a 0-work presence row must not be invisible to scan"
+    )

@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from . import toolpaths
+
 
 @dataclass
 class SessionMetadata:
@@ -23,7 +25,18 @@ class SessionMetadata:
     message_count: int = 0
     tool_call_count: int = 0
     claude_version: Optional[str] = None
-    folder_usage: dict[str, int] = field(default_factory=dict)  # path -> count
+    # path -> WORK UNITS (#56). One unit per tool call, credited to the
+    # folder that call actually operated in -- NOT transcript events.
+    # Counting events made the launch dir unbeatable (a transcript carries
+    # ~5x more events than tool calls), which is why a session working in
+    # another repo reported its launch folder as "primary" with a
+    # four-digit count. A folder touched only as a call's SECONDARY is
+    # present here with a count of 0: findable by `csb scan`, uncredited
+    # for ranking.
+    folder_usage: dict[str, int] = field(default_factory=dict)
+    # Set when tool-path harvesting ran. None means never harvested, which
+    # consumers MUST render as "unmeasured" rather than "no folders".
+    tool_paths_extracted: bool = False
     # Total successfully-parsed JSON events (any type). 0 means the file
     # parsed into nothing -- i.e. it's not a real transcript (e.g. a stub or
     # a symlink-target path string). Used by the restore-verify gate (v0.3.16)
@@ -47,7 +60,9 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     ``extract_metadata_from_bytes`` (in-memory bytes from git show).
     Mutates and returns ``meta`` for chaining.
     """
-    folder_counter: Counter = Counter()
+    folder_counter: Counter = Counter()   # folder -> WORK UNITS (#56)
+    touched: set = set()                  # folders touched at all (presence)
+    seen_cwds: set = set()                # distinct session cwds observed
     first_cwd = None
     first_ts = None
     last_ts = None
@@ -99,12 +114,16 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
                 first_ts = ts
             last_ts = ts
 
-        # Track working directories
+        # Track the session's nominal working directory. This is the LAUNCH
+        # directory (Claude Code only ever follows it into descendants), so
+        # it identifies where the session STARTED -- it is no longer used as
+        # a usage COUNT, because counting one tick per event made it
+        # unbeatable regardless of where work happened (#56).
         cwd = event.get("cwd")
         if cwd:
             if first_cwd is None:
                 first_cwd = cwd
-            folder_counter[cwd] += 1
+            seen_cwds.add(cwd)
 
         # Track Claude Code version
         v = event.get("version")
@@ -120,13 +139,30 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
         elif evt_type == "tool_use":
             tool_count += 1
 
-        # Also count tool calls embedded in message content
+        # Also count tool calls embedded in message content -- and harvest
+        # the folders each call worked in (#56). This is the ONLY source of
+        # cross-repo work locations: `cwd` never leaves the launch tree, so
+        # a session editing another repository is otherwise invisible to
+        # `csb scan`.
         if evt_type == "assistant":
             content = event.get("message", {}).get("content", [])
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         tool_count += 1
+                        name = block.get("name") or ""
+                        tool_input = block.get("input")
+                        # PRESENCE: every folder the call touched, so scan
+                        # can find the session (33% of folders are never
+                        # any call's primary -- dropping them would
+                        # recreate the bug this fixes).
+                        for folder in toolpaths.touched_folders(name, tool_input, cwd):
+                            touched.add(folder)
+                        # WORK: exactly one unit per call, credited where
+                        # the call actually operated.
+                        primary = toolpaths.primary_folder(name, tool_input, cwd)
+                        if primary:
+                            folder_counter[primary] += 1
 
     meta.session_name = session_name
     meta.start_folder = first_cwd
@@ -142,10 +178,23 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     meta.forked_at = fork_at
     meta.is_fork = fork_parent is not None
 
-    # Persist every cwd we saw, sorted by usage count descending so the
-    # SQLite ORDER BY is consistent with the in-memory counter ordering.
+    # The session cwd is a place work happened too -- calls that name no
+    # path ran there -- so make sure it is representable even when the
+    # transcript had no tool calls at all.
+    for c in seen_cwds:
+        key = toolpaths.normalize(c)
+        if key and toolpaths.is_plausible_folder(key):
+            touched.add(key)
+
+    # Work locations first (descending), so SQLite's ORDER BY matches the
+    # in-memory ordering. Then PRESENCE-only rows at 0: touched but never
+    # any call's primary. They rank nowhere and are found by `csb scan`.
     for path, count in folder_counter.most_common():
         meta.folder_usage[path] = count
+    for path in sorted(touched):
+        meta.folder_usage.setdefault(path, 0)
+
+    meta.tool_paths_extracted = True
 
     return meta
 

@@ -36,7 +36,8 @@ csb scan -D <pattern>                 # Path-strict: this folder only, no descen
 csb scan -s <pattern>                 # start_folder only ("what sessions originated here?")
 csb scan -d <pattern> <term>          # Scope-then-filter combined
 csb scan -d <pattern>* / -D <pattern>* / -s <pattern>*  # Trailing-* wildcard
-csb scan ... -NU                      # Skip folder-usage search (start_folder only)
+csb scan ... -NI                      # Bypass the SQLite index; read transcripts from disk
+                                      #   (--no-index; cannot find DELETED sessions)
 csb scan ... --json                   # Output as JSON (pure stdout; empty scope prints [])
 csb tree                              # Fork lineage: which session spawned which
 csb tree <filter>                     # Families containing a match (ancestors + descendants)
@@ -84,6 +85,40 @@ csb view <query> -- <viewer-args>
 ```
 
 The split happens before csb parses its own options, so a forwarded flag is never mistaken for one of csb's (`csb resume x -- --db /other` sends `--db /other` to claude, not to csb). Don't re-pass `--resume` / `-r` in the passthrough -- csb already supplies it. A command that doesn't launch a subtool (e.g. `csb list -- foo`) rejects the `--` rather than silently dropping it.
+
+## How `csb scan`'s scope flags relate
+
+`csb scan` answers three different questions, and the flags that narrow it fall into three groups. `csb scan --help` now prints them under those headings; this section explains why the grouping matters.
+
+**Which sessions match** -- `-d` / `-D` / `-s` / `-NI` / `--deleted` / the positional term.
+**How each match is shown** -- `--top` / `--all-folders` / `--shortid` / `--json`.
+**How many survive** -- `-n`.
+
+The distinction is not cosmetic. Through v0.7.0, `--top N` was *also* passed as a match gate, so a display setting silently decided which sessions existed. That is fixed (v0.7.1): **`--top` changes what you see; it can never change what matches.**
+
+### The three path flags
+
+| Flag | Matches a session when... |
+|---|---|
+| `-d PATH` | it touched `PATH` **or anything below it** |
+| `-D PATH` | it touched **exactly** `PATH` |
+| `-s PATH` | its **start folder** is `PATH` or below -- "what originated here?" |
+
+`-d` is always a superset of `-D`. If you ever see `-d` return fewer results than `-D` on the same path, that is a bug worth reporting.
+
+### `-NI` is a different kind of flag
+
+`-d` / `-D` / `-s` choose **what to match against**. `-NI` (`--no-index`) chooses **where results come from**: it bypasses the SQLite index entirely, finding sessions by walking `~/.claude/projects/` and reading their transcripts. Reach for it when the index may be stale, half-built, or wrong -- it is the escape hatch that trusts the files over the database.
+
+(Through v0.7.0 this flag was spelled `--no-usage` / `-NU`, a name that described what *falls out* of the bypass -- "only start_folder is considered" -- rather than the bypass itself. That reading made it look like a duplicate of `-s`.)
+
+Because that walk identifies sessions by their project directory -- which is derived from the start folder -- **`-NI` on its own already behaves much like `-s`**. Two flags, two routes, nearly one destination. The difference that matters: `-s` asks the index a narrower question, while `-NI` does not ask the index at all.
+
+### Caveats when combining them
+
+- **`-s` and `-NI` together is redundant.** `-NI` disables the index query, which is the only place `-s`'s start-folder restriction is applied. So `csb scan -s PATH -NI` behaves exactly like `csb scan -d PATH -NI`. Use one or the other.
+- **`-NI` with `--deleted` (bare, i.e. `only`) can never match.** Deleted sessions exist only in the index -- a filesystem walk cannot find a file that is gone -- so the `deleted` scope depends on the index, and `-NI` is precisely the flag that bypasses it. csb says so explicitly rather than returning a bare empty result: *"-NI cannot find deleted sessions -- they exist only in the index, which -NI bypasses. Drop -NI."* (`--deleted all` is unaffected -- the filesystem pass still runs for the live half.)
+- **`-d` / `-D` / `-s` are mutually exclusive** with each other; `-NI` is not, which is why the combinations above are reachable at all.
 
 ## Searching conversations
 

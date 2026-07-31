@@ -19,11 +19,18 @@ def test_extract_metadata(mock_claude_dir):
     assert meta.message_count == 6  # 3 user + 3 assistant
     assert meta.claude_version == "2.1.81"
 
-    # Folder analysis: start folder + other folders
-    assert "/home/user/code" in meta.folder_usage
-    assert "/home/user/other-project" in meta.folder_usage
-    # other-project appears 3 times, code appears 4 times
-    assert meta.folder_usage["/home/user/other-project"] == 3
+    # Folder analysis. Since #56 the cwds a session sat in are recorded for
+    # PRESENCE (so `csb scan` finds the session) but carry no work units of
+    # their own -- work is credited per TOOL CALL, and this fixture has
+    # none. Folder keys are normalized to the backslash form the index
+    # matches on, so a POSIX cwd appears as `\home\user\code`.
+    assert "\\home\\user\\code" in meta.folder_usage
+    assert "\\home\\user\\other-project" in meta.folder_usage
+    # No tool calls -> no work anywhere. The old assertion here was
+    # `== 3`, an EVENT count: it made a folder's rank a function of how
+    # many messages happened while sitting in it, which is why the launch
+    # directory used to be unbeatable (#56).
+    assert meta.folder_usage["\\home\\user\\other-project"] == 0
 
 
 def test_extract_empty_file(tmp_path):
@@ -69,21 +76,106 @@ def test_extract_metadata_keeps_all_folders(tmp_path):
     --top N / --all-folders renderer flags rely on the data being present."""
     jsonl = tmp_path / "test.jsonl"
     events = [
-        # 6 distinct cwds with descending counts: 5, 4, 3, 2, 1, 1
-        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/a", "uuid": f"u{i}"} for i in range(5)],
-        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/b", "uuid": f"v{i}"} for i in range(4)],
-        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/c", "uuid": f"w{i}"} for i in range(3)],
-        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/d", "uuid": f"x{i}"} for i in range(2)],
-        {"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/e", "uuid": "y0"},
-        {"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/f", "uuid": "z0"},
+        # 6 distinct cwds, seen a differing number of times each
+        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/home/a", "uuid": f"u{i}"} for i in range(5)],
+        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/home/b", "uuid": f"v{i}"} for i in range(4)],
+        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/home/c", "uuid": f"w{i}"} for i in range(3)],
+        *[{"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/home/d", "uuid": f"x{i}"} for i in range(2)],
+        {"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/home/e", "uuid": "y0"},
+        {"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": "/home/f", "uuid": "z0"},
     ]
     jsonl.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
 
     meta = extract_metadata(jsonl)
 
-    # All six distinct cwds must be in folder_usage with their actual counts.
-    # Pre-#21 behavior would have kept only first_cwd + top 3, dropping /e and /f.
-    assert meta.folder_usage == {"/a": 5, "/b": 4, "/c": 3, "/d": 2, "/e": 1, "/f": 1}
+    # Every distinct cwd is retained (the #21 guarantee: no top-N truncation
+    # at index time). Since #56 they are PRESENCE rows -- a cwd is where the
+    # session sat, and this fixture makes no tool calls, so no work is
+    # credited anywhere. Counting the sightings (5/4/3/2/1/1) is exactly the
+    # event-based measure that made session length masquerade as folder
+    # preference.
+    assert set(meta.folder_usage) == {
+        "\\home\\a", "\\home\\b", "\\home\\c",
+        "\\home\\d", "\\home\\e", "\\home\\f",
+    }
+    assert set(meta.folder_usage.values()) == {0}
+
+
+def test_tool_calls_credit_the_folder_they_worked_in(tmp_path):
+    """#56 / AC7 -- the case the old fixtures could not express.
+
+    A session with a CONSTANT cwd (what current Claude Code actually
+    produces) whose tool calls operate in a different repository. Before
+    the fix, folder_usage held one entry -- the launch dir -- and
+    `csb scan other-repo` found nothing. This test FAILS on pre-fix code.
+    """
+    jsonl = tmp_path / "s.jsonl"
+    launch = "/launch/dir"
+
+    def call(tool, tool_input):
+        return {
+            "type": "assistant", "timestamp": "2026-05-01T10:00:00Z",
+            "cwd": launch, "uuid": "a1",
+            "message": {"content": [
+                {"type": "tool_use", "name": tool, "input": tool_input},
+            ]},
+        }
+
+    events = [
+        {"type": "user", "timestamp": "2026-05-01T10:00:00Z", "cwd": launch, "uuid": "u1"},
+        # Structured file tools -> the file's DIRECTORY is the work location
+        call("Read", {"file_path": "/work/repo/pkg/mod.py"}),
+        call("Edit", {"file_path": "/work/repo/pkg/mod.py"}),
+        call("Write", {"file_path": "/work/repo/tests/test_mod.py"}),
+        # A command naming an absolute path elsewhere
+        call("Bash", {"command": "ls /work/repo/docs"}),
+        # A command that names no path at all -> credited to the session cwd
+        call("Bash", {"command": "git status"}),
+    ]
+    jsonl.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+
+    meta = extract_metadata(jsonl)
+
+    # The launch dir is NOT the top folder -- the repo the work happened in
+    # is. This is the inversion #56 exists to correct.
+    assert meta.folder_usage["\\work\\repo\\pkg"] == 2      # Read + Edit
+    assert meta.folder_usage["\\work\\repo\\tests"] == 1
+    assert meta.folder_usage["\\work\\repo\\docs"] == 1
+    assert meta.folder_usage["\\launch\\dir"] == 1          # the path-less call
+
+    top = max(meta.folder_usage.items(), key=lambda kv: kv[1])[0]
+    assert top == "\\work\\repo\\pkg", "the launch dir must not win by default"
+
+    # AC12: one unit per tool call, never more -- totals stay comparable to
+    # the session's tool-call count.
+    assert sum(meta.folder_usage.values()) <= meta.tool_call_count
+
+    # AC10: harvesting ran, so a NULL marker downstream means "unmeasured",
+    # never "this session touched nothing".
+    assert meta.tool_paths_extracted is True
+
+
+def test_secondary_touches_are_present_but_uncredited(tmp_path):
+    """#56 / AC13 -- a folder that is never any call's PRIMARY is still
+    recorded, so `csb scan` finds it. Measured on real transcripts, 33% of
+    touched folders are only ever secondary; dropping them would recreate
+    the bug."""
+    jsonl = tmp_path / "s.jsonl"
+    events = [{
+        "type": "assistant", "timestamp": "2026-05-01T10:00:00Z",
+        "cwd": "/launch", "uuid": "a1",
+        "message": {"content": [{
+            "type": "tool_use", "name": "Bash",
+            # First absolute path wins primary; the second is a secondary touch.
+            "input": {"command": "cp /src/repo/a.txt /work/repo/b.txt"},
+        }]},
+    }]
+    jsonl.write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+
+    meta = extract_metadata(jsonl)
+
+    assert meta.folder_usage["\\src\\repo"] == 1     # primary: work credited
+    assert meta.folder_usage["\\work\\repo"] == 0    # secondary: present, uncredited
 
 
 # ── event_count (restore-verify gate, v0.3.16) ──────────────────────────

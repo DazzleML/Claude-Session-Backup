@@ -968,16 +968,21 @@ def _tree_scope_ids(conn, args) -> tuple[set[str] | None, str | None, int]:
     SYNTAX is identical across the two commands: trailing-``*`` wildcards,
     LIKE escaping, and descendants (``-d``) vs folder-only (``-D``).
 
-    **One deliberate difference in ELIGIBILITY.** ``csb scan`` passes its
-    display cap (``--top``, default 3) into ``find_sessions_by_directory``'s
-    ``top_n``, where it doubles as a match gate -- a session whose 4th-most-
-    used folder is the target does not match ``scan``. Tree passes None
-    (no gate), because its unit is a FAMILY and its question is "did any
-    member ever work here", not "is this folder prominent for this
-    session". Gating would hide a real chain, and wiring the display cap
-    into scope would let ``--top 1`` silently change WHICH families appear.
-    Consequence: ``csb tree <path>`` can include a session ``csb scan
-    <path>`` omits -- never the reverse.
+    **ELIGIBILITY is now identical too.** Both pass ``top_n=None``. Tree
+    always did: its unit is a FAMILY and its question is "did any member
+    ever work here", not "is this folder prominent for this session", and
+    wiring the display cap into scope would let ``--top 1`` silently
+    change WHICH families appear.
+
+    ``csb scan`` used to pass its display cap (``--top``, default 3) as
+    ``top_n``, where it doubles as a match gate -- so a session whose
+    4th-most-used folder was the target did not match. That was read as a
+    deliberate divergence (this docstring said so) rather than as a bug,
+    which is how it survived. It was invisible while sessions recorded
+    ~1 folder; once #56 began harvesting every touched folder it hid
+    roughly two thirds of real matches. How many folders we PRINT and
+    whether a session MATCHES are different questions, and they are no
+    longer answered by the same number.
 
     Returns ``(scope_ids, resolved_path, exit_code)``. ``scope_ids`` is None
     when no scope was requested.
@@ -1494,6 +1499,112 @@ def _resolve_session_flexible(conn, query: str, claude_dir):
     return result, 0
 
 
+def _tier_folders(folders):
+    """Split folder rows into display tiers (#56).
+
+    The flat list conflated three genuinely different things and printed a
+    meaningless ``(0x)`` for two of them:
+
+      - **worked**    -- work units > 0. Where the session actually did
+                         things, ranked. This is the answer to "where did I
+                         spend my time".
+      - **touched**   -- recorded because a call referenced the folder but
+                         it was never that call's PRIMARY. Real and
+                         findable by ``csb scan``; a count would be a lie,
+                         so none is shown.
+      - **low value** -- scratch space (temp dirs, caches) or a path that
+                         does not resolve. Still stored and still
+                         scannable -- collapsed here only to keep the
+                         default view readable.
+
+    Classification happens at DISPLAY time, never at index time, so
+    retuning the heuristics costs nothing and never makes data
+    unreachable.
+    """
+    from . import toolpaths as _tp
+
+    worked, touched_only, low = [], [], []
+    for f in folders:
+        path = f["folder_path"]
+        # A resolvable-but-missing path is only "low value" when nothing
+        # was worked there; a folder with real work that has since been
+        # deleted is history worth showing.
+        missing = _row_get(f, "path_exists") == 0
+        if _tp.looks_like_scratch(path) or (missing and not f["usage_count"]):
+            low.append(f)
+        elif f["usage_count"]:
+            worked.append(f)
+        else:
+            touched_only.append(f)
+    return worked, touched_only, low
+
+
+def _apply_work_filter(worked, min_work: int):
+    """Split work rows by a user-chosen count threshold (`show --filter N`).
+
+    Default 0 shows everything. The long tail of one-off folders is real
+    data -- a single `Read` in another repo IS a touch -- so whether it is
+    noise is a per-user judgement, not ours to make by default. Hidden
+    rows stay in the index and stay findable by `csb scan`; only this view
+    collapses them, and it always reports how many.
+
+    Orthogonal to the low-value tier, which hides by KIND (scratch,
+    unresolved) rather than by count and is revealed with `--all`.
+    """
+    if min_work <= 1:
+        return worked, []
+    keep = [f for f in worked if f["usage_count"] >= min_work]
+    thin = [f for f in worked if f["usage_count"] < min_work]
+    return keep, thin
+
+
+def _thin_note(thin, min_work: int) -> str:
+    """Always report the count AND the total of what was hidden.
+
+    A filter that hides without saying so turns "I chose not to look" into
+    "there was nothing there".
+    """
+    n = len(thin)
+    total = sum(f["usage_count"] for f in thin)
+    word = "folder" if n == 1 else "folders"
+    # The hint must be executable: `--filter` takes KEY=VALUE, so a bare
+    # `--filter 0` is now a parse error. Same trap as the old
+    # `--all-folders` hint, which named a flag `show` does not accept.
+    return (f"    ({n} more {word} below {min_work} work units, "
+            f"{total} units total -- omit --filter to show)")
+
+
+def _row_get(row, key, default=None):
+    """sqlite3.Row has no .get(); tolerate pre-migration rows lacking a column."""
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
+def _low_reason(f) -> str:
+    from . import toolpaths as _tp
+    if _tp.looks_like_scratch(f["folder_path"]):
+        return "(scratch)"
+    if _row_get(f, "path_exists") == 0:
+        return "(not found)"
+    return ""
+
+
+def _print_low_value_note(low, show_all: bool) -> None:
+    n = len(low)
+    word = "path" if n == 1 else "paths"
+    if show_all:
+        print(f"\n  Low value ({n} {word} -- scratch or unresolved):")
+    else:
+        # `--all`, NOT `--all-folders`: this hint is printed by `csb show`,
+        # which has no --all-folders flag (that one lives on list/scan/tree
+        # and means "don't truncate to top-N"). Naming it here sent users
+        # straight into `unrecognized arguments: --all-folders`.
+        print(f"\n  ({n} low-value {word} hidden -- scratch dirs and unresolved "
+              f"paths; --all to show)")
+
+
 def _resolve_session_or_exit(
     conn, query: str, miss_ok: bool = False
 ) -> tuple[str | None, int]:
@@ -1565,7 +1676,9 @@ def cmd_show(args) -> int:
         print(f"No session found matching '{args.session_id}'", file=sys.stderr)
         return 1
 
-    _render_show(session)
+    filters = dict(getattr(args, "filters", None) or [])
+    _render_show(session, show_all=getattr(args, "show_all", False),
+                 min_work=filters.get("min-work", 0))
     return 0
 
 
@@ -1682,7 +1795,8 @@ def _format_timestamp(iso_str: str | None) -> str:
         return iso_str
 
 
-def _render_show(session: dict) -> None:
+def _render_show(session: dict, show_all: bool = False,
+                 min_work: int = 0) -> None:
     """Render the cmd_show output.
 
     Uses Rich colorization when available so the detail view matches the
@@ -1726,10 +1840,24 @@ def _render_show(session: dict) -> None:
             print(f"  {'':<14} (full tree: csb tree --root {full_id})")
         print(f"\n  Resume:        claude --resume {full_id}")
         if folders:
+            worked, touched_only, low = _tier_folders(folders)
+            worked, thin = _apply_work_filter(worked, min_work)
             print(f"\n  Working directories:")
-            for f in folders:
+            for f in worked:
                 marker = " [start]" if f["is_start_folder"] else ""
                 print(f"    {f['folder_path']}  ({f['usage_count']}x){marker}")
+            if thin:
+                print(_thin_note(thin, min_work))
+            if touched_only:
+                print(f"\n  Also touched (no work credited):")
+                for f in touched_only:
+                    marker = " [start]" if f["is_start_folder"] else ""
+                    print(f"    {f['folder_path']}{marker}")
+            if low:
+                _print_low_value_note(low, show_all=show_all)
+                if show_all:
+                    for f in low:
+                        print(f"    {f['folder_path']}  {_low_reason(f)}")
         return
 
     # Rich path
@@ -1794,18 +1922,20 @@ def _render_show(session: dict) -> None:
     console.print(resume_line)
 
     if folders:
+        worked, touched_only, low = _tier_folders(folders)
+        worked, thin = _apply_work_filter(worked, min_work)
+
         console.print()
         console.print(Text("  Working directories:", style="dim"))
-        # Identify the most-used folder for special styling
-        max_count = max((f["usage_count"] for f in folders), default=0)
-        for f in folders:
+        # Rank by work units; the top one is where the session actually
+        # spent itself -- frequently NOT the folder it launched from.
+        max_count = max((f["usage_count"] for f in worked), default=0)
+        for f in worked:
             is_start = bool(f["is_start_folder"])
             is_max = f["usage_count"] == max_count
             row = Text()
             row.append("    ")
-            if is_start and is_max:
-                row.append(f["folder_path"], style="bold green")
-            elif is_max:
+            if is_max:
                 row.append(f["folder_path"], style="bold green")
             elif is_start:
                 row.append(f["folder_path"], style="white")
@@ -1814,7 +1944,42 @@ def _render_show(session: dict) -> None:
             row.append(f"  ({f['usage_count']}x)", style="dim")
             if is_start:
                 row.append(" [start]", style="yellow")
+            if _row_get(f, "path_exists") == 0:
+                row.append("  [not found]", style="dim yellow")
             console.print(row)
+
+        if thin:
+            console.print(Text(_thin_note(thin, min_work), style="dim"))
+
+        if touched_only:
+            console.print()
+            console.print(Text("  Also touched (no work credited):", style="dim"))
+            for f in touched_only:
+                row = Text()
+                row.append("    ")
+                row.append(f["folder_path"], style="grey70")
+                if f["is_start_folder"]:
+                    row.append(" [start]", style="yellow")
+                console.print(row)
+
+        if low:
+            console.print()
+            n = len(low)
+            word = "path" if n == 1 else "paths"
+            if show_all:
+                console.print(Text(f"  Low value ({n} {word} -- scratch or unresolved):",
+                                   style="dim"))
+                for f in low:
+                    row = Text()
+                    row.append("    ")
+                    row.append(f["folder_path"], style="grey50")
+                    row.append(f"  {_low_reason(f)}", style="dim")
+                    console.print(row)
+            else:
+                # `--all`, not `--all-folders` -- see the plain-renderer note.
+                console.print(Text(
+                    f"  ({n} low-value {word} hidden -- scratch dirs and "
+                    f"unresolved paths; --all to show)", style="dim"))
 
 
 def cmd_restore(args) -> int:
@@ -4463,7 +4628,7 @@ def cmd_scan(args) -> int:
 
     config = _get_config(args)
     quiet = getattr(args, "quiet", False)
-    no_usage = getattr(args, "no_usage", False)
+    no_index = getattr(args, "no_index", False)
     top_n = _resolve_top_folders(args, config)
 
     # Deletion-filter scope (Phase 3 / #27; canonical grammar since #41).
@@ -4606,18 +4771,37 @@ def cmd_scan(args) -> int:
     # Step 1: Filesystem scan (only when pattern resolves to a concrete path).
     # For wildcard patterns we skip the filesystem step -- scan_for_path doesn't
     # speak wildcards. SQLite covers these via the LIKE pattern.
+    # `include_descendants` must be threaded through: scan_for_path's prefix
+    # test on the sanitized project name treats `C--code-<child>` as a match
+    # for `C:\code`, so calling it unconditionally made -D report sessions
+    # whose only connection was a descendant start folder -- while the SQL
+    # half of the same query correctly excluded them.
     sessions_fs: list = []
     if not has_wildcard and exact_value:
-        sessions_fs = scan_for_path(config["claude_dir"], exact_value)
+        sessions_fs = scan_for_path(config["claude_dir"], exact_value,
+                                    include_descendants=include_descendants)
 
-    # Step 2: SQLite directory match (unless -NU)
+    # Step 2: SQLite directory match (unless -NI)
     sql_results: list = []
-    if not no_usage and (exact_value is not None or like_match is not None):
+    if not no_index and (exact_value is not None or like_match is not None):
         try:
             conn = open_db(config["index_path"])
             init_schema(conn)
+            # top_n=None: NO top-N gate on MATCHING (#56).
+            #
+            # `--top N` / `display_top_folders` govern how many folders are
+            # DISPLAYED per session. Passing that same number here also
+            # restricted which folders could make a session match, so a
+            # session only qualified if the searched path was among its
+            # busiest few. That was invisible while a session recorded ~1
+            # folder; now that tool-call harvesting records every folder a
+            # session touched (50-80 for an active session), the gate hid
+            # the overwhelming majority of them -- `csb scan -d
+            # C:\Users\Extreme` returned 4 sessions where 14 genuinely
+            # matched. Whether a session *matches* a path and how many of
+            # its folders we *print* are different questions.
             sql_results = find_sessions_by_directory(
-                conn, exact_value, like_match, like_exclude, top_n,
+                conn, exact_value, like_match, like_exclude, None,
                 start_folder_only=sql_start_folder_only,
                 deleted_filter=deleted_filter,
             )
@@ -4682,15 +4866,24 @@ def cmd_scan(args) -> int:
             return False
         results = [s for s in results if _matches_term(s)]
 
-    # Build human-readable scope label
+    # Build human-readable scope label.
+    #
+    # "under X" means X and everything below it (-d, -s, bare). -D is a
+    # different question -- "was this EXACT folder touched?" -- and saying
+    # "under" for it misreports the search that ran, which matters most
+    # when the two return different counts and the user is trying to work
+    # out why.
+    scope_word = "under" if include_descendants else "in exactly"
     if bare_mode:
         scope_label = f"under {resolved_path}"
     elif has_wildcard:
         scope_label = f"matching pattern {resolved_path}"
+        if not include_descendants:
+            scope_label += " (no descendants)"
         if term:
             scope_label += f" filtered by '{term}'"
     else:
-        scope_label = f"under {resolved_path}"
+        scope_label = f"{scope_word} {resolved_path}"
         if term:
             scope_label += f" filtered by '{term}'"
 
@@ -4735,7 +4928,7 @@ def _render_scan_results(
     instead of rendering. The scope/filter selection happens upstream --
     this function just dispatches.
     """
-    no_usage = getattr(args, "no_usage", False)
+    no_index = getattr(args, "no_index", False)
     noun = _session_noun(deleted_filter)
     as_json = bool(args.__dict__.get("json"))
 
@@ -4765,8 +4958,16 @@ def _render_scan_results(
             print("[]")  # machine-readable empty -- no prose on stdout
             return 0
         print(f"  No {noun} found.")
-        if no_usage:
-            print("  Tip: try without -NU to also search by folder usage.")
+        if no_index:
+            # Be specific for the combination that CANNOT match rather than
+            # offering a generic tip. `--deleted` looks only at the index,
+            # and -NI is the flag that switches the index off, so the query
+            # is structurally unmatchable -- not merely unlucky.
+            if deleted_filter == "deleted":
+                print("  Note: -NI cannot find deleted sessions -- they exist "
+                      "only in the index, which -NI bypasses. Drop -NI.")
+            else:
+                print("  Tip: try without -NI to also search the index.")
         # Empty-state diagnosis + redirection (#52). Active scope only --
         # deleted-scope queries already imply the user knows what they're
         # looking for -- and suppressed for --quiet consumers.

@@ -11,7 +11,7 @@ from typing import Optional
 
 from .metadata import SessionMetadata
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -40,14 +40,25 @@ CREATE TABLE IF NOT EXISTS sessions (
     parent_session_id TEXT,
     parent_message_uuid TEXT,
     is_fork INTEGER NOT NULL DEFAULT 0,
-    forked_at TEXT
+    forked_at TEXT,
+    -- NULL = tool-path harvesting never ran for this session (#56).
+    -- Consumers MUST render that as "unmeasured", never as zero folders.
+    tool_paths_extracted_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS folder_usage (
     session_id TEXT NOT NULL,
     folder_path TEXT NOT NULL,
+    -- WORK UNITS since v0.7.1 (#56): one per tool call, credited to the
+    -- folder that call operated in. NOT transcript events -- counting
+    -- events made the launch dir unbeatable. A folder touched only as a
+    -- secondary is stored with 0 so `csb scan` still finds it.
     usage_count INTEGER DEFAULT 1,
     is_start_folder INTEGER DEFAULT 0,
+    -- Confidence hint, never a filter (#56). path_exists NULL + a set
+    -- path_verified_at means the probe failed -> "unknown", not "missing".
+    path_exists INTEGER,
+    path_verified_at TEXT,
     PRIMARY KEY (session_id, folder_path),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
@@ -222,14 +233,41 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
         1 if is_valid_transcript else 0,  # restore-verify gate (v0.3.16)
     ))
 
+    # Record that tool-path harvesting ran for this session (#56). NULL
+    # here means "never harvested" -- the ONLY way to distinguish a stale
+    # pre-v0.7.1 row (event-based counts, no tool folders) from a session
+    # that genuinely touched nothing. Consumers must render NULL as
+    # "unmeasured", never as zero.
+    if getattr(meta, "tool_paths_extracted", False):
+        conn.execute(
+            "UPDATE sessions SET tool_paths_extracted_at = ? WHERE session_id = ?",
+            (scanned_at, meta.session_id),
+        )
+
     # Update folder usage
     conn.execute("DELETE FROM folder_usage WHERE session_id = ?", (meta.session_id,))
+    # folder_usage keys are NORMALIZED (backslash form) while start_folder
+    # keeps its raw transcript spelling -- compare normalized, or a POSIX
+    # cwd like /home/user/code would never match its own row and no session
+    # would ever be marked [start].
+    from . import toolpaths as _tp
+    start_key = _tp.normalize(meta.start_folder or "")
     for folder_path, count in meta.folder_usage.items():
-        is_start = 1 if folder_path == meta.start_folder else 0
+        # is_start_folder still means "the session was LAUNCHED here" --
+        # never "worked here most". The two are frequently different
+        # folders now, which is the entire point of #56.
+        is_start = 1 if folder_path == start_key else 0
+        # Confidence hint (#56), never a filter: a folder that was really
+        # worked in and later deleted is history and stays findable. None
+        # means the probe itself failed -> "unknown", not "missing".
+        exists = _tp.folder_exists(folder_path)
         conn.execute(
-            "INSERT INTO folder_usage (session_id, folder_path, usage_count, is_start_folder) "
-            "VALUES (?, ?, ?, ?)",
-            (meta.session_id, folder_path, count, is_start),
+            "INSERT INTO folder_usage (session_id, folder_path, usage_count, "
+            "is_start_folder, path_exists, path_verified_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (meta.session_id, folder_path, count, is_start,
+             None if exists is None else (1 if exists else 0),
+             scanned_at if exists is not None else None),
         )
 
     conn.commit()

@@ -2,8 +2,10 @@
 
 [![PyPI](https://img.shields.io/pypi/v/claude-session-backup?color=green)](https://pypi.org/project/claude-session-backup/)
 [![Release Date](https://img.shields.io/github/release-date/DazzleML/Claude-Session-Backup?color=green)](https://github.com/DazzleML/Claude-Session-Backup/releases)
+[![PyPI Downloads](https://static.pepy.tech/personalized-badge/claude-session-backup?period=total&units=international_system&left_color=black&right_color=green&left_text=downloads)](https://pypistats.org/packages/claude-session-backup)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: GPL v3](https://img.shields.io/badge/license-GPL%20v3-green.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
+[![GitHub Discussions](https://img.shields.io/github/discussions/DazzleML/Claude-Session-Backup)](https://github.com/DazzleML/Claude-Session-Backup/discussions)
 [![Installs](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/djdarcy/7aa669e4d85856079eacc71f88c58f6b/raw/installs.json)](https://dazzleml.github.io/Claude-Session-Backup/stats/#installs)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20BSD-lightgrey.svg)](docs/platforms.md)
 
@@ -99,6 +101,8 @@ The patterns that come up every day:
 # working in and ask. The shortcut form needs no flags to remember.
 cd ~/code/my-project
 csb scan .
+csb scan -D .                   # this folder exactly, no subfolders
+csb scan -s .                   # only sessions that STARTED here
 
 # "What was I working on before the reboot / crash / weekend?"
 csb list -n 5
@@ -115,6 +119,8 @@ csb resume MY-PROJECT__2026-6-6__that-refactor
 csb list --deleted
 csb restore MY-PROJECT__2025-5-25__redesign  #or <session-id / id-fragment>
 ```
+
+`csb scan --help` groups its flags by what they do -- **selection** (which sessions match), **display** (how each match is shown), and **limits**. `--top` belongs to display and never changes what matches. How `-d` / `-D` / `-s` differ, and when to reach for `-NI` (`--no-index`, the escape hatch that reads transcripts instead of the database): **[docs/commands.md](docs/commands.md#how-csb-scans-scope-flags-relate)**.
 
 ### Searching conversations
 

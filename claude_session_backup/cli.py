@@ -149,6 +149,49 @@ def _hoist_common_flags(argv):
     return remainder + hoisted
 
 
+def _filter_kv(allowed: dict):
+    """Build an argparse ``type=`` callable for ``--filter KEY=VALUE``.
+
+    One vocabulary for narrowing, shared across verbs, instead of a new flag
+    per predicate. The rule that keeps it coherent: **``--filter`` narrows the
+    verb's RESULT SET, and the verb defines what its results are.** ``csb
+    show`` has already chosen a session, so its results are folder rows;
+    ``scan``/``list``/``tree`` results are sessions. Display trimming stays
+    with ``--top`` / ``--all-folders`` -- keeping the 0.7.1 invariant that a
+    display knob can never change what matches.
+
+    The comparison direction lives in the KEY (``min-work=10``) rather than in
+    an operator (``work>=10``) because ``>`` and ``<`` are redirection in
+    cmd.exe and PowerShell and would be eaten before csb ever saw them.
+
+    ``allowed`` maps key -> value parser. An unknown key is a hard error, never
+    a silent no-op: a filter that is quietly ignored returns a wrong answer
+    wearing a right answer's clothes.
+    """
+    keys = ", ".join(sorted(allowed))
+
+    def parse(raw: str):
+        if "=" not in raw:
+            raise argparse.ArgumentTypeError(
+                f"--filter expects KEY=VALUE, got {raw!r}. Valid keys: {keys}"
+            )
+        key, _, value = raw.partition("=")
+        key = key.strip().lower()
+        if key not in allowed:
+            raise argparse.ArgumentTypeError(
+                f"unknown filter key {key!r}. Valid keys: {keys}"
+            )
+        try:
+            return key, allowed[key](value.strip())
+        except (TypeError, ValueError):
+            raise argparse.ArgumentTypeError(
+                f"--filter {key}= expects "
+                f"{getattr(allowed[key], '__name__', 'a value')}, got {value!r}"
+            )
+
+    return parse
+
+
 def build_parser():
     """Build the argument parser."""
     parser = argparse.ArgumentParser(
@@ -210,8 +253,19 @@ def build_parser():
     p_list = sub.add_parser("list", help="Timeline view (default sort: last-used)")
     _add_common_flags(p_list)
     p_list.add_argument("filter", nargs="?", default=None, help="Filter by keyword in session name, project, or folder paths (case-insensitive)")
-    p_list.add_argument("-n", type=int, default=20, help="Number of sessions to show")
-    p_list.add_argument(
+    # Same grouping as `scan`: selection / display / limits. See the note
+    # there on why the boundary between "what matches" and "what is shown"
+    # is worth making visible.
+    g_list_sel = p_list.add_argument_group(
+        "selection -- which sessions match")
+    g_list_disp = p_list.add_argument_group(
+        "display -- how each matching session is shown")
+    g_list_limit = p_list.add_argument_group(
+        "limits and ordering")
+
+    g_list_limit.add_argument(
+        "-n", type=int, default=20, help="Number of sessions to show")
+    g_list_limit.add_argument(
         "--sort",
         choices=["last-used", "expiration", "started", "oldest", "messages", "size"],
         default="last-used",
@@ -219,15 +273,15 @@ def build_parser():
              "started (newest first), oldest (oldest first), messages, size",
     )
     # ``--deleted`` is two-valued since v0.3.5; shared definition since #41.
-    add_deleted_flag(p_list, "show")
-    p_list.add_argument("--json", action="store_true", help="Output as JSON")
-    p_list.add_argument(
+    add_deleted_flag(g_list_sel, "show")
+    g_list_disp.add_argument("--json", action="store_true", help="Output as JSON")
+    g_list_disp.add_argument(
         "--shortid", "-sid", action="store_true",
         help="Display compact UUID form (<head>-...-<tail>) instead of the full UUID. "
              "Full UUID is the default so users can paste into 'claude --resume <uuid>' "
              "(claude has no short-form resolver). csb commands accept either form.",
     )
-    p_list_folders = p_list.add_mutually_exclusive_group()
+    p_list_folders = g_list_disp.add_mutually_exclusive_group()
     p_list_folders.add_argument(
         "--top", type=int, metavar="N", default=None,
         help="Show top N other folders per session (default: 3). Use --all-folders for everything.",
@@ -265,15 +319,25 @@ def build_parser():
         help="Optional folder scope -- must look like a path (absolute, "
              "contains a separator, or starts with ./). Equivalent to -d PATH.",
     )
-    p_tree.add_argument(
+    # Same grouping as `scan` and `list`. Tree carries the most flags of
+    # any verb, so the split between "which families appear" and "how each
+    # node is drawn" does the most work here.
+    g_tree_sel = p_tree.add_argument_group(
+        "selection -- which families appear")
+    g_tree_disp = p_tree.add_argument_group(
+        "display -- how each node is drawn")
+    g_tree_limit = p_tree.add_argument_group(
+        "limits and ordering")
+
+    g_tree_sel.add_argument(
         "-E", "--regex", action="store_true",
         help="Interpret FILTER as a Python regular expression",
     )
-    p_tree.add_argument(
+    g_tree_sel.add_argument(
         "-s", "--case-sensitive", action="store_true",
         help="Case-sensitive FILTER match (default: case-insensitive)",
     )
-    p_tree_dir = p_tree.add_mutually_exclusive_group()
+    p_tree_dir = g_tree_sel.add_mutually_exclusive_group()
     p_tree_dir.add_argument(
         "-d", "--directories-below", metavar="PATH", default=None,
         help="Only families where some session worked under PATH "
@@ -283,58 +347,58 @@ def build_parser():
         "-D", "--directory-only", metavar="PATH", default=None,
         help="Same as -d but PATH only -- subdirectories excluded",
     )
-    p_tree.add_argument(
+    g_tree_sel.add_argument(
         "--root", metavar="ID", default=None,
         help="Render only the family containing this session (UUID prefix, "
              "suffix, or name -- same resolver as `csb show`)",
     )
-    p_tree.add_argument(
+    g_tree_sel.add_argument(
         "--orphans", action="store_true",
         help="Only root sessions that never forked (no children)",
     )
-    p_tree.add_argument(
+    g_tree_sel.add_argument(
         "--lineage", action="store_true",
         help="Show only a match's own ancestors and descendants, omitting "
              "its siblings and cousins (default: the whole family)",
     )
-    p_tree.add_argument(
+    g_tree_limit.add_argument(
         "-n", type=int, default=None, metavar="N",
         help="Show at most N trees (families). Default: no limit.",
     )
-    p_tree.add_argument(
+    g_tree_limit.add_argument(
         "--max-nodes", type=int, default=None, metavar="N",
         help="Collapse a family larger than N sessions (default: 50). "
              "0 disables the cap.",
     )
-    p_tree.add_argument(
+    g_tree_limit.add_argument(
         "--sort",
         choices=["last-used", "expiration", "started", "oldest", "messages", "size"],
         default="last-used",
         help="Order of ROOTS (children always read in fork order)",
     )
-    add_deleted_flag(p_tree, "show")
-    p_tree.add_argument(
+    add_deleted_flag(g_tree_sel, "show")
+    g_tree_disp.add_argument(
         "-f", "--full-info", action="count", default=0,
         help="Per-node detail: -f adds started + purge countdown, "
              "-ff adds folders and the message/version meta line",
     )
-    p_tree.add_argument(
+    g_tree_disp.add_argument(
         "-u", "--uuid", action="store_true",
         help="Show the full UUID beside each name (paste-ready for "
              "`claude --resume`). By default a NAMED session shows just its "
              "name, to keep the tree readable; unnamed sessions always show "
              "their UUID.",
     )
-    p_tree.add_argument(
+    g_tree_disp.add_argument(
         "--shortid", "-sid", action="store_true",
         help="Show the compact UUID form (<head>-...-<tail>) beside each name",
     )
-    p_tree.add_argument("--json", action="store_true",
+    g_tree_disp.add_argument("--json", action="store_true",
                         help="Output nested JSON (one object per root)")
-    p_tree.add_argument("--ascii", action="store_true",
+    g_tree_disp.add_argument("--ascii", action="store_true",
                         help="Force ASCII connectors (auto when the console "
                              "cannot encode box-drawing characters)")
-    p_tree_folders = p_tree.add_mutually_exclusive_group()
+    p_tree_folders = g_tree_disp.add_mutually_exclusive_group()
     p_tree_folders.add_argument(
         "--top", type=int, metavar="N", default=None,
         help="With -ff, show top N other folders per node (default: 3)",
@@ -352,6 +416,29 @@ def build_parser():
     p_show = sub.add_parser("show", help="Detailed session info with folder analysis")
     _add_common_flags(p_show)
     p_show.add_argument("session_id", help="Session ID (prefix match supported)")
+    # Two ORTHOGONAL knobs, deliberately not one flag: --filter hides by
+    # COUNT (a long tail of one-off touches), --all reveals what is hidden
+    # by KIND (scratch dirs, unresolved paths) regardless of count. Note
+    # this is NOT `--all-folders`: that flag means "don't truncate to top-N"
+    # on list/scan, and reusing the name for classification would give one
+    # flag two meanings across commands.
+    p_show.add_argument(
+        "--filter", action="append", dest="filters", metavar="KEY=VALUE",
+        type=_filter_kv({"min-work": int}),
+        help="Narrow which working directories are shown. Repeatable; "
+             "multiple filters AND together. Keys: min-work=N (hide folders "
+             "with fewer than N work units). Hidden folders are summarized "
+             "in a count line and remain findable by `csb scan`.",
+    )
+    p_show.add_argument(
+        # dest is `show_all`, NOT `all_folders`. `--all-folders` on
+        # list/scan/tree also writes to `all_folders` and means something
+        # else ("don't truncate to top-N"), so sharing the dest would make
+        # any shared render path read one flag as the other.
+        "--all", action="store_true", dest="show_all",
+        help="Reveal everything normally collapsed: scratch directories and "
+             "paths that no longer resolve",
+    )
 
     # restore
     p_restore = sub.add_parser("restore", help="Restore deleted session from git history")
@@ -547,14 +634,41 @@ def build_parser():
              "`./dirname` / `.\\dirname` shortcut -- in that case `term2` is the actual term "
              "filter (equivalent to `csb scan -d dirname term2`). Otherwise rejected.",
     )
-    p_scan.add_argument("-n", type=int, default=20, help="Number of sessions to show")
-    p_scan.add_argument("--json", action="store_true", help="Output as JSON")
-    p_scan.add_argument(
-        "--no-usage", "-NU", action="store_true",
-        help="Skip folder_usage match; only consider session start_folder",
+    # Flags are grouped by WHICH QUESTION THEY ANSWER, because csb has three
+    # kinds of narrowing that had been reading as one undifferentiated wall:
+    # what MATCHES, how much of each match is SHOWN, and how many results
+    # survive. Conflating the first two is what caused #56's match-gate bug
+    # (a display cap silently decided which sessions existed), so making the
+    # boundary visible in --help is part of the fix, not decoration.
+    g_scan_sel = p_scan.add_argument_group(
+        "selection -- which sessions match")
+    g_scan_disp = p_scan.add_argument_group(
+        "display -- how each matching session is shown (never changes what matches)")
+    g_scan_limit = p_scan.add_argument_group(
+        "limits -- how many results survive")
+    g_scan_restore = p_scan.add_argument_group(
+        "restore -- act on the matches (see --restore)")
+
+    g_scan_limit.add_argument(
+        "-n", type=int, default=20, help="Number of sessions to show")
+    g_scan_disp.add_argument(
+        "--json", action="store_true", help="Output as JSON")
+    # Named for the MECHANISM, not the side effect (v0.7.1, replaces
+    # --no-usage / -NU). What it does is bypass the SQLite index; what
+    # falls OUT of that is "matches only by start folder", which is what
+    # the old name described -- and which reads as a duplicate of -s.
+    # The distinction became load-bearing in this release: while
+    # folder_usage held one folder per session the flag barely changed
+    # anything, and #56 made the index rich enough for it to matter.
+    g_scan_sel.add_argument(
+        "--no-index", "-NI", action="store_true", dest="no_index",
+        help="Bypass the SQLite index: find sessions by walking "
+             "~/.claude/projects/ and reading transcripts. Use when the "
+             "index may be stale or incomplete. Note this cannot find "
+             "DELETED sessions, which exist only in the index.",
     )
     # -d / -D / -s mutually exclusive: path-strict modes
-    p_scan_dir = p_scan.add_mutually_exclusive_group()
+    p_scan_dir = g_scan_sel.add_mutually_exclusive_group()
     p_scan_dir.add_argument(
         "-d", "--directories-below", metavar="PATTERN", default=None,
         help="Path-strict: match this folder + its descendants. Trailing '*' for sibling-prefix.",
@@ -571,38 +685,43 @@ def build_parser():
     # Deletion-filter scope: the canonical --deleted [only|all] grammar
     # (#41 -- scan finally matches list/search). The old boolean --all
     # remains as a hidden deprecated alias for --deleted all (removal: 0.4).
-    add_deleted_flag(p_scan, "scan", with_all_alias=True)
+    add_deleted_flag(g_scan_sel, "scan", with_all_alias=True)
     # --restore: bulk restoration of matching deleted sessions
-    p_scan.add_argument(
+    g_scan_restore.add_argument(
         "--restore", action="store_true",
         help="After scanning, restore each matching deleted session from "
              "git history. Implies --deleted scope (active sessions are "
              "skipped). Confirms before restoring >1 file unless --yes "
              "is given. --dry-run previews only.",
     )
-    p_scan.add_argument(
+    g_scan_restore.add_argument(
         "--dry-run", action="store_true",
         help="With --restore: preview what would be restored without writing.",
     )
-    p_scan.add_argument(
+    g_scan_restore.add_argument(
         "--yes", "-y", action="store_true",
         help="With --restore: skip the >1-file confirmation prompt.",
     )
-    p_scan.add_argument(
+    g_scan_restore.add_argument(
         "--force", action="store_true",
         help="With --restore: overwrite an existing on-disk file (default refuses).",
     )
-    # --top / --all-folders mutually exclusive: display + folder_usage matching gate
-    p_scan_folders = p_scan.add_mutually_exclusive_group()
+    # --top / --all-folders mutually exclusive: DISPLAY only.
+    #
+    # These used to double as a match gate on -d/-D, so `--top 3` silently
+    # decided which sessions existed. That was removed (#56): how many
+    # folders we print and whether a session matches are different
+    # questions. Changing --top now changes only what you see.
+    p_scan_folders = g_scan_disp.add_mutually_exclusive_group()
     p_scan_folders.add_argument(
         "--top", type=int, metavar="N", default=None,
-        help="Show top N other folders per session (default: 3). Also gates -d/-D folder_usage matching.",
+        help="Show top N other folders per session (default: 3). Display only -- does not affect which sessions match.",
     )
     p_scan_folders.add_argument(
         "--all-folders", action="store_true",
-        help="Show every tracked folder per session (no cap). Also removes top-N gate from -d/-D matching.",
+        help="Show every tracked folder per session (no cap). Display only.",
     )
-    p_scan.add_argument(
+    g_scan_disp.add_argument(
         "--shortid", "-sid", action="store_true",
         help="Display compact UUID form (<head>-...-<tail>) instead of the full UUID. "
              "Full UUID is the default so users can paste into 'claude --resume <uuid>'.",

@@ -375,11 +375,11 @@ def test_scan_d_with_n_flag():
     assert args.n == 5
 
 
-def test_scan_no_usage_with_d():
-    """Existing -NU flag stacks with new -d flag."""
+def test_scan_no_index_with_d():
+    """The index-bypass flag stacks with -d."""
     parser = build_parser()
-    args = parser.parse_args(["scan", "-NU", "-d", "amdead"])
-    assert args.no_usage is True
+    args = parser.parse_args(["scan", "-NI", "-d", "amdead"])
+    assert args.no_index is True
     assert args.directories_below == "amdead"
 
 
@@ -894,3 +894,239 @@ def test_banner_git_error_variant(monkeypatch, mock_claude_dir_repoless, tmp_pat
     err = capsys.readouterr().err
     assert "BACKUP STATE UNKNOWN" in err
     assert "has no git repository" not in err
+
+
+# -- --filter KEY=VALUE vocabulary (v0.7.1) ----------------------------
+#
+# `--filter N` was renamed to `--filter min-work=N` before it ever shipped.
+# Rationale: `filter` already meant "the keyword positional" on list/tree,
+# and an int-valued flag of the same name made one word mean two things at
+# two different units. Keys unify them: the positional is sugar for the
+# common key, and everything that narrows is a --filter.
+#
+# The comparison direction lives in the KEY (`min-work=`) rather than an
+# operator (`work>=10`) because `>` and `<` are redirection in cmd.exe and
+# PowerShell and get eaten before csb sees them.
+
+
+def test_filter_parses_key_value():
+    from claude_session_backup.cli import build_parser
+    args = build_parser().parse_args(["show", "abc", "--filter", "min-work=5"])
+    assert dict(args.filters) == {"min-work": 5}
+
+
+def test_filter_is_repeatable_and_ands():
+    from claude_session_backup.cli import build_parser
+    args = build_parser().parse_args(
+        ["show", "abc", "--filter", "min-work=5", "--filter", "min-work=9"])
+    assert len(args.filters) == 2
+
+
+def test_filter_rejects_bare_number(capsys):
+    """`--filter 5` was the old syntax. It must fail loudly rather than be
+    silently reinterpreted."""
+    from claude_session_backup.cli import build_parser
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args(["show", "abc", "--filter", "5"])
+    assert "KEY=VALUE" in capsys.readouterr().err
+
+
+def test_filter_rejects_unknown_key(capsys):
+    """A silently-ignored filter is a wrong answer wearing a right answer's
+    clothes -- the same failure class as the --top match gate."""
+    from claude_session_backup.cli import build_parser
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args(["show", "abc", "--filter", "bogus=5"])
+    err = capsys.readouterr().err
+    assert "unknown filter key" in err
+    assert "min-work" in err, "the error must name the valid keys"
+
+
+def test_filter_rejects_non_integer_value(capsys):
+    from claude_session_backup.cli import build_parser
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args(["show", "abc", "--filter", "min-work=lots"])
+    assert "expects" in capsys.readouterr().err
+
+
+def test_show_all_does_not_share_a_dest_with_all_folders():
+    """`csb show --all` and `csb list --all-folders` mean different things.
+
+    They used to write to the SAME dest (`all_folders`), so any shared
+    render path would have read one as the other. Latent, but a trap.
+    """
+    from claude_session_backup.cli import build_parser
+    p = build_parser()
+    show = p.parse_args(["show", "abc", "--all"])
+    lst = p.parse_args(["list", "--all-folders"])
+
+    assert show.show_all is True
+    assert getattr(show, "all_folders", None) is not True, (
+        "csb show --all still writes to the all_folders dest")
+    assert lst.all_folders is True
+
+
+# -- hints must name syntax the verb actually accepts ------------------
+#
+# Bitten three times now: `--all-folders` in show's low-value note (show has
+# no such flag), `--filter 0` in the thin note (no longer valid syntax), and
+# the --top help text advertising a match gate that had been removed. A hint
+# is a user instruction; if it cannot be typed, it is a bug.
+
+def test_render_hints_reference_only_flags_show_accepts(capsys):
+    """Scan every flag token a `csb show` hint prints and confirm the show
+    parser accepts it. Generic, so the next stale hint is caught for free."""
+    import re
+    from claude_session_backup.commands import (
+        _print_low_value_note, _thin_note)
+    from claude_session_backup.cli import build_parser
+
+    _print_low_value_note(
+        [{"folder_path": "C:\\code\\x", "usage_count": 0}], show_all=False)
+    text = capsys.readouterr().out
+    text += _thin_note([{"usage_count": 1}], 5)
+
+    parser = build_parser()
+    for flag in set(re.findall(r"--[a-z][a-z0-9-]*", text)):
+        # A flag is acceptable if `csb show` knows it. Value-taking flags are
+        # probed with a dummy that the type= callable will accept.
+        try:
+            parser.parse_args(["show", "abc", flag])
+            continue
+        except SystemExit:
+            pass
+        try:
+            parser.parse_args(["show", "abc", flag, "min-work=1"])
+        except SystemExit:
+            raise AssertionError(
+                "a `csb show` hint tells the user to type %r, which the show "
+                "parser rejects. Hints must be executable. Text: %r"
+                % (flag, text))
+
+
+# -- --help groups flags by which question they answer ------------------
+#
+# csb has three kinds of narrowing -- what MATCHES, how much of each match
+# is SHOWN, and how many results survive -- which had been rendering as one
+# undifferentiated wall of flags. Conflating the first two is precisely what
+# caused #56's match-gate bug, where a display cap silently decided which
+# sessions existed. Making the boundary visible in --help is part of that
+# fix, so these tests guard it rather than treating it as cosmetics.
+
+
+def _group_titles(verb):
+    from claude_session_backup.cli import build_parser
+    sub = build_parser()._subparsers._group_actions[0].choices[verb]
+    return [g.title for g in sub._action_groups if g._group_actions]
+
+
+def _group_of(verb, flag):
+    """Which group title owns `flag` on `verb` (None if ungrouped)."""
+    from claude_session_backup.cli import build_parser
+    sub = build_parser()._subparsers._group_actions[0].choices[verb]
+    for group in sub._action_groups:
+        for action in group._group_actions:
+            if flag in action.option_strings:
+                return group.title
+    return None
+
+
+@pytest.mark.parametrize("verb", ["scan", "list", "tree"])
+def test_help_has_selection_and_display_groups(verb):
+    titles = " | ".join(_group_titles(verb))
+    assert "selection" in titles, titles
+    assert "display" in titles, titles
+
+
+@pytest.mark.parametrize("verb,flag", [
+    ("scan", "-d"), ("scan", "-D"), ("scan", "-s"), ("scan", "--deleted"),
+    ("scan", "--no-index"),
+    ("list", "--deleted"),
+    ("tree", "-d"), ("tree", "-D"), ("tree", "--root"), ("tree", "--orphans"),
+    ("tree", "--lineage"),
+])
+def test_selection_flags_live_in_the_selection_group(verb, flag):
+    assert "selection" in (_group_of(verb, flag) or ""), (
+        "%s %s is not grouped as selection" % (verb, flag))
+
+
+@pytest.mark.parametrize("verb,flag", [
+    ("scan", "--top"), ("scan", "--all-folders"), ("scan", "--shortid"),
+    ("list", "--top"), ("list", "--all-folders"),
+    ("tree", "--top"), ("tree", "--all-folders"), ("tree", "-f"),
+    ("tree", "--ascii"),
+])
+def test_display_flags_live_in_the_display_group(verb, flag):
+    """--top especially. It is a display cap and nothing else; the release
+    that removed its hidden match-gate should also stop it LOOKING like a
+    selector."""
+    assert "display" in (_group_of(verb, flag) or ""), (
+        "%s %s is not grouped as display" % (verb, flag))
+
+
+@pytest.mark.parametrize("verb,flag", [
+    ("scan", "-n"), ("list", "-n"), ("list", "--sort"),
+    ("tree", "-n"), ("tree", "--max-nodes"), ("tree", "--sort"),
+])
+def test_limit_flags_live_in_the_limits_group(verb, flag):
+    assert "limits" in (_group_of(verb, flag) or ""), (
+        "%s %s is not grouped as a limit" % (verb, flag))
+
+
+@pytest.mark.parametrize("verb,pair", [
+    ("scan", ["--top", "3", "--all-folders"]),
+    ("list", ["--top", "3", "--all-folders"]),
+    ("tree", ["--top", "3", "--all-folders"]),
+    ("scan", ["-d", ".", "-D", "."]),
+    ("tree", ["-d", ".", "-D", "."]),
+])
+def test_regrouping_preserved_mutual_exclusion(verb, pair):
+    """Re-parenting a mutually-exclusive group into an argument group is
+    easy to get wrong in a way that silently DROPS the exclusivity."""
+    from claude_session_backup.cli import build_parser
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args([verb] + pair)
+
+
+# -- --no-index replaces --no-usage / -NU (v0.7.1, breaking) -----------
+#
+# The old name described a SIDE EFFECT ("only consider start_folder"),
+# which reads as a duplicate of -s. What the flag actually does is bypass
+# the SQLite index and read transcripts from disk. That distinction was
+# nearly invisible while folder_usage held one folder per session; #56
+# made the index rich enough for it to matter, so the flag got the name
+# of its mechanism.
+
+
+def test_no_usage_and_NU_are_gone():
+    """A real cut, not an alias. If someone re-adds them as hidden
+    aliases that is a deliberate decision -- this test should be updated
+    rather than silently satisfied."""
+    from claude_session_backup.cli import build_parser
+    import pytest as _pytest
+    for dead in ("--no-usage", "-NU"):
+        with _pytest.raises(SystemExit):
+            build_parser().parse_args(["scan", dead])
+
+
+def test_no_index_sets_its_own_dest():
+    from claude_session_backup.cli import build_parser
+    args = build_parser().parse_args(["scan", "--no-index"])
+    assert args.no_index is True
+    assert not hasattr(args, "no_usage")
+
+
+def test_no_index_help_leads_with_the_mechanism():
+    """The old help described what falls out of the flag rather than what
+    it does, which is exactly why it read as redundant with -s."""
+    from claude_session_backup.cli import build_parser
+    sub = build_parser()._subparsers._group_actions[0].choices["scan"]
+    action = next(a for a in sub._actions if "--no-index" in a.option_strings)
+    help_text = action.help.lower()
+    assert "index" in help_text
+    assert "deleted" in help_text, (
+        "the help must warn that this cannot find deleted sessions")

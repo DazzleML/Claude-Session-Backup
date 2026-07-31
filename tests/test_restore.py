@@ -943,7 +943,7 @@ def _make_scan_args(**kwargs):
         # positionals
         "term": None, "term2": None,
         # display / behavior
-        "n": 20, "no_usage": False, "json": False,
+        "n": 20, "no_index": False, "json": False,
         "top": None, "all_folders": False,
         # phase 3 flags
         "deleted": False, "all": False, "restore": False, "dry_run": False,

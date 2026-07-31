@@ -175,13 +175,25 @@ def sanitize_path(path: str) -> str:
     return p.replace("/", "-")
 
 
-def scan_for_path(claude_dir: str, target_path: str) -> list[SessionFiles]:
+def scan_for_path(claude_dir: str, target_path: str,
+                  include_descendants: bool = True) -> list[SessionFiles]:
     """
-    Find all sessions in ~/.claude/projects/ whose project path starts with target_path.
+    Find sessions in ~/.claude/projects/ whose project path matches target_path.
 
     Uses Claude Code's sanitized project folder naming to do a fast prefix match
     against the projects directory -- a single pass over the top-level project
     folders with a prefix test, no recursive/deep walk.
+
+    ``include_descendants`` mirrors ``csb scan``'s ``-d`` (True) vs ``-D``
+    (False). It is NOT cosmetic: the sanitized naming turns ``C:\\code`` into
+    ``C--code``, so the descendant test ``name.startswith(prefix + "-")``
+    matches ``C--code-notepad-cleanup`` -- a child directory. Calling this
+    unconditionally made ``-D`` return sessions that had never touched the
+    exact folder, contradicting its documented "this folder only" contract
+    while the SQL half of the same query honored it.
+
+    Defaults to True to preserve every existing caller's behavior; only
+    ``-D`` passes False.
 
     Returns a list of SessionFiles sorted by JSONL modification time (newest first).
     """
@@ -194,13 +206,15 @@ def scan_for_path(claude_dir: str, target_path: str) -> list[SessionFiles]:
 
     # Find all project folders that match:
     #   - exact match (sessions started in this exact directory)
-    #   - prefix + "-" (sessions started in child directories)
+    #   - prefix + "-" (sessions started in child directories) -- only when
+    #     descendants were asked for
     all_sessions = []
     for project_dir in projects_dir.iterdir():
         if not project_dir.is_dir():
             continue
         name = project_dir.name
-        if name == prefix or name.startswith(prefix + "-"):
+        if name == prefix or (include_descendants
+                              and name.startswith(prefix + "-")):
             # Scan this project for sessions
             sessions = _scan_project_dir(claude_dir, project_dir)
             all_sessions.extend(sessions)

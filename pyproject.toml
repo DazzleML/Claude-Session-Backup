@@ -33,7 +33,9 @@ dependencies = [
     # Cross-platform symlink creation (os.symlink -> dazzlelink -> mklink with
     # graceful no-privilege fallback). Used to recreate claude-session-logger's
     # transcript.jsonl symlink on restore (#38). Same helper the logger uses.
-    "dazzle-filekit>=0.2.4",
+    # >=0.4.2 also supplies is_device_path, which keeps `2>/dev/null` and
+    # Windows reserved names out of the folder index (#56).
+    "dazzle-filekit>=0.4.2",
 ]
 
 [project.optional-dependencies]
