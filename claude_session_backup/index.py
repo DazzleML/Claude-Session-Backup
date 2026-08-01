@@ -366,7 +366,7 @@ def snapshot_deleted_sessions(conn: sqlite3.Connection) -> list[dict]:
     for r in rows:
         d = dict(r)
         folders = conn.execute(
-            "SELECT folder_path, usage_count, is_start_folder "
+            "SELECT folder_path, usage_count, is_start_folder, path_exists "
             "FROM folder_usage WHERE session_id = ?",
             (r["session_id"],),
         ).fetchall()
@@ -511,7 +511,7 @@ def list_sessions(conn: sqlite3.Connection, limit: int = 20,
         session = dict(row)
         # Attach folder usage
         folders = conn.execute(
-            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
             "WHERE session_id = ? ORDER BY usage_count DESC",
             (session["session_id"],),
         ).fetchall()
@@ -578,7 +578,7 @@ def get_session(conn: sqlite3.Connection, session_id_prefix: str) -> Optional[di
 
     session = dict(row)
     folders = conn.execute(
-        "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+        "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
         "WHERE session_id = ? ORDER BY usage_count DESC",
         (session["session_id"],),
     ).fetchall()
@@ -724,7 +724,7 @@ def find_sessions_by_term(
     for row in rows:
         session = dict(row)
         folders = conn.execute(
-            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
             "WHERE session_id = ? ORDER BY usage_count DESC",
             (session["session_id"],),
         ).fetchall()
@@ -863,7 +863,7 @@ def find_sessions_by_directory(
     for row in rows:
         session = dict(row)
         folders = conn.execute(
-            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
             "WHERE session_id = ? ORDER BY usage_count DESC",
             (session["session_id"],),
         ).fetchall()
@@ -961,7 +961,7 @@ def find_sessions_by_directory_ranked(
         session = dict(row)
         if include_folders:
             folders = conn.execute(
-                "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+                "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
                 "WHERE session_id = ? ORDER BY usage_count DESC",
                 (session["session_id"],),
             ).fetchall()
@@ -1003,7 +1003,7 @@ def find_sessions_by_folder_usage(conn: sqlite3.Connection, path_prefix: str,
     for row in rows:
         session = dict(row)
         folders = conn.execute(
-            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
             "WHERE session_id = ? ORDER BY usage_count DESC",
             (session["session_id"],),
         ).fetchall()
@@ -1089,7 +1089,7 @@ def search_sessions(conn: sqlite3.Connection, query: str, limit: int = 10) -> li
     for row in rows:
         session = dict(row)
         folders = conn.execute(
-            "SELECT folder_path, usage_count, is_start_folder FROM folder_usage "
+            "SELECT folder_path, usage_count, is_start_folder, path_exists FROM folder_usage "
             "WHERE session_id = ? ORDER BY usage_count DESC",
             (session["session_id"],),
         ).fetchall()

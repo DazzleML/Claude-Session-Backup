@@ -149,6 +149,28 @@ def _hoist_common_flags(argv):
     return remainder + hoisted
 
 
+def _nonneg_int(value: str) -> int:
+    """Value parser for count-threshold filter keys.
+
+    Rejects negatives outright: ``min-work=-5`` used to be silently
+    accepted as a no-op, which is a quietly-ignored filter by another
+    route.
+    """
+    v = int(value)
+    if v < 0:
+        raise argparse.ArgumentTypeError(
+            f"expects a non-negative integer, got {v}"
+        )
+    return v
+
+
+#: What each value parser expects, in words a user can act on. The generic
+#: fallback in _filter_kv used the callable's __name__, which for the
+#: custom validator leaked `_nonneg_int` into the error -- a private
+#: Python identifier is not a user instruction (tester pass 3, Finding B).
+_nonneg_int.expects = "a non-negative integer"
+
+
 def _filter_kv(allowed: dict):
     """Build an argparse ``type=`` callable for ``--filter KEY=VALUE``.
 
@@ -184,9 +206,11 @@ def _filter_kv(allowed: dict):
         try:
             return key, allowed[key](value.strip())
         except (TypeError, ValueError):
+            expects = getattr(
+                allowed[key], "expects",
+                getattr(allowed[key], "__name__", "a value"))
             raise argparse.ArgumentTypeError(
-                f"--filter {key}= expects "
-                f"{getattr(allowed[key], '__name__', 'a value')}, got {value!r}"
+                f"--filter {key}= expects {expects}, got {value!r}"
             )
 
     return parse
@@ -424,7 +448,7 @@ def build_parser():
     # flag two meanings across commands.
     p_show.add_argument(
         "--filter", action="append", dest="filters", metavar="KEY=VALUE",
-        type=_filter_kv({"min-work": int}),
+        type=_filter_kv({"min-work": _nonneg_int}),
         help="Narrow which working directories are shown. Repeatable; "
              "multiple filters AND together. Keys: min-work=N (hide folders "
              "with fewer than N work units). Hidden folders are summarized "
@@ -614,7 +638,7 @@ def build_parser():
             "  csb scan                  cwd path-prefix (today's default)\n"
             "  csb scan <term>           broad metadata substring (name, project, folder paths)\n"
             "  csb scan ./dirname        shortcut: same as -d dirname (no flag to remember)\n"
-            "  csb scan -d <pattern>     path-strict: folder + descendants (start_folder OR top-N folder_usage)\n"
+            "  csb scan -d <pattern>     path-strict: folder + descendants (any recorded folder)\n"
             "  csb scan -D <pattern>     path-strict: this folder only (no descendants)\n"
             "  csb scan -s <pattern>     start_folder only: 'what sessions originated here?' (skips folder_usage)\n"
             "  csb scan -d|-D|-s <pat> <term>   scope-then-filter combined\n\n"

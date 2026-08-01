@@ -1928,3 +1928,70 @@ def test_low_value_hint_names_a_flag_show_accepts(capsys):
     assert "--all-folders" not in out, (
         "show's hint names --all-folders, which show does not accept: %r" % out)
     assert "--all" in out
+
+
+# -- a missing path must not stop the index query (0.7.2, E-ledger) ----
+#
+# scan's exists-check printed a warning and RETURNED for a path not on
+# disk -- the index was never asked. That is existence acting as a FILTER,
+# the precise violation of #56's "a deleted repo is still where work
+# happened", in the flag whose purpose is finding history. Worst in the
+# recovery flow: the folder is gone BECAUSE things were deleted.
+
+
+def _scan_spies(monkeypatch, tmp_path):
+    import claude_session_backup.index as index_module
+    import claude_session_backup.scanner as scanner_module
+
+    dir_spy = MagicMock(return_value=[])
+    term_spy = MagicMock(return_value=[])
+    monkeypatch.setattr(commands_module, "open_db", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(commands_module, "init_schema", MagicMock())
+    monkeypatch.setattr(
+        commands_module, "_get_config",
+        MagicMock(return_value={
+            "claude_dir": str(tmp_path / "claude"),
+            "index_path": str(tmp_path / "index.db"),
+        }),
+    )
+    monkeypatch.setattr(commands_module, "_resolve_top_folders", MagicMock(return_value=3))
+    monkeypatch.setattr(index_module, "find_sessions_by_directory", dir_spy)
+    monkeypatch.setattr(index_module, "find_sessions_by_term", term_spy)
+    monkeypatch.setattr(commands_module, "find_sessions_by_term", term_spy, raising=False)
+    monkeypatch.setattr(scanner_module, "scan_for_path", MagicMock(return_value=[]))
+    return dir_spy, term_spy
+
+
+def _scan_args(path, term=None):
+    return SimpleNamespace(
+        term=term, term2=None,
+        directories_below=path, directory_only=None, start_dir_only=None,
+        no_index=False, n=20, json=False, quiet=True,
+        claude_dir=None, db=None,
+    )
+
+
+def test_scan_missing_path_still_queries_the_index(monkeypatch, tmp_path, capsys):
+    """The index is the ONLY place a vanished folder's history lives."""
+    from claude_session_backup.commands import cmd_scan
+    dir_spy, _ = _scan_spies(monkeypatch, tmp_path)
+
+    cmd_scan(_scan_args(str(tmp_path / "gone-repo")))
+
+    assert dir_spy.called, (
+        "path missing on disk -> scan returned without asking the index")
+    err = capsys.readouterr().err
+    assert "does not exist" in err, "the warning should survive as a warning"
+
+
+def test_scan_missing_path_with_term_stays_path_scoped(monkeypatch, tmp_path):
+    """The old fallback ABANDONED the path scope for a broad term search --
+    silently answering a different question than the one asked."""
+    from claude_session_backup.commands import cmd_scan
+    dir_spy, term_spy = _scan_spies(monkeypatch, tmp_path)
+
+    cmd_scan(_scan_args(str(tmp_path / "gone-repo"), term="auth"))
+
+    assert dir_spy.called, "the path-scoped query must still run"
+    assert not term_spy.called, (
+        "gone path + term must NOT become a broad term search")

@@ -950,3 +950,136 @@ def test_presence_row_with_zero_work_still_matches(mock_db):
     assert {r["session_id"] for r in results} == {"s1"}, (
         "a 0-work presence row must not be invisible to scan"
     )
+
+
+# ── folder rows must CARRY path_exists (0.7.2, C-ledger) ─────────────
+#
+# Schema v7 records the existence probe, and the display classifier
+# (`_tier_folders`) has consulted it from day one -- but every folder
+# SELECT omitted the column, so `_row_get(f, "path_exists")` fell back to
+# None and a nonexistent path could never classify as low-value. Result:
+# test-fixture literals (`C:\code\hot-1`, `\home\a`) rendered at full
+# prominence in "Also touched" while the data to hide them sat unread in
+# the same table. The classifier was right; the query starved it.
+
+def test_get_session_folders_carry_path_exists(mock_db, tmp_path):
+    meta = _make_meta_with_folders(
+        "s1", "probe-carrier", str(tmp_path),
+        {str(tmp_path): 5, r"C:\gone-fixture\hot-1": 0},
+    )
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+
+    session = get_session(mock_db, "s1")
+    by_path = {f["folder_path"]: f for f in session["folders"]}
+
+    for row in by_path.values():
+        assert "path_exists" in row.keys(), (
+            "folder rows must carry the existence hint the classifier reads")
+    assert by_path[str(tmp_path)]["path_exists"] == 1
+    assert by_path[r"C:\gone-fixture\hot-1"]["path_exists"] == 0
+
+
+def test_tier_folders_hides_nonexistent_presence_rows(mock_db, tmp_path):
+    """End-to-end through the real query: a 0-work row whose path does not
+    exist lands in the LOW tier, not "Also touched". `--all` still reveals
+    it and `csb scan` still finds it -- display-only, per the rule that a
+    heuristic never makes data unreachable."""
+    import os as _os
+
+    from claude_session_backup.commands import _tier_folders
+
+    # NOT tmp_path for the worked row: pytest temp dirs live under Temp,
+    # which classifies as SCRATCH (correctly) and would land it in low.
+    real_dir = _os.getcwd()
+    meta = _make_meta_with_folders(
+        "s1", "probe-carrier", real_dir,
+        {real_dir: 5, r"C:\gone-fixture\hot-1": 0},
+    )
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+
+    worked, touched_only, low = _tier_folders(
+        get_session(mock_db, "s1")["folders"])
+
+    assert [f["folder_path"] for f in worked] == [real_dir]
+    assert touched_only == [], (
+        "a nonexistent 0-work row must not render as an ordinary touch")
+    assert [f["folder_path"] for f in low] == [r"C:\gone-fixture\hot-1"]
+
+
+# ── F1: PROMINENT scratch escapes the collapse ───────────────────────
+#
+# User-specified rule, measured before adoption: a scratch row escapes to
+# the worked tier when usage_count > 10 OR it ranks in the session's top
+# 10 worked rows. The unconditional scratch->low rule hid a real
+# session's #1 folder (its scratchpad, 207x) behind "(N hidden)" -- and
+# for purge-prone Claude Code scratchpads, high-work scratch is a
+# recovery signal: those dirs hold the session's probe scripts and tools.
+
+
+def _tiers_for(mock_db, folder_usage):
+    import os as _os
+    from claude_session_backup.commands import _tier_folders
+    meta = _make_meta_with_folders(
+        "s1", "scratch-escape", _os.getcwd(), folder_usage)
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+    return _tier_folders(get_session(mock_db, "s1")["folders"])
+
+
+def test_scratch_above_the_absolute_floor_escapes(mock_db):
+    """11 work units in scratch is material (scripts, tools), no matter
+    how busy the rest of the session is."""
+    import os as _os
+    scratch = r"C:\Users\X\AppData\Local\Temp\claude\p\sid\scratchpad"
+    usage = {_os.getcwd(): 500, scratch: 11}
+    # bury it below rank 10 with real folders
+    usage.update({r"C:\code\p%d" % i: 100 - i for i in range(12)})
+
+    worked, _, low = _tiers_for(mock_db, usage)
+
+    assert scratch in [f["folder_path"] for f in worked]
+    assert all(f["folder_path"] != scratch for f in low)
+
+
+def test_scratch_in_the_top_ten_escapes_even_below_the_floor(mock_db):
+    """The relative arm: rank <= 10 admits modest counts in small
+    sessions -- accepted as cheap lines, measured at worst two."""
+    import os as _os
+    scratch = r"C:\Users\X\AppData\Local\Temp\claude\p\sid\scratchpad"
+    worked, _, low = _tiers_for(mock_db, {_os.getcwd(): 20, scratch: 3})
+
+    assert scratch in [f["folder_path"] for f in worked]
+
+
+def test_modest_scratch_below_both_arms_stays_hidden(mock_db):
+    """10 units at rank 11+: neither arm fires -- the default view stays
+    clean for routine temp churn."""
+    import os as _os
+    scratch = r"C:\Users\X\AppData\Local\Temp\claude\p\sid\scratchpad"
+    usage = {_os.getcwd(): 500, scratch: 10}
+    usage.update({r"C:\code\p%d" % i: 100 - i for i in range(12)})
+
+    worked, _, low = _tiers_for(mock_db, usage)
+
+    assert scratch not in [f["folder_path"] for f in worked]
+    assert scratch in [f["folder_path"] for f in low]
+
+
+def test_zero_work_scratch_never_escapes(mock_db):
+    """The escape is earned by WORK, not by being scratch."""
+    import os as _os
+    scratch = r"C:\Users\X\AppData\Local\Temp\claude\p\sid\scratchpad"
+    worked, touched, low = _tiers_for(mock_db, {_os.getcwd(): 5, scratch: 0})
+
+    assert scratch in [f["folder_path"] for f in low]
+    assert scratch not in [f["folder_path"] for f in worked + touched]
+
+
+def test_promoted_scratch_carries_the_tag(mock_db):
+    """Promotion is honest: the row is tagged so renderers can mark it
+    `(scratch)` rather than passing it off as an ordinary workplace."""
+    import os as _os
+    scratch = r"C:\Users\X\AppData\Local\Temp\claude\p\sid\scratchpad"
+    worked, _, _ = _tiers_for(mock_db, {_os.getcwd(): 20, scratch: 15})
+
+    row = next(f for f in worked if f["folder_path"] == scratch)
+    assert row.get("_scratch_promoted") is True

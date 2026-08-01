@@ -922,6 +922,34 @@ def test_filter_is_repeatable_and_ands():
     assert len(args.filters) == 2
 
 
+@pytest.mark.parametrize("order", [
+    ["min-work=5", "min-work=50"],
+    ["min-work=50", "min-work=5"],   # the order that silently loosened
+])
+def test_duplicate_filter_keys_strictest_wins(order):
+    """0.7.2 (E-ledger): `dict()` on the pair list kept the LAST occurrence,
+    so `--filter min-work=50 --filter min-work=5` silently discarded the
+    user's stricter constraint -- a quietly-dropped filter, the exact
+    failure class the loud-error design exists to prevent. Repeated keys
+    AND together, and for a threshold AND means max."""
+    from claude_session_backup.commands import _aggregate_filters
+    from claude_session_backup.cli import build_parser
+
+    args = build_parser().parse_args(
+        ["show", "abc"] + [x for f in order for x in ("--filter", f)])
+    assert _aggregate_filters(args.filters) == {"min-work": 50}
+
+
+def test_filter_rejects_negative_min_work(capsys):
+    """0.7.2 (E-ledger): `min-work=-5` was silently accepted as a no-op --
+    the only adversarial input that produced no error."""
+    from claude_session_backup.cli import build_parser
+    import pytest as _pytest
+    with _pytest.raises(SystemExit):
+        build_parser().parse_args(["show", "abc", "--filter", "min-work=-5"])
+    assert "non-negative" in capsys.readouterr().err
+
+
 def test_filter_rejects_bare_number(capsys):
     """`--filter 5` was the old syntax. It must fail loudly rather than be
     silently reinterpreted."""
@@ -945,11 +973,17 @@ def test_filter_rejects_unknown_key(capsys):
 
 
 def test_filter_rejects_non_integer_value(capsys):
+    """The message must describe what to TYPE, not leak an internal
+    identifier -- the negative-floor fix briefly made this read
+    `expects _nonneg_int, got 'lots'` (tester pass 3, Finding B)."""
     from claude_session_backup.cli import build_parser
     import pytest as _pytest
     with _pytest.raises(SystemExit):
         build_parser().parse_args(["show", "abc", "--filter", "min-work=lots"])
-    assert "expects" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "non-negative integer" in err
+    assert "_nonneg_int" not in err, (
+        "a private Python identifier is not a user instruction")
 
 
 def test_show_all_does_not_share_a_dest_with_all_folders():

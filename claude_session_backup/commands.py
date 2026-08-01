@@ -1524,19 +1524,69 @@ def _tier_folders(folders):
     from . import toolpaths as _tp
 
     worked, touched_only, low = [], [], []
+    scratch_candidates = []
     for f in folders:
         path = f["folder_path"]
         # A resolvable-but-missing path is only "low value" when nothing
         # was worked there; a folder with real work that has since been
         # deleted is history worth showing.
         missing = _row_get(f, "path_exists") == 0
-        if _tp.looks_like_scratch(path) or (missing and not f["usage_count"]):
+        if _tp.looks_like_scratch(path):
+            if f["usage_count"]:
+                scratch_candidates.append(f)
+            else:
+                low.append(f)
+        elif missing and not f["usage_count"]:
             low.append(f)
         elif f["usage_count"]:
             worked.append(f)
         else:
             touched_only.append(f)
+
+    # PROMINENT scratch escapes the collapse (F1, user-specified rule:
+    # usage_count > 10 OR rank <= 10 over the session's worked rows).
+    # The unconditional scratch->low rule misrepresented sessions whose
+    # scratchpad IS the workplace -- measured, one real session's #1
+    # folder (207x) was hidden behind "(N hidden)" -- and for purge-prone
+    # Claude Code scratchpads, surfacing high-work scratch is a recovery
+    # affordance: those dirs hold the session's probe scripts and tools,
+    # and are reused across sessions as tool sheds. Promoted rows carry a
+    # `(scratch)` tag so the display stays honest about what they are.
+    if scratch_candidates:
+        ranked = sorted(worked + scratch_candidates,
+                        key=lambda f: -f["usage_count"])
+        rank_of = {id(f): i + 1 for i, f in enumerate(ranked)}
+        for f in scratch_candidates:
+            if f["usage_count"] > 10 or rank_of[id(f)] <= 10:
+                try:
+                    f["_scratch_promoted"] = True
+                except TypeError:  # sqlite3.Row -- tolerate, tag is cosmetic
+                    pass
+                worked.append(f)
+            else:
+                low.append(f)
+        worked.sort(key=lambda f: -f["usage_count"])
+
+    # Counts matter inside the collapse too ("at the very least we should
+    # be counting"): order the hidden rows by work, so `--all` reads
+    # most-material-first.
+    low.sort(key=lambda f: (-f["usage_count"], f["folder_path"]))
     return worked, touched_only, low
+
+
+def _aggregate_filters(pairs) -> dict:
+    """Combine repeated ``--filter KEY=VALUE`` pairs: the STRICTEST wins.
+
+    ``dict()`` on the pair list kept the LAST occurrence, so ``--filter
+    min-work=50 --filter min-work=5`` silently discarded the stricter
+    constraint -- a quietly-dropped filter, the failure class the loud
+    unknown-key errors exist to prevent. Repeated filters AND together;
+    for a count threshold, AND means ``max``.
+    """
+    out: dict = {}
+    for key, value in pairs or []:
+        out[key] = max(value, out[key]) if key in out else value
+    return out
 
 
 def _apply_work_filter(worked, min_work: int):
@@ -1594,15 +1644,20 @@ def _low_reason(f) -> str:
 def _print_low_value_note(low, show_all: bool) -> None:
     n = len(low)
     word = "path" if n == 1 else "paths"
+    # Never hide the aggregate (F1, mirroring --filter's rule): a big
+    # hidden work total should be visible AS a number before anyone runs
+    # --all.
+    total = sum(f["usage_count"] for f in low)
+    units = f", {total} work units" if total else ""
     if show_all:
-        print(f"\n  Low value ({n} {word} -- scratch or unresolved):")
+        print(f"\n  Low value ({n} {word}{units} -- scratch or unresolved):")
     else:
         # `--all`, NOT `--all-folders`: this hint is printed by `csb show`,
         # which has no --all-folders flag (that one lives on list/scan/tree
         # and means "don't truncate to top-N"). Naming it here sent users
         # straight into `unrecognized arguments: --all-folders`.
-        print(f"\n  ({n} low-value {word} hidden -- scratch dirs and unresolved "
-              f"paths; --all to show)")
+        print(f"\n  ({n} low-value {word} hidden{units} -- scratch dirs and "
+              f"unresolved paths; --all to show)")
 
 
 def _resolve_session_or_exit(
@@ -1676,7 +1731,7 @@ def cmd_show(args) -> int:
         print(f"No session found matching '{args.session_id}'", file=sys.stderr)
         return 1
 
-    filters = dict(getattr(args, "filters", None) or [])
+    filters = _aggregate_filters(getattr(args, "filters", None))
     _render_show(session, show_all=getattr(args, "show_all", False),
                  min_work=filters.get("min-work", 0))
     return 0
@@ -1845,6 +1900,8 @@ def _render_show(session: dict, show_all: bool = False,
             print(f"\n  Working directories:")
             for f in worked:
                 marker = " [start]" if f["is_start_folder"] else ""
+                if _row_get(f, "_scratch_promoted"):
+                    marker += " (scratch)"
                 print(f"    {f['folder_path']}  ({f['usage_count']}x){marker}")
             if thin:
                 print(_thin_note(thin, min_work))
@@ -1857,7 +1914,9 @@ def _render_show(session: dict, show_all: bool = False,
                 _print_low_value_note(low, show_all=show_all)
                 if show_all:
                     for f in low:
-                        print(f"    {f['folder_path']}  {_low_reason(f)}")
+                        count = (f"  ({f['usage_count']}x)"
+                                 if f["usage_count"] else "")
+                        print(f"    {f['folder_path']}{count}  {_low_reason(f)}")
         return
 
     # Rich path
@@ -1944,6 +2003,8 @@ def _render_show(session: dict, show_all: bool = False,
             row.append(f"  ({f['usage_count']}x)", style="dim")
             if is_start:
                 row.append(" [start]", style="yellow")
+            if _row_get(f, "_scratch_promoted"):
+                row.append(" (scratch)", style="dim")
             if _row_get(f, "path_exists") == 0:
                 row.append("  [not found]", style="dim yellow")
             console.print(row)
@@ -1966,20 +2027,25 @@ def _render_show(session: dict, show_all: bool = False,
             console.print()
             n = len(low)
             word = "path" if n == 1 else "paths"
+            low_total = sum(f["usage_count"] for f in low)
+            units = f", {low_total} work units" if low_total else ""
             if show_all:
-                console.print(Text(f"  Low value ({n} {word} -- scratch or unresolved):",
-                                   style="dim"))
+                console.print(Text(
+                    f"  Low value ({n} {word}{units} -- scratch or unresolved):",
+                    style="dim"))
                 for f in low:
                     row = Text()
                     row.append("    ")
                     row.append(f["folder_path"], style="grey50")
+                    if f["usage_count"]:
+                        row.append(f"  ({f['usage_count']}x)", style="dim")
                     row.append(f"  {_low_reason(f)}", style="dim")
                     console.print(row)
             else:
                 # `--all`, not `--all-folders` -- see the plain-renderer note.
                 console.print(Text(
-                    f"  ({n} low-value {word} hidden -- scratch dirs and "
-                    f"unresolved paths; --all to show)", style="dim"))
+                    f"  ({n} low-value {word} hidden{units} -- scratch dirs "
+                    f"and unresolved paths; --all to show)", style="dim"))
 
 
 def cmd_restore(args) -> int:
@@ -4735,38 +4801,21 @@ def cmd_scan(args) -> int:
     # (e.g., user deleted the folder and wants to recover the sessions that
     # were in it). The SQL pass against the DB handles missing paths fine.
     has_wildcard = pattern_input.endswith("*")
-    if not has_wildcard and deleted_filter == "active":
-        if exact_value and not Path(exact_value).exists():
-            print(
-                f"[warning] '{pattern_input}' (resolved: {exact_value}) does not exist; "
-                f"falling back to broad-term search if a term was provided.",
-                file=sys.stderr,
-            )
-            if term is not None:
-                # Fall back to broad term search
-                try:
-                    conn = open_db(config["index_path"])
-                    init_schema(conn)
-                    results = find_sessions_by_term(
-                        conn, term, top_n=top_n, deleted_filter=deleted_filter,
-                    )
-                    conn.close()
-                except Exception:
-                    results = []
-                return _render_scan_results(
-                    results, args, config,
-                    scope_label=_decorate_scope_label(f"matching '{term}'", deleted_filter),
-                    quiet=quiet,
-                    deleted_filter=deleted_filter,
-                )
-            else:
-                # No fallback term -> empty result set
-                return _render_scan_results(
-                    [], args, config,
-                    scope_label=_decorate_scope_label(f"under {exact_value}", deleted_filter),
-                    quiet=quiet,
-                    deleted_filter=deleted_filter,
-                )
+    if (not has_wildcard and deleted_filter == "active"
+            and exact_value and not Path(exact_value).exists()):
+        # Warn -- but NEVER stop (0.7.2). This used to return [] (or fall
+        # back to a BROAD term search, silently abandoning the path scope)
+        # without ever querying the index. Existence is a confidence hint,
+        # not a filter: the index is the only place a vanished folder's
+        # history lives, and "the folder is gone" describes the exact
+        # situation the recovery flow exists for. The SQL pass below
+        # handles missing paths fine -- its own comment has said so all
+        # along.
+        print(
+            f"[warning] '{pattern_input}' (resolved: {exact_value}) does not "
+            f"exist on disk; searching the index anyway.",
+            file=sys.stderr,
+        )
 
     # Step 1: Filesystem scan (only when pattern resolves to a concrete path).
     # For wildcard patterns we skip the filesystem step -- scan_for_path doesn't

@@ -103,15 +103,29 @@ POSIX_PATH = re.compile(
     + r"|/(?:" + _POSIX_ROOTS + r")(?:/[^\s\"'|<>;&,)]*)?)"
 )
 
-#: `cd` / `pushd` target -- the shell literally moved there, so it wins
-#: primary resolution over any other path in the same command.
+#: `cd` / `pushd` target -- the shell literally moved there, which is the
+#: FACT the primary ranking leans on.
+#:
+#: Quote-aware for the same reason QUOTED_WIN_PATH exists: a quoted target
+#: may contain spaces, and slicing at the first whitespace fabricated a
+#: fragment (`cd "C:\\Program Files\\App"` -> base `C:\\Program`) that then
+#: WON primary as a "corroborated fact" while the real target failed the
+#: prefix test against the wrong base. The general extractor was fixed
+#: first and this parallel parser was missed -- caught by the third
+#: adversarial pass.
 CD_TARGET = re.compile(
-    r"(?:^|[\s;&|(])(?:cd|pushd)\s+(?:/d\s+)?[\"']?([^\s\"'&|;]+)", re.IGNORECASE
+    r"(?:^|[\s;&|(])(?:cd|pushd)\s+(?:/d\s+)?"
+    r"(?:\"([^\"\n]+)\"|'([^'\n]+)'|([^\s\"'&|;]+))",
+    re.IGNORECASE,
 )
 
-#: Shell metacharacters. A candidate containing any of these is a glob or an
-#: unexpanded variable -- a query or a placeholder, never a location.
-_METACHARS = re.compile(r"[*?$%{}\[\]]")
+#: Shell metacharacters. A candidate containing any of these is a glob, an
+#: unexpanded variable, or (backtick) a PowerShell escape / POSIX command
+#: substitution absorbed into the match -- a query or a placeholder, never a
+#: location. A real index carried ``C:\\Users\\Extreme` `` with a work unit.
+#: (An 8.3 short name like ``PROGRA~1`` uses ``~``, not a backtick, and is
+#: unaffected.)
+_METACHARS = re.compile(r"[*?$%{}\[\]`]")
 
 #: Path components that mark scratch space. Matched per-component and
 #: exactly, so `C:\code\tmpl-project` is NOT scratch.
@@ -214,6 +228,15 @@ def is_plausible_folder(path: str) -> bool:
     # from a diagnostic `echo`. All three were found in a real index.
     if ":" in body:
         return False
+    # rule 8: an all-dots component (3+). Found as `C:\Users\...` -- prose
+    # using "..." as et-cetera inside a command -- and dangerous precisely
+    # because it DEFEATED the existence safety net: Win32 strips trailing
+    # dots, so the probe resolved it to the real C:\Users and stamped it
+    # verified-existing. No distinct directory can be addressed by an
+    # all-dots name on Windows, so it is rejected before any probe.
+    # (`.` and `..` never reach here -- normalize collapses them.)
+    if re.search(r"(^|\\)\.{3,}(\\|$)", path):
+        return False
     # rule 7: an unexpanded home marker. `~` cannot be resolved for a
     # transcript that may have come from another machine or another user, and
     # resolving it against THIS machine would fabricate a location. Measured:
@@ -249,16 +272,40 @@ EXTENSIONLESS_FILES = frozenset({
 })
 
 
+#: Dot-names that are conventionally DIRECTORIES. The complement of this
+#: list -- any other leading-dot final component -- defaults to FILE, since
+#: dotfiles (.gitignore, .prettierrc, .npmrc, ...) vastly outnumber dot-dirs
+#: in practice, and the two errors are not symmetric: a wrong "file"
+#: mis-credits by one level (the parent), while a wrong "folder" fabricates
+#: a place users see in rankings.
+DOT_DIRECTORY_NAMES = frozenset({
+    ".git", ".github", ".venv", ".vscode", ".idea", ".claude", ".ssh",
+    ".config", ".cache", ".local", ".tox", ".mypy_cache", ".pytest_cache",
+    ".gradle", ".m2", ".npm", ".cargo", ".rustup", ".docker", ".aws",
+    ".azure", ".terraform", ".next", ".nuxt", ".svn", ".hg",
+    ".devcontainer", ".vs", ".dzlp",
+})
+
+
 def _looks_like_file(candidate: str) -> bool:
     """Guess whether a candidate names a file rather than a directory.
 
     A GUESS, used only when :func:`_folder_of` cannot get an answer from the
-    filesystem. Two signals: a trailing extension, or a conventional
-    extensionless filename (see :data:`EXTENSIONLESS_FILES`).
+    filesystem -- which for a backup tool is the COMMON case, since indexed
+    transcripts routinely name paths that were deleted or never existed on
+    this machine.
+
+    Dot-names are decided FIRST, by :data:`DOT_DIRECTORY_NAMES`, never by
+    the extension regex: ``.gitignore`` (9 letters) exceeds the extension
+    cap and read as a folder, while ``.git`` FITS the cap and read as a
+    file -- foreign transcripts got both directions wrong. After that: a
+    trailing extension, or a conventional extensionless filename.
     """
+    final = re.split(r"[\\/]", candidate)[-1]
+    if final.startswith(".") and final not in (".", ".."):
+        return final.lower() not in DOT_DIRECTORY_NAMES
     if re.search(r"\.[A-Za-z0-9]{1,6}$", candidate):
         return True
-    final = re.split(r"[\\/]", candidate)[-1]
     return final.lower() in EXTENSIONLESS_FILES
 
 
@@ -270,11 +317,66 @@ REL_PATH = re.compile(
 )
 
 
+#: A QUOTED path may contain spaces AND commas -- the quote is the boundary
+#: the bare patterns lack (space is a hard stop; comma is a deliberate
+#: prose-list boundary, so `see C:\\a, C:\\b` never glues). The first cut of
+#: this honored quotes for the DRIVE-LETTER form only; quoted Git-Bash/WSL
+#: and POSIX spellings fell through to the bare pattern, and
+#: `"/d/M/Software/_DeDRM, Proxies, ..."` truncated at the comma -- 14
+#: credited work units on a fabricated fragment, found by the user in a
+#: real session (the THIRD fix-one-call-site-miss-the-parallel instance of
+#: this effort). A quote now protects all three spellings alike.
+_ABS_HEAD = (
+    r"[A-Za-z]:[\\/]"                  # C:\ and C:/
+    r"|/(?:mnt/)?[A-Za-z]/"            # /c/... and /mnt/c/...
+    r"|/(?:" + _POSIX_ROOTS + r")/"    # allowlisted POSIX roots
+)
+QUOTED_ABS_PATH = re.compile(
+    r'"((?:' + _ABS_HEAD + r')[^"\n|<>]*)"'
+    r"|'((?:" + _ABS_HEAD + r")[^'\n|<>]*)'"
+)
+
+#: Quoted RELATIVE token (contains a separator, no drive/root anchor).
+#: Feeds resolve_relative_paths, where the EXISTENCE GATE disambiguates --
+#: so commas and spaces inside quotes are safe by construction there too:
+#: `cd /d/M && python "Software/_DeDRM, .../x.py"` resolves the real deep
+#: folder instead of stopping at `Software`.
+QUOTED_REL_TOKEN = re.compile(
+    r'"([^"\n:|<>*?]*?/[^"\n:|<>*?]+)"'
+    r"|'([^'\n:|<>*?]*?/[^'\n:|<>*?]+)'"
+)
+
+
 def extract_paths_from_command(command: str) -> list[str]:
-    """Absolute paths mentioned in a shell command, in order of appearance."""
+    """Absolute paths mentioned in a shell command, in order of appearance.
+
+    ORDER IS A CONTRACT: primary resolution is built on "the first path
+    mentioned". An earlier implementation concatenated the Windows-form
+    matches ahead of the POSIX-form matches, so ``/c/a`` at character 3
+    sorted after a Windows-spelled literal 80 characters later -- while
+    this docstring claimed source order. All patterns now merge on match
+    position; overlapping spans dedupe to the earliest-starting, longest
+    match, so the quoted form wins over the bare fragment it contains.
+    """
     if not command:
         return []
-    return WIN_PATH.findall(command) + POSIX_PATH.findall(command)
+    cands: list[tuple[int, int, str]] = []
+    for m in QUOTED_ABS_PATH.finditer(command):
+        text = m.group(1) or m.group(2)
+        if text and text.strip():
+            cands.append((m.start(), m.end(), text.strip()))
+    for rx in (WIN_PATH, POSIX_PATH):
+        for m in rx.finditer(command):
+            cands.append((m.start(1), m.end(1), m.group(1)))
+    cands.sort(key=lambda t: (t[0], -t[1]))
+    out: list[str] = []
+    covered: list[tuple[int, int]] = []
+    for start, end, text in cands:
+        if any(start >= cs and end <= ce for cs, ce in covered):
+            continue                       # bare fragment inside a quoted span
+        covered.append((start, end))
+        out.append(text)
+    return out
 
 
 def resolve_relative_paths(command: str, base: str) -> list[str]:
@@ -301,8 +403,14 @@ def resolve_relative_paths(command: str, base: str) -> list[str]:
     if not command or not base:
         return []
     out: list[str] = []
-    for token in REL_PATH.findall(command):
-        if token.startswith("/") or ":" in token:
+    tokens: list[str] = list(REL_PATH.findall(command))
+    # Quoted relative tokens carry spaces and commas the bare REL pattern
+    # cannot -- the existence gate below disambiguates them exactly as it
+    # does every other relative token.
+    for m in QUOTED_REL_TOKEN.finditer(command):
+        tokens.append((m.group(1) or m.group(2) or "").strip())
+    for token in tokens:
+        if not token or token.startswith(("/", "\\")) or ":" in token:
             continue                               # absolute; handled above
         candidate = token.rstrip("/")
         if _looks_like_file(candidate):
@@ -359,16 +467,54 @@ def _folder_of(candidate: str) -> str:
     return os.path.dirname(cand) if _looks_like_file(cand) else cand
 
 
+def _effective_base(tool_name: str, tool_input: dict,
+                    cwd: Optional[str] = None
+                    ) -> tuple[Optional[str], bool]:
+    """``(base, from_cd)`` -- where the shell stood, and whether an
+    explicit ``cd``/``pushd`` put it there.
+
+    The boolean matters because an explicit move is a *fact* the ranking
+    can lean on (see :func:`touched_folders_ordered`), while the ambient
+    session cwd is not.
+
+    A RELATIVE target resolves lexically against the incoming cwd --
+    ``cd ..`` is the parent, ``cd foo`` is ``cwd\\foo`` -- because taking
+    the token at face value emitted bare words as folders: a literal
+    ``-`` carried work credit in three real sessions, from the common
+    ``cd "$BR"; ...; cd - >/dev/null`` loop idiom. ``cd -`` ("previous
+    directory") is unknowable from the transcript and is discarded, as is
+    any relative target when no cwd exists to resolve it. No ``_folder_of``
+    on cd targets: a cd target is a directory by definition, and the
+    file-guess could wrongly dirname a dotted directory name.
+
+    Known simplification: multiple ``cd``s in one command resolve to the
+    FIRST plausible target; a real shell ends at the last.
+    """
+    cwd_key = normalize(cwd or "")
+    if not (cwd_key and is_plausible_folder(cwd_key)):
+        cwd_key = None
+    if isinstance(tool_input, dict) and tool_name in COMMAND_TOOLS:
+        for m in CD_TARGET.finditer(tool_input.get("command") or ""):
+            # Group 1/2: quoted target (may contain spaces); group 3: bare.
+            t = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+            if not t or t == "-":
+                continue                     # unknowable: previous directory
+            if re.match(r"^[A-Za-z]:", t) or t.startswith(("/", "\\", "~")):
+                cand = t                     # absolute-form (~ dies at rule 7)
+            elif cwd_key:
+                cand = cwd_key + "\\" + t.replace("/", "\\")
+            else:
+                continue                     # relative with nothing to anchor
+            key = normalize(cand)
+            if key and is_plausible_folder(key):
+                return key, True
+    return cwd_key, False
+
+
 def effective_cwd(tool_name: str, tool_input: dict,
                   cwd: Optional[str] = None) -> Optional[str]:
     """Where this call's shell actually stood: its ``cd`` target, else cwd."""
-    if isinstance(tool_input, dict) and tool_name in COMMAND_TOOLS:
-        for target in CD_TARGET.findall(tool_input.get("command") or ""):
-            key = normalize(_folder_of(target))
-            if key and is_plausible_folder(key):
-                return key
-    key = normalize(cwd or "")
-    return key if key and is_plausible_folder(key) else None
+    return _effective_base(tool_name, tool_input, cwd)[0]
 
 
 def touched_folders_ordered(tool_name: str, tool_input: dict,
@@ -402,39 +548,54 @@ def touched_folders_ordered(tool_name: str, tool_input: dict,
     elif tool_name in COMMAND_TOOLS:
         cmd = tool_input.get("command")
         if isinstance(cmd, str):
-            abs_paths = [_folder_of(c) for c in extract_paths_from_command(cmd)]
-            # The `cd` ARGUMENT is itself an absolute path, but it says
-            # where the shell STANDS -- not what the call worked on. Left
-            # in place it would always sort first and bury the subfolder
-            # the command actually operated in (`cd repo && pytest
-            # tests/x.py` would forever read as work at the repo root).
-            # Drop it from the work candidates; it is re-appended last
-            # below, so it still counts as touched and still becomes the
-            # primary when nothing more specific exists.
-            base = effective_cwd(tool_name, tool_input, cwd)
-            if base and abs_paths and normalize(abs_paths[0]) == base:
-                abs_paths = abs_paths[1:]
-            raw.extend(abs_paths)
+            abs_keys: list[str] = []
+            for c in extract_paths_from_command(cmd):
+                k = normalize(_folder_of(c))
+                if k and is_plausible_folder(k) and k not in abs_keys:
+                    abs_keys.append(k)
+            base, from_cd = _effective_base(tool_name, tool_input, cwd)
+            if base and base in abs_keys:
+                # The base is handled by rank below, never as a work
+                # candidate in the abs list.
+                abs_keys.remove(base)
+            rel = resolve_relative_paths(cmd, base) if base else []
 
-    ordered: list[str] = []
+            # Rank by CERTAINTY of evidence, not syntax of mention.
+            #
+            # An explicit cd is a FACT: the shell demonstrably moved
+            # there. An absolute path written in the command text is a
+            # GUESS: operand or string literal, indistinguishable without
+            # executing the command. So when a cd is present, only paths
+            # the move CORROBORATES (inside the target's subtree, or
+            # resolved relative to it) may outrank the target itself;
+            # everything else demotes to presence. Measured on 4,532 real
+            # commands before adoption -- the decisive case was a literal
+            # inside sed replacement text that happens to EXIST on disk,
+            # which neither payload parsing nor an existence rule could
+            # catch.
+            #
+            # Without a cd the ambient cwd is NOT promoted the same way:
+            # doing so re-flattens work onto the launch directory (928
+            # measured commands), which is the original #56 bug. Ranking
+            # there stays: explicit absolutes, resolved relatives, cwd.
+            if from_cd and base:
+                prefix = base + "\\"
+                under = [k for k in abs_keys if k.startswith(prefix)]
+                elsewhere = [k for k in abs_keys if not k.startswith(prefix)]
+                seq = under + rel + [base] + elsewhere
+            else:
+                seq = abs_keys + rel + ([base] if base else [])
+            ordered: list[str] = []
+            for k in seq:
+                if k not in ordered:
+                    ordered.append(k)
+            return ordered
+
+    ordered = []
     for candidate in raw:
         key = normalize(candidate)
         if key and is_plausible_folder(key) and key not in ordered:
             ordered.append(key)
-
-    # Relative tokens resolved against where the shell stood, then the
-    # shell's own position last -- so primary resolution prefers, in
-    # order: an explicit absolute target, a resolved relative target, and
-    # only then "wherever we happened to be standing".
-    if tool_name in COMMAND_TOOLS:
-        base = effective_cwd(tool_name, tool_input, cwd)
-        if base:
-            for resolved in resolve_relative_paths(
-                    tool_input.get("command") or "", base):
-                if resolved not in ordered:
-                    ordered.append(resolved)
-            if base not in ordered:
-                ordered.append(base)
     return ordered
 
 
@@ -454,23 +615,28 @@ def primary_folder(tool_name: str, tool_input: dict,
                    cwd: Optional[str] = None) -> Optional[str]:
     """The ONE folder this call did its work in.
 
-    Resolution order, **most specific first**:
+    Ranked by **certainty of evidence, not syntax of mention** (0.7.2).
+
+    With an explicit ``cd``/``pushd`` -- a *fact*, the shell demonstrably
+    moved there:
 
     1. the structured path of a file/dir tool (``Read``/``Edit``/``Glob``)
-    2. the first absolute path written in the command -- explicit intent
-    3. a relative path resolved against the shell's position, e.g.
-       ``cd repo && pytest tests/x.py`` -> ``repo\\tests``
-    4. the effective cwd -- the ``cd`` target if there was one, else the
-       session cwd. Reached when the call named no path at all
-       (``cd repo && git status``), which genuinely happened *there*.
+    2. absolute paths **under** the cd target -- corroborated by the move,
+       so subfolder precision survives
+    3. relative paths resolved against the target
+       (``cd repo && pytest tests/x.py`` -> ``repo\\tests``)
+    4. the cd target itself
+    5. absolute paths elsewhere -- uncorroborated *guesses* (operand or
+       string literal, indistinguishable); presence only
 
-    Note what is deliberately NOT first: the ``cd`` target. A command that
-    moves into a repository and then works on ``tests/x.py`` did its work
-    in ``tests``, not at the root -- crediting the root buries every
-    subfolder under one big number, which is exactly the flattening this
-    issue set out to remove. The ``cd`` target still supplies the base for
-    resolving those relative paths, and still wins when nothing more
-    specific exists.
+    Without a cd, ranking is unchanged from #56: explicit absolutes, then
+    resolved relatives, then the session cwd. The ambient cwd is NOT
+    promoted the way a cd target is -- doing so re-flattens work onto the
+    launch directory, which is the original bug.
+
+    Existence plays no role in any of this: a deleted repo named as a
+    plain operand still takes the credit, because the transcript is a
+    historical record.
 
     Exactly one unit of work per call, so totals stay comparable to the
     session's tool-call count and the launch directory cannot win by

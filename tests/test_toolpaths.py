@@ -524,6 +524,67 @@ def test_ordinary_missing_folders_are_not_dirnamed():
     assert tp._folder_of("C:\\gone\\proj") == "C:\\gone\\proj"
 
 
+# ── the dot-name rule (0.7.2): decided by allowlist, not extension ───
+#
+# Foreign transcripts broke BOTH ways. `.gitignore` (9 letters) exceeds
+# the 6-char extension cap, so a since-deleted dotfile stored whole as a
+# "folder". Meanwhile `.git` FITS the cap, classified as a file, and a
+# foreign repo's `.git` directory was dirnamed away. The extension regex
+# no longer decides dot-names at all: a known-directory allowlist does,
+# and unknown dot-names default to FILE -- a wrong "file" mis-credits by
+# one level (the parent); a wrong "folder" fabricates a place. Precision
+# doctrine prefers the smaller error. The filesystem still overrides
+# both whenever the path exists.
+
+@pytest.mark.parametrize("dotfile", [
+    ".gitignore", ".editorconfig", ".gitattributes", ".prettierrc",
+    ".dockerignore", ".customrc",   # unknown dot-name -> file by default
+])
+def test_foreign_dotfiles_credit_their_parent(dotfile):
+    assert tp._folder_of("C:\\gone\\repo\\" + dotfile) == "C:\\gone\\repo"
+
+
+@pytest.mark.parametrize("dotdir", [".git", ".github", ".venv", ".vscode",
+                                    ".claude", ".ssh", ".config"])
+def test_foreign_dot_directories_are_kept(dotdir):
+    """The mirror-image bug: these FIT the extension cap and were being
+    dirnamed away when the filesystem could not answer."""
+    p = "C:\\gone\\repo\\" + dotdir
+    assert tp._folder_of(p) == p
+
+
+def test_real_unknown_dot_directory_survives_via_the_filesystem(tmp_path):
+    """The allowlist is only the FALLBACK. An existing directory with an
+    unknown dot-name is classified by the filesystem, not the guess."""
+    d = tmp_path / ".customdir"
+    d.mkdir()
+    assert tp._looks_like_file(".customdir"), "precondition: guess says file"
+    assert tp._folder_of(str(d)) == tp.normalize(str(d))
+
+
+def test_plausible_rejects_trailing_backtick():
+    """B2: a PowerShell escape / POSIX substitution character absorbed
+    into the match. A real index carried ``C:\\Users\\Extreme` `` with a
+    work unit."""
+    assert not tp.is_plausible_folder("C:\\Users\\Extreme`")
+    assert not tp.is_plausible_folder("C:\\code\\`whoami`")
+
+
+def test_plausible_rejects_all_dots_component():
+    """Rule 8 (tester pass 3, Finding C): ``C:\\Users\\...`` came from
+    prose using ``...`` as et-cetera -- and it defeated the existence
+    safety net, because Win32 strips trailing dots so the probe resolved
+    it to the REAL ``C:\\Users`` and stamped it verified-existing. An
+    all-dots component (3+) cannot be a distinct addressable name on
+    Windows, so it is rejected lexically, before any probe."""
+    assert not tp.is_plausible_folder("C:\\Users\\...")
+    assert not tp.is_plausible_folder("C:\\code\\....\\x")
+    assert not tp.is_plausible_folder("\\home\\...")
+    # Interior dots are ordinary name characters -- untouched.
+    assert tp.is_plausible_folder("C:\\code\\a...b")
+    assert tp.is_plausible_folder("C:\\code\\release.v2")
+
+
 # ── the probe must run on the NORMALIZED spelling ────────────────────
 
 @pytest.mark.parametrize("spelling", [
@@ -557,13 +618,20 @@ def test_probe_runs_on_the_normalized_spelling(tmp_path, spelling):
 
 
 def test_dotfile_that_exists_is_recognized_as_a_file(tmp_path):
-    """The filesystem is what distinguishes `.gitignore` (file) from
-    `.github` (directory) -- no lexical rule can."""
+    """`.gitignore` (file) vs `.github` (directory), both on disk.
+
+    Historical note: this test originally asserted the lexical guess was
+    BLIND to `.gitignore` and only the filesystem could save it -- true at
+    the time, and precisely the E-ledger bug for foreign transcripts,
+    where there is no filesystem to ask. The dot-name rule now decides
+    both lexically; this test keeps the filesystem-backed case honest,
+    and the foreign cases live in test_foreign_dotfiles/dot_directories.
+    """
     f = tmp_path / ".gitignore"
     f.write_text("*.pyc", encoding="utf-8")
     d = tmp_path / ".github"
     d.mkdir()
 
-    assert not tp._looks_like_file(".gitignore"), "precondition: guess is blind"
+    assert tp._looks_like_file(".gitignore"), "the guess now knows dotfiles"
     assert tp._folder_of(str(f)) == tp.normalize(str(tmp_path))
     assert tp._folder_of(str(d)) == tp.normalize(str(d))
