@@ -9,6 +9,10 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+### Changed
+
+- **Git history rewritten (2026-08-02).** Routine cleanup: some large files were removed from git history to keep clones lean. Commits from v0.3.13 onward have new hashes (and are no longer commit-signed; all release tags were re-signed), while earlier history is untouched. If you cloned before 2026-08-02: re-clone, or `git fetch && git reset --hard origin/main`. Releases and PyPI packages are unaffected.
+
 ## [0.7.3] -- 2026-08-02 (beta)
 
 **Path-exposure rungs: pick how much you trust, everything colder comes with it.** The harvester inherently produces path mentions at different confidence levels, and no single display cut answers every question -- `.manifest`-class rows exist at the expressive end no matter how many lexical rules land, because lexical rules cannot decide a foreign path's nature. 0.7.3 stops fighting that shape-by-shape and exposes the spectrum itself, as selectable rungs on a `dazzle_lib.continuum.Continuum` -- csb becomes that module's first consumer outside dazzlecmd's orbit, deliberately (the canary role). Patch bump by project convention (minor = a new verb or major capability; this is within the #56 arc, default-invisible on an existing verb) -- new `--paths` flag, config keys, and additive schema v8 notwithstanding. **One `csb update rebuild-index` stamps provenance**; un-rebuilt sessions degrade to the neutral rung rather than lying about certainty.
