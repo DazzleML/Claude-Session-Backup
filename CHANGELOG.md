@@ -9,8 +9,19 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
-### Changed
+## [0.7.4] -- 2026-08-02 (beta)
 
+**Session naming, documented.** Every csb lookup -- `list`, `scan`, `tree`, `resume` -- matches against the session *name*, but nothing in the docs said so or suggested how to name one. This release fills that gap: naming is the habit that decides whether finding old work is an instant metadata filter or a content search. Docs only; no behavior change. 1342 tests pass.
+
+### Added
+- **[`docs/naming.md`](docs/naming.md)** -- the full treatment. Why metadata beats content search for "where's my work on X", the `PROJECT__DATE__topic` convention with its three-tier separator grammar (`__` field / `_` word / `-` compound), how to name (hand-typed `/rename` at session start; [claude-session-logger](https://github.com/DazzleML/claude-session-logger)'s `/renameAI` for a backlog of already-confusing sessions), the workflow that leaves a searchable trail, how Claude Code / the logger / csb divide the work, forking with the same convention so `csb tree` reads as a narrative, and anti-patterns.
+- **README "Naming sessions" section** -- the short version, placed first among the command sections: the convention, the payoff queries, and the habit of naming before working.
+
+### Docs
+- `docs/commands.md` cross-links naming from the search section -- if you reach for `csb search` to find a *project* rather than a *conversation*, the names are the problem.
+- Evidence folder tidy-up.
+
+### Changed
 - **Git history rewritten (2026-08-02).** Routine cleanup: some large files were removed from git history to keep clones lean. Commits from v0.3.13 onward have new hashes (and are no longer commit-signed; all release tags were re-signed), while earlier history is untouched. If you cloned before 2026-08-02: re-clone, or `git fetch && git reset --hard origin/main`. Releases and PyPI packages are unaffected.
 
 ## [0.7.3] -- 2026-08-02 (beta)
@@ -1087,7 +1098,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...v0.6.2

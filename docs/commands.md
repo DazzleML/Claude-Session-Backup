@@ -171,6 +171,8 @@ csb search "SC:N" "SI:N" "SA:N" -d . --match all     # ...that were also active 
 
 For metadata search (folder paths, project, session name), use `csb list <filter>` or `csb scan <term>` -- those are the right tools for "find sessions in this folder" rather than "find sessions about this topic."
 
+**If you find yourself reaching for `csb search` to locate a project rather than a conversation, the names are the problem.** Metadata queries are instant and content search isn't; a session named `PROJECT__DATE__topic` is findable with `csb list PROJECT`. See [naming.md](naming.md) for the convention and how `/rename` / `/renameAI` apply it.
+
 ## Fork lineage (csb tree)
 
 Forking a session -- `/branch`, continuing a `/rewind`, or `claude --fork-session -r` -- mints a **new** session that inherits the old one's history. `csb tree` shows how those sessions relate:

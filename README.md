@@ -60,6 +60,7 @@ csb backup
 
 ## Features
 
+- **Findable sessions**: hand-name each one with `/rename` as you start it, using `PROJECT__DATE__topic` -- `csb list`/`tree`/`resume` then become instant project views instead of content searches. See [naming](docs/naming.md)
 - **Guided setup**: `csb setup` configures the git backup store (detects ancestor repos, `--auto` for scripts) and closes with a state-aware checklist -- running unprotected requires an explicit `--index-only` sign-off, or csb reminds you on every run
 - **Full session preservation**: Every byte of JSONL, subagent data, tool results backed up via git
 - **Timeline view**: Sessions sorted by last use with relative dates, start folder, and top N working directories
@@ -91,6 +92,35 @@ csb status                      # Summary stats
 ```
 
 Every command, every flag, and the nitty-gritties live in **[docs/commands.md](docs/commands.md)**.
+
+### Naming sessions (do this one thing)
+
+Every csb lookup -- `list`, `scan`, `tree`, `resume` -- matches against the session **name**. Claude Code only assigns a UUID, so an unnamed vault is a wall of `3b0924e5-...` that you can only search by *content*. Naming is what makes it browsable, and it's the difference between finding old work in a second and excavating it.
+
+**Hand-name it with `/rename` the moment you walk into a new session**, before any work. You know what you set out to do; nothing else in the system does yet, and nothing reconstructs it as well later. Claude Code then shows that name at the top-right of the input bar, so it also tells you which window is which when several projects are open at once.
+
+The convention that makes lookups work -- **what**, **when**, **about**:
+
+```
+PROJECT__DATE__topic-words
+
+CLAUDE-SESSION-BACKUP__2026-7-26__add-tree-functionality
+DAZZLECMD__2026-7-5__fiber-nuance-with-FQCN
+```
+
+The project leads so prefix queries anchor; `__` separates fields, `-` joins compounds:
+
+```bash
+csb list DAZZLECMD                 # every session for a project -- instantly
+csb tree "CLAUDE-SESSION-BACKUP*"  # how that project's sessions forked
+csb resume DAZZLECMD__2026-7-5__fiber-nuance-with-FQCN
+```
+
+Renaming later is always safe -- names are written into the transcript and picked up on the next backup -- so rename if the work drifts, and name old sessions after the fact. Already sitting on a pile of unnamed ones? [claude-session-logger](https://github.com/DazzleML/claude-session-logger)'s `/renameAI` reads them and proposes names, so you don't have to reread transcripts to remember what each was about.
+
+The habit that pays: **rename first, then state your goal in the opening message** -- what you're accomplishing, which files, what to investigate. The name makes the session findable; that opening message becomes the first block in its log, so `csb search` can find it by a phrase you deliberately wrote. Design docs and postmortems that record `**Session:** <name>` close the loop the other way -- from an artifact back to the conversation that produced it.
+
+Full conventions, the workflow, the `/renameAI` mapping, and anti-patterns: **[docs/naming.md](docs/naming.md)**.
 
 ### Common workflows
 
