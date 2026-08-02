@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v6
+    - uses: actions/checkout@v7
       with:
         # On a manual run, build the requested tag/ref; on a release event the
         # default checkout already lands on the release's tag.
