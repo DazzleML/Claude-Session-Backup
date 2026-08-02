@@ -65,6 +65,17 @@ version = {attr = "claude_session_backup._version.PIP_VERSION"}
 where = ["."]
 include = ["claude_session_backup", "claude_session_backup.*"]
 
+[tool.repokit-common]
+# Config for the git-repokit-common subtree at scripts/repokit-common/.
+# Its tooling (sync-versions.py, hooks) ships generic and reads these keys
+# instead of being forked per project -- so the subtree can be pulled
+# forward without re-applying local edits.
+version-source = "claude_session_backup/_version.py"
+changelog = "CHANGELOG.md"
+repo-url = "https://github.com/DazzleML/Claude-Session-Backup"
+tag-prefix = "v"
+tag-format = "pep440"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = "test_*.py"

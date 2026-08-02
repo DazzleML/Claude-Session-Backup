@@ -70,11 +70,60 @@ The plugin is installed via `claude plugin marketplace add ./` + `claude plugin 
 ```
 tests/
   conftest.py         # Shared fixtures (mock_claude_dir, mock_db)
-  test_*.py           # Test files (73 tests across cli, index, scanner, metadata, timeline, lockfile, hook)
+  test_*.py           # Test files
+  checklists/         # Hand-runnable verification checklists, one per shipped feature
 scripts/
-  sync-versions.py    # Version automation
-  gh_issue_full.py    # GitHub issue viewer
+  repokit-common/     # Shared tooling, vendored as a git subtree (see below)
+                      #   sync-versions.py, gh_issue_full.py, gh_sub_issues.py,
+                      #   search_sesslog.py, extract_tool_result.py,
+                      #   generate-backlinks.py, install-hooks.sh, hooks/, demo/
 ```
+
+### Shared tooling: the `repokit-common` subtree
+
+Tooling shared across DazzleML projects is **not** copied into this repo. It is
+vendored as a squashed [git subtree](https://github.com/DazzleTools/git-repokit-common)
+at `scripts/repokit-common/`. `scripts/` itself stays free for csb-specific
+scripts.
+
+**Pull upstream changes:**
+
+```bash
+git subtree pull --prefix=scripts/repokit-common \
+  https://github.com/DazzleTools/git-repokit-common.git main --squash
+```
+
+**Do not edit files under `scripts/repokit-common/`.** They ship generic and
+read per-project settings from `pyproject.toml`:
+
+```toml
+[tool.repokit-common]
+version-source = "claude_session_backup/_version.py"
+changelog      = "CHANGELOG.md"
+repo-url       = "https://github.com/DazzleML/Claude-Session-Backup"
+tag-prefix     = "v"
+tag-format     = "pep440"
+```
+
+If the shared tooling does not fit, add a config key or send a fix upstream.
+Editing in place re-creates the drift the subtree exists to prevent, and the
+next `subtree pull` will conflict.
+
+*(Before v0.7.5 these files were plain copies. They drifted from upstream,
+missed upstream bug fixes, and in places still carried other projects'
+identities -- the hook installer announced a different project by name. That
+is the failure mode the subtree removes.)*
+
+**Version management** uses the subtree's script:
+
+```bash
+python scripts/repokit-common/sync-versions.py --check        # verify in sync
+python scripts/repokit-common/sync-versions.py --bump patch   # bump
+python scripts/repokit-common/install-hooks.sh                # auto-stamp on commit
+```
+
+The git hooks resolve `sync-versions.py` at either the flat or nested path, so
+they work regardless of which layout a consuming project uses.
 
 ## Key Design Principles
 

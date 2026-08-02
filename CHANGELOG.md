@@ -9,6 +9,25 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.7.5] -- 2026-08-02 (beta)
+
+**Shared tooling moved to the `git-repokit-common` subtree (#16).** `scripts/` held locally-copied tooling that had quietly drifted from upstream -- and, in places, was never adapted to csb at all. It now lives in a squashed subtree at `scripts/repokit-common/`, configured rather than forked. No runtime change; csb's package and CLI are untouched. 1342 tests pass.
+
+### Changed
+- **`scripts/repokit-common/`** -- [git-repokit-common](https://github.com/DazzleTools/git-repokit-common) added as a squashed subtree, nested so `scripts/` itself stays free for csb-specific tooling. Update with `git subtree pull --prefix=scripts/repokit-common <url> main --squash`.
+- **`pyproject.toml` gains `[tool.repokit-common]`** -- `version-source`, `changelog`, `repo-url`, `tag-prefix`, `tag-format`. The shared tooling ships generic and reads these, so a subtree pull no longer means re-applying local edits.
+- **13 stale copies removed from `scripts/`**: the version tooling, GitHub helpers, transcript helpers, hooks, and demo tooling now come from the subtree.
+- **`.claude/settings.local.json` is no longer tracked.** Claude Code's convention is that `settings.json` is shared and `settings.local.json` is per-developer; ours had been tracked since the initial scaffold and had accumulated 47 permission grants including machine-absolute paths to unrelated repositories. `.claude/` is now gitignored -- if you had local overrides there, they are untouched on disk, just no longer committed.
+
+### Fixed
+- **The git hooks silently stopped stamping versions under a nested layout.** The local copies hardcoded `scripts/sync-versions.py`; the upstream hooks resolve either the flat or nested path with a `find` fallback. Adopting them fixes a failure that produces no error -- just an unstamped `__version__`.
+- **`gh_issue_full.py` crashed on an explicit JSON `null` commit id** (`dict.get(key, "")` returns `None` when the key exists with a null value, so `[:7]` raised). Upstream's `(… or "")` guard is now in use.
+- **Tooling that belonged to other projects.** `install-hooks.sh` announced itself as the "wtf-restarted Git Hook Installer", and the VHS demo tape drove `comfydbg` -- copy-paste inheritance that had never been adapted. The subtree's versions are templated (`$CLI_COMMAND`) and project-agnostic.
+
+### Docs
+- **`CONTRIBUTING.md` documents the subtree** -- the pull command, the `[tool.repokit-common]` config block, and the rule that files under the subtree prefix must not be edited in place (add config or send a fix upstream, or the next pull conflicts).
+- README's naming section trimmed to a short high-value tease pointing at [`docs/naming.md`](docs/naming.md) -- the full conventions, workflow, and anti-patterns live there rather than in the README.
+
 ## [0.7.4] -- 2026-08-02 (beta)
 
 **Session naming, documented.** Every csb lookup -- `list`, `scan`, `tree`, `resume` -- matches against the session *name*, but nothing in the docs said so or suggested how to name one. This release fills that gap: naming is the habit that decides whether finding old work is an instant metadata filter or a content search. Docs only; no behavior change. 1342 tests pass.
@@ -1098,7 +1117,8 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...v0.6.3

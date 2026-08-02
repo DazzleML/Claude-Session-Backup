@@ -159,3 +159,9 @@ test_runs/
 revisions/
 private/claude/
 private/notes/
+
+# Claude Code per-developer overrides. `settings.json` is the shared file;
+# `settings.local.json` is personal -- it accumulates machine-absolute paths
+# and grants for unrelated projects, so it must not travel with the repo.
+# (Tracked from the initial scaffold by accident; untracked in v0.7.5.)
+.claude/
