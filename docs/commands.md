@@ -120,6 +120,22 @@ Because that walk identifies sessions by their project directory -- which is der
 - **`-NI` with `--deleted` (bare, i.e. `only`) can never match.** Deleted sessions exist only in the index -- a filesystem walk cannot find a file that is gone -- so the `deleted` scope depends on the index, and `-NI` is precisely the flag that bypasses it. csb says so explicitly rather than returning a bare empty result: *"-NI cannot find deleted sessions -- they exist only in the index, which -NI bypasses. Drop -NI."* (`--deleted all` is unaffected -- the filesystem pass still runs for the live half.)
 - **`-d` / `-D` / `-s` are mutually exclusive** with each other; `-NI` is not, which is why the combinations above are reachable at all.
 
+## Choosing how much path detail you see (`csb show --paths`)
+
+The harvester records path mentions at different confidence levels, and no single cut answers every question. `csb show --paths <level>` picks a rung on one ladder -- **selecting a level shows it and everything colder** (more trusted):
+
+| level | shows | notes |
+|---|---|---|
+| `cd` | only folders the shell provably stood in | the hyper-condensed view |
+| `verified` | + folders the existence probe confirmed | |
+| `approximated` | + unverifiable leaves **folded upward** into their nearest existing ancestor, counts merged, marked `(~)` | "someone wrote to something LIKE `X\a`; `X` exists; count `X`" |
+| `suspected` | everything stored, as extracted | **the default** -- identical to not passing the flag |
+| `junk` / `raw` / `all` | declared rungs with no stored population yet | selecting one says so honestly and shows `suspected` |
+
+This is the canonical statement of the ladder; other documents reference it. Persist a default with `csb config paths_level <level>`. The scratch-prominence boundary is also yours to tune: `csb config scratch_escape_min_work N` and `csb config scratch_escape_top_rank N`.
+
+**Display only, permanently.** `scan` and `search` MATCH against everything stored at every rung setting -- `csb scan -D <exact-folder>` keeps finding exact-folder history no matter how condensed anyone's display is. This is a design rule with its own tests, not a current implementation detail.
+
 ## Searching conversations
 
 Use `csb search` to find old sessions by **what was discussed**, not just by folder or name. The query is a case-insensitive literal substring by default; `-E` switches to Python regex.

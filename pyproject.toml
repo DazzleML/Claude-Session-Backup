@@ -36,6 +36,12 @@ dependencies = [
     # >=0.4.2 also supplies is_device_path, which keeps `2>/dev/null` and
     # Windows reserved names out of the folder index (#56).
     "dazzle-filekit>=0.4.2",
+    # Path-exposure rungs (#56/H2): the Continuum primitive -- ordered
+    # gradations with THAC0 fall-through. Already transitive via
+    # filekit; pinned explicitly because csb consumes a module that is
+    # not yet under dazzle-lib's api-stability lock (accepted: csb is
+    # deliberately its first outside consumer -- the canary).
+    "dazzle-lib>=0.8.2",
 ]
 
 [project.optional-dependencies]

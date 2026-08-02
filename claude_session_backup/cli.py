@@ -437,16 +437,54 @@ def build_parser():
     _add_common_flags(p_status)
 
     # show
-    p_show = sub.add_parser("show", help="Detailed session info with folder analysis")
+    p_show = sub.add_parser(
+        "show",
+        help="Detailed session info with folder analysis",
+        description=(
+            "Detailed session info with folder analysis.\n"
+            "\n"
+            "The folder display is a fixed pipeline; each knob works one stage:\n"
+            "  --paths <level>        which mentions count as places (a VIEW)\n"
+            "  (scratch escape)       config: scratch_escape_min_work / _top_rank\n"
+            "  --filter min-work=N    threshold on the surviving work rows\n"
+            "  --all                  reveal the collapsed low-value tier\n"
+            "\n"
+            # Prose lines stay unwrapped -- RawDescriptionHelpFormatter
+            # freezes any break we put here, while the options text below
+            # flows to terminal width; mixed wrapping reads as a glitch.
+            "Defaults: --paths suspected (everything stored; persist a choice with `csb config paths_level <level>`), no --filter (all work rows shown), low-value tier collapsed with an aggregate note.\n"
+            "Order matters: --paths approximated MERGES folded counts BEFORE --filter thresholds them."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _add_common_flags(p_show)
     p_show.add_argument("session_id", help="Session ID (prefix match supported)")
+    g_show_disp = p_show.add_argument_group(
+        "folder display -- what appears, in pipeline order")
     # Two ORTHOGONAL knobs, deliberately not one flag: --filter hides by
     # COUNT (a long tail of one-off touches), --all reveals what is hidden
     # by KIND (scratch dirs, unresolved paths) regardless of count. Note
     # this is NOT `--all-folders`: that flag means "don't truncate to top-N"
     # on list/scan, and reusing the name for classification would give one
     # flag two meanings across commands.
-    p_show.add_argument(
+    # Path-exposure rung (#56/H2): pick how much you trust, everything
+    # colder comes with it. `choices` makes unknown levels fail loudly,
+    # naming the valid ones. Selection is DISPLAY-only by design rule --
+    # scan/search matching is rung-blind, structurally (the query layer
+    # never imports pathlevels; a test pins it).
+    from .pathlevels import SELECTABLE_LEVELS
+    g_show_disp.add_argument(
+        "--paths", metavar="LEVEL", default=None,
+        choices=SELECTABLE_LEVELS,
+        help="How much path detail to show, coldest-to-warmest: cd (only "
+             "where the shell provably stood), verified (existing folders), "
+             "approximated (unverifiable leaves folded up to real "
+             "ancestors, marked (~)), suspected (everything stored -- the "
+             "default), junk/raw (declared, not yet populated), all. "
+             "Selecting a level shows it and everything colder. "
+             "Persist with: csb config paths_level <level>.",
+    )
+    g_show_disp.add_argument(
         "--filter", action="append", dest="filters", metavar="KEY=VALUE",
         type=_filter_kv({"min-work": _nonneg_int}),
         help="Narrow which working directories are shown. Repeatable; "
@@ -454,7 +492,7 @@ def build_parser():
              "with fewer than N work units). Hidden folders are summarized "
              "in a count line and remain findable by `csb scan`.",
     )
-    p_show.add_argument(
+    g_show_disp.add_argument(
         # dest is `show_all`, NOT `all_folders`. `--all-folders` on
         # list/scan/tree also writes to `all_folders` and means something
         # else ("don't truncate to top-N"), so sharing the dest would make

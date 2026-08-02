@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from . import toolpaths
+from . import pathlevels, toolpaths
 
 
 @dataclass
@@ -34,6 +34,11 @@ class SessionMetadata:
     # present here with a count of 0: findable by `csb scan`, uncredited
     # for ranking.
     folder_usage: dict[str, int] = field(default_factory=dict)
+    # Schema v8: how each folder entered the index -- `cd` (the shell
+    # stood there), `structured`, `relative`, or `extracted`. Feeds the
+    # path-exposure rung derivation; coldest-wins when a folder arrives
+    # by several routes across the session.
+    folder_provenance: dict[str, str] = field(default_factory=dict)
     # Set when tool-path harvesting ran. None means never harvested, which
     # consumers MUST render as "unmeasured" rather than "no folders".
     tool_paths_extracted: bool = False
@@ -62,6 +67,7 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     """
     folder_counter: Counter = Counter()   # folder -> WORK UNITS (#56)
     touched: set = set()                  # folders touched at all (presence)
+    provenance: dict = {}                 # folder -> coldest route (v8)
     seen_cwds: set = set()                # distinct session cwds observed
     first_cwd = None
     first_ts = None
@@ -155,9 +161,14 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
                         # PRESENCE: every folder the call touched, so scan
                         # can find the session (33% of folders are never
                         # any call's primary -- dropping them would
-                        # recreate the bug this fixes).
-                        for folder in toolpaths.touched_folders(name, tool_input, cwd):
+                        # recreate the bug this fixes). Provenance rides
+                        # along (v8), coldest route winning across calls.
+                        pairs = toolpaths.touched_with_provenance(
+                            name, tool_input, cwd)
+                        for folder, prov in pairs.items():
                             touched.add(folder)
+                            provenance[folder] = pathlevels.merge_provenance(
+                                provenance.get(folder), prov)
                         # WORK: exactly one unit per call, credited where
                         # the call actually operated.
                         primary = toolpaths.primary_folder(name, tool_input, cwd)
@@ -185,6 +196,9 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
         key = toolpaths.normalize(c)
         if key and toolpaths.is_plausible_folder(key):
             touched.add(key)
+            # The ambient cwd is a position fact: the shell stood there.
+            provenance[key] = pathlevels.merge_provenance(
+                provenance.get(key), "cd")
 
     # Work locations first (descending), so SQLite's ORDER BY matches the
     # in-memory ordering. Then PRESENCE-only rows at 0: touched but never
@@ -193,6 +207,8 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
         meta.folder_usage[path] = count
     for path in sorted(touched):
         meta.folder_usage.setdefault(path, 0)
+    for path in meta.folder_usage:
+        meta.folder_provenance[path] = provenance.get(path, "extracted")
 
     meta.tool_paths_extracted = True
 

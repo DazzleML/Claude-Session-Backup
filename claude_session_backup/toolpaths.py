@@ -517,86 +517,121 @@ def effective_cwd(tool_name: str, tool_input: dict,
     return _effective_base(tool_name, tool_input, cwd)[0]
 
 
-def touched_folders_ordered(tool_name: str, tool_input: dict,
-                            cwd: Optional[str] = None) -> list[str]:
-    """Every folder this call touched, deduped, **in source order**.
+def _ordered_with_provenance(tool_name: str, tool_input: dict,
+                              cwd: Optional[str] = None
+                              ) -> list[tuple[str, str]]:
+    """(folder, provenance) pairs, deduped, in ranking order.
 
-    Order matters: it is what makes "the first path mentioned" a
-    deterministic primary-resolution rule (see :func:`primary_folder`).
+    THE single source of truth for both presence and provenance --
+    ``touched_folders_ordered`` and ``touched_with_provenance`` are
+    derivations, so the two views cannot drift.
 
-    Includes relative paths resolved against the call's effective cwd --
-    without them, ``cd repo && pytest tests/x.py`` credits only ``repo``
-    and the subfolder where the work happened disappears.
+    Provenance vocabulary (schema v8), coldest first:
+
+      ``cd``         -- the shell stood there: an explicit cd/pushd target
+                        OR the ambient session cwd used as a base. Both are
+                        facts of position; the pre-#56 behavior the `cd`
+                        rung reconstructs was cwd-based, so both qualify.
+      ``structured`` -- a file/dir tool's own path argument.
+      ``relative``   -- a relative token resolved against the base,
+                        existence-gated at resolution.
+      ``extracted``  -- an absolute path lifted out of command text
+                        (operand or literal, undecidable).
     """
     if not isinstance(tool_input, dict):
         return []
 
-    raw: list[str] = []
     if tool_name in FILE_PATH_TOOLS:
         fp = tool_input.get("file_path") or tool_input.get("notebook_path")
         if isinstance(fp, str) and fp.strip():
-            raw.append(os.path.dirname(fp.strip()) or fp.strip())
-    elif tool_name in DIR_PATH_TOOLS:
+            cand = os.path.dirname(fp.strip()) or fp.strip()
+            key = normalize(cand)
+            if key and is_plausible_folder(key):
+                return [(key, "structured")]
+        return []
+
+    if tool_name in DIR_PATH_TOOLS:
         p = tool_input.get("path")
         if isinstance(p, str) and p.strip():
             # `path` USUALLY names a directory -- but Grep accepts a single
             # file, and taking the value verbatim stored those files as
-            # folders. This was the larger of the two file-as-folder causes:
-            # Read/Edit already dirname their input, so only this branch
-            # leaked whole file paths into the ranking.
-            raw.append(_folder_of(p.strip()))
-    elif tool_name in COMMAND_TOOLS:
+            # folders (measured: 38 rows, 30 credited).
+            key = normalize(_folder_of(p.strip()))
+            if key and is_plausible_folder(key):
+                return [(key, "structured")]
+        return []
+
+    if tool_name in COMMAND_TOOLS:
         cmd = tool_input.get("command")
-        if isinstance(cmd, str):
-            abs_keys: list[str] = []
-            for c in extract_paths_from_command(cmd):
-                k = normalize(_folder_of(c))
-                if k and is_plausible_folder(k) and k not in abs_keys:
-                    abs_keys.append(k)
-            base, from_cd = _effective_base(tool_name, tool_input, cwd)
-            if base and base in abs_keys:
-                # The base is handled by rank below, never as a work
-                # candidate in the abs list.
-                abs_keys.remove(base)
-            rel = resolve_relative_paths(cmd, base) if base else []
+        if not isinstance(cmd, str):
+            return []
+        abs_keys: list[str] = []
+        for c in extract_paths_from_command(cmd):
+            k = normalize(_folder_of(c))
+            if k and is_plausible_folder(k) and k not in abs_keys:
+                abs_keys.append(k)
+        base, from_cd = _effective_base(tool_name, tool_input, cwd)
+        if base and base in abs_keys:
+            # The base is handled by rank below, never as a work
+            # candidate in the abs list.
+            abs_keys.remove(base)
+        rel = resolve_relative_paths(cmd, base) if base else []
 
-            # Rank by CERTAINTY of evidence, not syntax of mention.
-            #
-            # An explicit cd is a FACT: the shell demonstrably moved
-            # there. An absolute path written in the command text is a
-            # GUESS: operand or string literal, indistinguishable without
-            # executing the command. So when a cd is present, only paths
-            # the move CORROBORATES (inside the target's subtree, or
-            # resolved relative to it) may outrank the target itself;
-            # everything else demotes to presence. Measured on 4,532 real
-            # commands before adoption -- the decisive case was a literal
-            # inside sed replacement text that happens to EXIST on disk,
-            # which neither payload parsing nor an existence rule could
-            # catch.
-            #
-            # Without a cd the ambient cwd is NOT promoted the same way:
-            # doing so re-flattens work onto the launch directory (928
-            # measured commands), which is the original #56 bug. Ranking
-            # there stays: explicit absolutes, resolved relatives, cwd.
-            if from_cd and base:
-                prefix = base + "\\"
-                under = [k for k in abs_keys if k.startswith(prefix)]
-                elsewhere = [k for k in abs_keys if not k.startswith(prefix)]
-                seq = under + rel + [base] + elsewhere
-            else:
-                seq = abs_keys + rel + ([base] if base else [])
-            ordered: list[str] = []
-            for k in seq:
-                if k not in ordered:
-                    ordered.append(k)
-            return ordered
+        # Rank by CERTAINTY of evidence, not syntax of mention.
+        #
+        # An explicit cd is a FACT: the shell demonstrably moved there.
+        # An absolute path written in the command text is a GUESS:
+        # operand or string literal, indistinguishable without executing
+        # the command. So when a cd is present, only paths the move
+        # CORROBORATES (inside the target's subtree, or resolved relative
+        # to it) may outrank the target itself; everything else demotes
+        # to presence. Measured on 4,532 real commands before adoption --
+        # the decisive case was a literal inside sed replacement text
+        # that happens to EXIST on disk, which neither payload parsing
+        # nor an existence rule could catch.
+        #
+        # Without a cd the ambient cwd is NOT promoted the same way:
+        # doing so re-flattens work onto the launch directory (928
+        # measured commands), which is the original #56 bug. Ranking
+        # there stays: explicit absolutes, resolved relatives, cwd.
+        if from_cd and base:
+            prefix = base + "\\"
+            under = [k for k in abs_keys if k.startswith(prefix)]
+            elsewhere = [k for k in abs_keys if not k.startswith(prefix)]
+            seq = ([(k, "extracted") for k in under]
+                   + [(k, "relative") for k in rel]
+                   + [(base, "cd")]
+                   + [(k, "extracted") for k in elsewhere])
+        else:
+            seq = ([(k, "extracted") for k in abs_keys]
+                   + [(k, "relative") for k in rel]
+                   + ([(base, "cd")] if base else []))
+        ordered: list[tuple[str, str]] = []
+        seen: dict = {}
+        for k, prov in seq:
+            if k not in seen:
+                seen[k] = prov
+                ordered.append((k, prov))
+        return ordered
 
-    ordered = []
-    for candidate in raw:
-        key = normalize(candidate)
-        if key and is_plausible_folder(key) and key not in ordered:
-            ordered.append(key)
-    return ordered
+    return []
+
+
+def touched_folders_ordered(tool_name: str, tool_input: dict,
+                            cwd: Optional[str] = None) -> list[str]:
+    """Every folder this call touched, deduped, **in ranking order**.
+
+    Order matters: it is what makes "the first entry" a deterministic
+    primary-resolution rule (see :func:`primary_folder`).
+    """
+    return [k for k, _ in
+            _ordered_with_provenance(tool_name, tool_input, cwd)]
+
+
+def touched_with_provenance(tool_name: str, tool_input: dict,
+                            cwd: Optional[str] = None) -> dict:
+    """``{folder: provenance}`` for one call (schema v8 stamping)."""
+    return dict(_ordered_with_provenance(tool_name, tool_input, cwd))
 
 
 def touched_folders(tool_name: str, tool_input: dict,

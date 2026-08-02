@@ -214,6 +214,30 @@ def _v7_add_tool_folder_provenance(conn: sqlite3.Connection) -> None:
         )
 
 
+def _v8_add_folder_provenance_column(conn: sqlite3.Connection) -> None:
+    """Path-exposure rungs need to know HOW a folder entered the index
+    (#56/H2): `cd` (the shell provably stood there -- an explicit
+    cd/pushd target or the ambient session cwd), `structured` (a file/dir
+    tool's own argument), `relative` (resolved against the base,
+    existence-gated), or `extracted` (lifted out of command text --
+    operand or literal, undecidable). The `cd` display rung cannot be
+    computed without this: nothing else distinguishes a cd-base row from
+    an extracted operand.
+
+    Coldest route wins when a folder arrives several ways across one
+    session. NULL on pre-v8 rows means "underived"; the read-time
+    deriver treats that as `extracted`, so un-reindexed sessions degrade
+    to the neutral rung rather than lying about certainty. A rebuild
+    stamps everything.
+
+    Purely additive; idempotent via PRAGMA introspection.
+    """
+    fu_cols = {row["name"] for row in
+               conn.execute("PRAGMA table_info(folder_usage)").fetchall()}
+    if "provenance" not in fu_cols:
+        conn.execute("ALTER TABLE folder_usage ADD COLUMN provenance TEXT")
+
+
 def create_migration_indexes(conn: sqlite3.Connection) -> None:
     """(Re)create indexes that belong to migration-added columns.
 
@@ -242,6 +266,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     5: _v5_add_metadata_validated_at,
     6: _v6_add_fork_lineage,
     7: _v7_add_tool_folder_provenance,
+    8: _v8_add_folder_provenance_column,
 }
 
 

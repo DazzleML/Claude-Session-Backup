@@ -1083,3 +1083,37 @@ def test_promoted_scratch_carries_the_tag(mock_db):
 
     row = next(f for f in worked if f["folder_path"] == scratch)
     assert row.get("_scratch_promoted") is True
+
+
+# -- schema v8: provenance persists and derives ------------------------
+
+def test_provenance_roundtrips_through_the_index(mock_db, tmp_path):
+    import os as _os
+    from claude_session_backup.pathlevels import level_of
+
+    real = _os.getcwd()
+    gone = "C:\gone\prov-x"
+    meta = _make_meta_with_folders(
+        "s1", "prov-carrier", real, {real: 5, gone: 1})
+    meta.folder_provenance = {real: "cd", gone: "extracted"}
+    upsert_session(mock_db, meta, "p.jsonl", 100, 0.0, "t1")
+
+    rows = {f["folder_path"]: f
+            for f in get_session(mock_db, "s1")["folders"]}
+    assert rows[real]["provenance"] == "cd"
+    assert rows[gone]["provenance"] == "extracted"
+    # and the rung derivation reads them
+    assert level_of(rows[real]) == "cd"
+    assert level_of(rows[gone]) == "suspected"
+
+
+def test_v8_migration_is_idempotent(mock_db):
+    """Running the migration against an already-migrated DB is a no-op --
+    same PRAGMA-introspection pattern every additive migration uses."""
+    from claude_session_backup.migrations import (
+        _v8_add_folder_provenance_column)
+    _v8_add_folder_provenance_column(mock_db)
+    _v8_add_folder_provenance_column(mock_db)   # second run must not raise
+    cols = {r["name"] for r in
+            mock_db.execute("PRAGMA table_info(folder_usage)").fetchall()}
+    assert "provenance" in cols

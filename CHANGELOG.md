@@ -9,6 +9,32 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.7.3] -- 2026-08-02 (beta)
+
+**Path-exposure rungs: pick how much you trust, everything colder comes with it.** The harvester inherently produces path mentions at different confidence levels, and no single display cut answers every question -- `.manifest`-class rows exist at the expressive end no matter how many lexical rules land, because lexical rules cannot decide a foreign path's nature. 0.7.3 stops fighting that shape-by-shape and exposes the spectrum itself, as selectable rungs on a `dazzle_lib.continuum.Continuum` -- csb becomes that module's first consumer outside dazzlecmd's orbit, deliberately (the canary role). Patch bump by project convention (minor = a new verb or major capability; this is within the #56 arc, default-invisible on an existing verb) -- new `--paths` flag, config keys, and additive schema v8 notwithstanding. **One `csb update rebuild-index` stamps provenance**; un-rebuilt sessions degrade to the neutral rung rather than lying about certainty.
+
+### Added
+- **`csb show --paths <level>`** -- the ladder, coldest to warmest: `cd` (only where the shell provably stood -- the pre-#56 view, now a free query instead of a blindness), `verified` (the existence probe confirmed it), `approximated` (unverifiable leaves fold upward into their nearest existing ancestor, counts merged, marked `(~)` -- "someone wrote to something LIKE `MoonshotAI\a`; `MoonshotAI` exists; count it there"), `suspected` (everything stored, as extracted -- **the default: unflagged output is unchanged from 0.7.2**), and declared-but-unpopulated `junk`/`raw` rungs that answer honestly (a note, never an error, never silently equal to `suspected`) until a raw-harvest storage mode exists. Selecting a level shows it and everything colder -- the THAC0 gate, one rank comparison. Unknown levels fail loudly naming the valid ones.
+- **Schema v8 (additive): `folder_usage.provenance`** -- how each folder entered the index (`cd` for position facts: explicit cd/pushd targets and the ambient session cwd; `structured` for file/dir tool arguments; `relative` for existence-gated resolved tokens; `extracted` for command-text absolutes, operand-or-literal undecidable). Coldest route wins across a session. The `cd` rung is uncomputable without this: nothing else distinguishes a cd-base from an extracted operand.
+- **Config**: `paths_level` persists a default exposure (flag > config > `suspected`; a corrupt value warns naming the key and falls back -- never silent, never bricking `show`), and F1's junk boundary becomes two user-definable lines: `scratch_escape_min_work` and `scratch_escape_top_rank`.
+- **A canary suite** (`tests/test_continuum_canary.py`) pinning exactly the Continuum behaviors csb consumes -- `passes` direction, level ordering, boundary errors, loud unknown levels, and all-int ranks (guarding the recorded upstream `densify_between`/`Fraction` JSON landmine by construction). Upstream churn now fails here with a named test instead of surfacing as a mysterious rung bug. `dazzle-lib>=0.8.2` is pinned explicitly rather than ridden transitively.
+
+### Design notes
+- The axis is a composition of two conflicting readings of one mention -- **{place-reading, text-reading}** -- and its invariant (what the removal test leaves standing when both poles' defining qualities are stripped) is *the harvested mention and its work credit*. Zero is the unsigned quasi-state: the mention as extracted, before the place-or-text judgment -- which is `suspected`, deriving the default rather than asserting it. The invariant's measurable shadow is a conservation law, tested as a property: work-credit sums survive every rung view, including the `approximated` fold (an unfoldable foreign path stays put rather than vanishing).
+- Rungs are display/query-time **views over one maximally-granular index** -- most are filters, `approximated` is a fold -- never harvest modes, so switching levels never costs a re-index. Matching (`scan`/`search`) is rung-blind by design rule and *structurally*: the query layer never imports the rung module, and a test pins that (the `--top` lesson, made architecture).
+
+### Tests
+- **1342 pass, 1 skipped** (was 1289 at v0.7.2; +53): the canary suite, the rung views (superset chain, fold conservation/mutation-safety/stored-knowledge-first, reserved-rung honesty), provenance stamping (coldest-wins, pre-v8 row tolerance, index round-trip, migration idempotency), and the flag/config plumbing (precedence, loud unknowns, escape-knob boundaries).
+
+### Fixed (first adversarial pass on this feature, same-day)
+- **The fold could invent a place.** `os.path.isdir("\\")` is TRUE on Windows (the current drive's root), so driveless POSIX-form rows walked their ancestor chain up to a fabricated `\` node that was never stored, verified, or real -- a dozen unrelated `\home\*` rows collapsed into one invented place, found live in 6 of 15 sessions. The live probe now only speaks for path forms the host can actually address (drive-letter, UNC); foreign-form rows still fold via stored-verified ancestors, which are real knowledge regardless of host. Conservation was never violated -- the fold moved credit to a fabricated node, it never leaked any.
+- **The `(~)` fold marker now renders in the touched tier too** -- it existed only in the worked-tier loops, in BOTH renderers, so a zero-work fold displayed with no indication a merge happened. The fourth two-render-paths miss of this effort, caught by a fresh tester explicitly hunting the pattern.
+- **Lossy float config values warn.** `csb config scratch_escape_min_work 3.5` stored a JSON float and `int(3.5)` never raises, so the value silently became 3 -- the exact silent-reinterpretation class this release hunts. Lossy coercion now warns naming the key; `3.0` loses nothing and passes quietly. The second pass then caught the first fix's own regression -- a stored `Infinity` reached the new `int()` path and raised an uncaught `OverflowError`, crashing `show` outright -- and two more slips: `OverflowError` is now caught (a config value must never crash the tool), and a boolean `true` (which slips every numeric check as `1`) warns instead of silently becoming threshold 1.
+- **The `(~)` fold marker renders in ALL three tiers.** A zero-work fold onto a scratch-classified ancestor lands in the low tier, which was the FIFTH render site with the marker convention silently inconsistent. One convention, every tier, both renderers.
+
+### Design
+- `2026-08-01__13-18-51__dev-workflow-process__path-trust-rungs-continuum.md` -- the full analysis, including the invariant-theory addendum that derives zero, linearity, and the sign convention rather than choosing them.
+
 ## [0.7.2] -- 2026-08-01 (beta)
 
 **Hardening of 0.7.1's folder harvesting**, closing every defect found by two adversarial verification passes and live spot-checking against a real vault. 0.7.1 shipped as a documented baseline with these on the ledger; nothing here is new surface, all of it is the same feature told the truth. **Existing indexes need one `csb update rebuild-index`** (same requirement 0.7.1 already carried -- upgrading straight to 0.7.2 rebuilds once).
@@ -1057,7 +1083,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...HEAD
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...v0.6.2

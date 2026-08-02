@@ -1499,7 +1499,8 @@ def _resolve_session_flexible(conn, query: str, claude_dir):
     return result, 0
 
 
-def _tier_folders(folders):
+def _tier_folders(folders, min_work_escape: int = 10,
+                  top_rank_escape: int = 10):
     """Split folder rows into display tiers (#56).
 
     The flat list conflated three genuinely different things and printed a
@@ -1557,7 +1558,8 @@ def _tier_folders(folders):
                         key=lambda f: -f["usage_count"])
         rank_of = {id(f): i + 1 for i, f in enumerate(ranked)}
         for f in scratch_candidates:
-            if f["usage_count"] > 10 or rank_of[id(f)] <= 10:
+            if (f["usage_count"] > min_work_escape
+                    or rank_of[id(f)] <= top_rank_escape):
                 try:
                     f["_scratch_promoted"] = True
                 except TypeError:  # sqlite3.Row -- tolerate, tag is cosmetic
@@ -1731,10 +1733,73 @@ def cmd_show(args) -> int:
         print(f"No session found matching '{args.session_id}'", file=sys.stderr)
         return 1
 
+    # Path-exposure rung: flag > config > neutral default (#56/H2).
+    # The view runs BEFORE tiering, so scratch/thin machinery operates on
+    # the post-view rows unchanged. Matching paths never see any of this.
+    from . import pathlevels as _pl
+    level = getattr(args, "paths", None)
+    if level is None:
+        level = config.get("paths_level") if config else None
+        if level is not None and level not in _pl.SELECTABLE_LEVELS:
+            print(
+                f"[warning] config paths_level={level!r} is not a valid "
+                f"level (valid: {', '.join(_pl.SELECTABLE_LEVELS)}); "
+                f"using '{_pl.DEFAULT_LEVEL}'.",
+                file=sys.stderr,
+            )
+            level = None
+    if level is None:
+        level = _pl.DEFAULT_LEVEL
+    if level != _pl.DEFAULT_LEVEL or session.get("folders"):
+        viewed, paths_note = _pl.apply_level(
+            session.get("folders") or [], level)
+        session["folders"] = viewed
+        if paths_note:
+            session["_paths_note"] = paths_note
+
     filters = _aggregate_filters(getattr(args, "filters", None))
     _render_show(session, show_all=getattr(args, "show_all", False),
-                 min_work=filters.get("min-work", 0))
+                 min_work=filters.get("min-work", 0),
+                 scratch_escape=_scratch_escape_config(config))
     return 0
+
+
+def _scratch_escape_config(config) -> tuple[int, int]:
+    """F1's two arms as user-definable config (H2): the junk boundary is
+    a per-user judgment, so `>10 work units` and `top-10 rank` become
+    two config lines. A malformed value warns naming the key and falls
+    back -- corrupt config must not brick `csb show`, but silent
+    reinterpretation is the failure class this release keeps hunting.
+    """
+    out = []
+    for key, default in (("scratch_escape_min_work", 10),
+                         ("scratch_escape_top_rank", 10)):
+        val = (config or {}).get(key, default)
+        try:
+            # A bool is not a count -- int(True)=1 slips every numeric
+            # check, so a fat-fingered `true` silently became threshold 1.
+            if isinstance(val, bool):
+                raise ValueError
+            coerced = int(val)
+            # int(3.5) never raises -- `csb config` stores JSON floats, so
+            # 3.5 silently became 3: the exact silent-reinterpretation
+            # class this code hunts (tester pass 1, Finding 3). LOSSY
+            # coercion warns; 3.0 loses nothing and passes quietly.
+            if float(val) != coerced or coerced < 0:
+                raise ValueError
+            val = coerced
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: int(float("inf")) -- a stored `Infinity` IS a
+            # real float `csb config` can produce, and the round-1 lossy
+            # fix added the int() path it reaches. Found by the round-2
+            # adversarial pass AS a regression in round 1's own fix: the
+            # patch written against silent reinterpretation introduced a
+            # crash. A config value must never crash the tool.
+            print(f"[warning] config {key}={val!r} is not a non-negative "
+                  f"integer; using {default}.", file=sys.stderr)
+            val = default
+        out.append(val)
+    return out[0], out[1]
 
 
 def _fetch_lineage(conn, full_id: str, session: dict) -> dict:
@@ -1851,7 +1916,8 @@ def _format_timestamp(iso_str: str | None) -> str:
 
 
 def _render_show(session: dict, show_all: bool = False,
-                 min_work: int = 0) -> None:
+                 min_work: int = 0,
+                 scratch_escape: tuple = (10, 10)) -> None:
     """Render the cmd_show output.
 
     Uses Rich colorization when available so the detail view matches the
@@ -1895,11 +1961,16 @@ def _render_show(session: dict, show_all: bool = False,
             print(f"  {'':<14} (full tree: csb tree --root {full_id})")
         print(f"\n  Resume:        claude --resume {full_id}")
         if folders:
-            worked, touched_only, low = _tier_folders(folders)
+            worked, touched_only, low = _tier_folders(
+                folders, *scratch_escape)
             worked, thin = _apply_work_filter(worked, min_work)
             print(f"\n  Working directories:")
+            if session.get("_paths_note"):
+                print(f"    ({session['_paths_note']})")
             for f in worked:
                 marker = " [start]" if f["is_start_folder"] else ""
+                if _row_get(f, "_approx_folded"):
+                    marker += " (~)"
                 if _row_get(f, "_scratch_promoted"):
                     marker += " (scratch)"
                 print(f"    {f['folder_path']}  ({f['usage_count']}x){marker}")
@@ -1909,6 +1980,11 @@ def _render_show(session: dict, show_all: bool = False,
                 print(f"\n  Also touched (no work credited):")
                 for f in touched_only:
                     marker = " [start]" if f["is_start_folder"] else ""
+                    # (~) here too -- a zero-work fold landing in this
+                    # tier displayed with no indication a merge happened.
+                    # The FOURTH two-render-paths miss of this effort.
+                    if _row_get(f, "_approx_folded"):
+                        marker += " (~)"
                     print(f"    {f['folder_path']}{marker}")
             if low:
                 _print_low_value_note(low, show_all=show_all)
@@ -1916,7 +1992,13 @@ def _render_show(session: dict, show_all: bool = False,
                     for f in low:
                         count = (f"  ({f['usage_count']}x)"
                                  if f["usage_count"] else "")
-                        print(f"    {f['folder_path']}{count}  {_low_reason(f)}")
+                        # (~) in the low tier too -- a zero-work fold onto
+                        # a scratch ancestor lands here, and this was the
+                        # FIFTH render site with the marker convention
+                        # silently inconsistent. One convention, all tiers.
+                        fold = " (~)" if _row_get(f, "_approx_folded") else ""
+                        print(f"    {f['folder_path']}{count}{fold}"
+                              f"  {_low_reason(f)}")
         return
 
     # Rich path
@@ -1981,11 +2063,15 @@ def _render_show(session: dict, show_all: bool = False,
     console.print(resume_line)
 
     if folders:
-        worked, touched_only, low = _tier_folders(folders)
+        worked, touched_only, low = _tier_folders(
+            folders, *scratch_escape)
         worked, thin = _apply_work_filter(worked, min_work)
 
         console.print()
         console.print(Text("  Working directories:", style="dim"))
+        if session.get("_paths_note"):
+            console.print(Text(f"    ({session['_paths_note']})",
+                               style="dim"))
         # Rank by work units; the top one is where the session actually
         # spent itself -- frequently NOT the folder it launched from.
         max_count = max((f["usage_count"] for f in worked), default=0)
@@ -2003,6 +2089,8 @@ def _render_show(session: dict, show_all: bool = False,
             row.append(f"  ({f['usage_count']}x)", style="dim")
             if is_start:
                 row.append(" [start]", style="yellow")
+            if _row_get(f, "_approx_folded"):
+                row.append(" (~)", style="dim cyan")
             if _row_get(f, "_scratch_promoted"):
                 row.append(" (scratch)", style="dim")
             if _row_get(f, "path_exists") == 0:
@@ -2021,6 +2109,8 @@ def _render_show(session: dict, show_all: bool = False,
                 row.append(f["folder_path"], style="grey70")
                 if f["is_start_folder"]:
                     row.append(" [start]", style="yellow")
+                if _row_get(f, "_approx_folded"):
+                    row.append(" (~)", style="dim cyan")
                 console.print(row)
 
         if low:
@@ -2039,6 +2129,8 @@ def _render_show(session: dict, show_all: bool = False,
                     row.append(f["folder_path"], style="grey50")
                     if f["usage_count"]:
                         row.append(f"  ({f['usage_count']}x)", style="dim")
+                    if _row_get(f, "_approx_folded"):
+                        row.append(" (~)", style="dim cyan")
                     row.append(f"  {_low_reason(f)}", style="dim")
                     console.print(row)
             else:
