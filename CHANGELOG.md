@@ -9,6 +9,30 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.8.0] -- 2026-08-02 (beta)
+
+**Restart recovery: `csb set show last` (#61).** A forced restart preserves every session and destroys the one thing csb could not recover -- which sessions were *active together* when the machine went down. Reconstructing that meant scrolling `csb list` and reasoning from memory. Now one command answers it, reading the shutdown fence from the Windows event log and membership from timestamps the index already had. Read-only: no hooks fire, nothing is stored, no schema changes. 1408 tests pass.
+
+### Added
+- **`csb set` -- a new root verb for session sets.** Groups of sessions that belong together. This release ships the automatic kind (boot epochs); curated named sets and index addressing (`csb resume set <N>`) are the next phases of the same epic.
+- **`csb set show last`** -- the sessions active before the most recent shutdown, in activity order, each row carrying its start folder and a paste-able `csb resume` command. Open your own terminal, position the tab, paste; **csb never spawns a window, tab, or terminal** -- which emulator and where it goes stays yours.
+- **Shutdown cause labeling** -- clean, `UNEXPECTED`, or `restart initiated by a process`, read from event IDs 6006/6008/1074. The last is the Windows Update signature, so the roster distinguishes a planned restart from an ambush.
+- **`--window <hours>`** narrows or widens the activity window. The default is the whole prior epoch (everything since the previous fence): sessions routinely sit open-but-idle for days, and on real data a 24h window missed sessions that were genuinely active before a restart, while the full-epoch default caught them.
+- **`--json`** emits a machine-readable envelope -- epoch metadata (shutdown time, cause, window, its source) plus numbered members. Emitted even when empty; advisories go to stderr so stdout stays pure.
+- **Index-freshness advisory** -- when the index was last updated *before* the shutdown it cannot hold the final pre-shutdown activity, so the roster says so on stderr and names `csb backup`. Advisory, never forced (the pattern proposed in #59).
+
+### Notes
+- **Windows-only for now.** The fence is read from the Windows System event log via PowerShell; POSIX support (`journalctl` / `last`) is planned under the epic, and until then the command reports the limitation cleanly rather than failing obscurely. Everything else about session sets is platform-independent.
+- **The output is deliberately honest about what it knows.** Activity within a window is evidence a session was open, not proof: one idle longer than the window is missed, one exited shortly before the shutdown is included. The roster therefore says *active*, never *open*, and orders by activity rather than claiming open order. Exact open/close tracking is the observation phase of the epic.
+- **Update restarts double-cycle** (shutdown, boot, shutdown, boot within ~2 minutes). Chained fences collapse into one restart, and the epoch's start is the boot *older than the whole cluster* -- taking the intermediate mid-update boot instead would shrink the default window to seconds and return an empty roster after exactly the restart this feature exists for. Red-green verified against a real double-cycle from the event log.
+- Purged members appear marked; their resume hint walks the existing restore-from-git path (v0.3.14), so a purged session is still reclaimable from the roster.
+- Sessions lacking activity timestamps are reported as a count rather than silently dropped.
+
+### Docs
+- [`docs/commands.md`](docs/commands.md) gains "Restart recovery (csb set)" -- the workflow, how fences are read, why the default window is generous, and the limits stated plainly.
+- [`docs/platforms.md`](docs/platforms.md) records the Windows-only fence dependency and the POSIX plan.
+- `tests/checklists/v0.8.0__Feature__csb-set-show-last.md` -- the hand-runnable companion; its high-value step is judging a real post-restart roster against memory, which no mock can do.
+
 ## [0.7.5] -- 2026-08-02 (beta)
 
 **Shared tooling moved to the `git-repokit-common` subtree (#16).** `scripts/` held locally-copied tooling that had quietly drifted from upstream -- and, in places, was never adapted to csb at all. It now lives in a squashed subtree at `scripts/repokit-common/`, configured rather than forked. No runtime change; csb's package and CLI are untouched. 1342 tests pass.
@@ -1117,7 +1141,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.0...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

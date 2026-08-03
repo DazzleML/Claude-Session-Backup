@@ -15,6 +15,7 @@ Usage:
     csb distill <query>                  # render a session as a readable chat log
     csb scan [path]                      # find sessions in current dir and children
     csb search "query"                   # search session metadata
+    csb set show last                    # what was active before the last shutdown
     csb update rebuild-index             # safely reconstruct SQLite (preserves deleted)
     csb update build-fts5                # build/refresh FTS5 content index
     csb update backfill-deleted          # discover culled sessions from git history
@@ -927,6 +928,65 @@ def build_parser():
              "active-modification ops (edited/wrote/notebook_edit).",
     )
 
+    # ── csb set: session sets -- what was active together (#60, #61) ──────
+    # A "set" is a group of sessions that belong together. Epoch sets are
+    # observed automatically (boot/shutdown fences from the OS event log +
+    # index activity -- "what was I running before the restart?"); named
+    # sets (#62) are curated. One verb for both kinds, one renderer.
+    # Read-only: fences are read live, never stored; no hooks, no schema.
+    p_set = sub.add_parser(
+        "set",
+        help="Session sets: what was active at the last shutdown (epochs); "
+             "named sets (#62)",
+        description=(
+            "csb set <action> works with session sets -- groups of sessions "
+            "that belong together. 'last' names the most recent boot epoch: "
+            "the sessions active before the machine's last shutdown, "
+            "reconstructed from the Windows event log and the existing "
+            "index (read-only; nothing is stored). Named sets arrive "
+            "with #62."
+        ),
+    )
+    set_sub = p_set.add_subparsers(dest="set_action", metavar="<action>")
+
+    # csb set show
+    p_set_show = set_sub.add_parser(
+        "show",
+        help="Numbered roster of a set ('last' = the most recent boot epoch)",
+        description=(
+            "Show a set's numbered roster. `csb set show last` answers "
+            "'what was I running before the restart?': every session with "
+            "activity in the window before the most recent shutdown fence, "
+            "in activity order, each with a paste-able `csb resume` "
+            "command. Honest by design: 'active within the window' is not "
+            "proof a session was open -- exact open/close tracking arrives "
+            "with the observation phase (#64)."
+        ),
+    )
+    # Common flags on the LEAF only (mirrors `csb update`): argparse
+    # subparsers re-apply their own defaults over values the parent
+    # already parsed, so umbrella-level flags would be silently clobbered
+    # (e.g. `csb set --claude-dir X show` losing X). The hoister makes
+    # `csb --quiet set show last` work by appending flags after the leaf.
+    _add_common_flags(p_set_show)
+    p_set_show.add_argument(
+        "set_name", metavar="<set>",
+        help="'last' -- the most recent boot epoch (named sets arrive "
+             "with #62)",
+    )
+    p_set_show.add_argument(
+        "--window", type=float, default=None, metavar="HOURS",
+        help="Activity window before the shutdown fence, in hours. "
+             "Default: since the previous fence (the whole prior epoch) -- "
+             "generous on purpose, because idle-but-open for days is normal "
+             "and a tight window misses genuinely-open sessions.",
+    )
+    p_set_show.add_argument(
+        "--json", action="store_true",
+        help="Machine-readable roster (envelope with epoch metadata + "
+             "members; emitted even when empty)",
+    )
+
     # rebuild-index
     # ── csb update: umbrella for "reach in and refresh a representation" ops ──
     # Lives at the top level so all maintenance verbs group cleanly. Targets:
@@ -1271,6 +1331,10 @@ def main(argv=None):
     elif args.command == "search":
         from .commands import cmd_search
         return cmd_search(args)
+    elif args.command == "set":
+        from .commands import cmd_set
+
+        return cmd_set(args)
     elif args.command == "update":
         from .commands import cmd_update
         return cmd_update(args)

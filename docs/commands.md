@@ -9,7 +9,7 @@ The day-to-day patterns, expanded from the README's quick list:
 | You're thinking... | Run | Notes |
 |---|---|---|
 | "What sessions touched THIS project?" | `cd <project>` then `csb scan .` | The `.` shortcut scopes to the cwd (folder + descendants) with no flags to remember; add a term (`csb scan . auth`) to filter within the folder, or `-s .` for "originated here" only |
-| "What was I working on before the reboot?" | `csb list -n 5` | Last-used order; each row shows start folder + the top working directories so you can tell sessions apart at a glance |
+| "What was I working on before the reboot?" | `csb set show last` | The boot epoch: every session active before the machine's last shutdown, in activity order, each with a paste-able resume command. `csb list -n 5` is the manual fallback |
 | "Which session discussed X?" | `csb search "X"` -> `csb distill <hit>` | Search finds it, distill makes it readable |
 | "Pick up where I left off" | `csb resume <name-or-prefix-or-keyword>` | Accepts everything `claude --resume` does and more |
 | "Something got purged" | `csb list --deleted` -> `csb restore <id>` | Or bulk: `csb scan -d <path> --deleted --restore` |
@@ -45,6 +45,9 @@ csb tree <filter> <path>              # ...also scoped to a folder (list + scan 
 csb tree --root <id>                  # Just one family
 csb tree --orphans                    # Sessions that never forked
 csb tree -f / -ff                     # Per-node detail (same levels as list/scan)
+csb set show last                     # What was active before the last shutdown (boot epoch)
+csb set show last --window 24         # Same, fixed activity window in hours
+csb set show last --json              # Machine-readable roster envelope
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
 csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
@@ -217,6 +220,39 @@ Selection works like the rest of csb: the FILTER uses the same vocabulary as `cs
 `csb show <id>` shows the same relationships for a single session as `Forked from:` / `Forks:` lines.
 
 **Lineage needs one backup to appear.** It is read from each transcript during indexing, so after upgrading to v0.7.0 run `csb backup` (or `csb update rebuild-index`) once for already-indexed sessions.
+
+## Restart recovery (csb set)
+
+A Windows Update restart destroys the one thing `csb backup` cannot preserve on its own: the knowledge of **which sessions were open together** when the machine went down. Every transcript survives; the arrangement lives in your head. `csb set show last` reconstructs it:
+
+```bash
+csb set show last                     # the boot epoch: what was active before the last shutdown
+csb set show last --window 24        # fixed window instead of the default
+csb set show last --json             # machine-readable envelope
+```
+
+```
+Epoch 'last' -- shutdown 2026-07-25 16:16 UTC  [restart initiated by a process (update/restart)]  boot +45s
+9 sessions active since the previous fence (248.0h before shutdown) (activity order -- open order is not tracked)
+
+   1. CLAUDE-SESSION-BACKUP__2026-7-15__fixing-multiterm-search  8d20h before shutdown
+      start at: C:\code\claude-projects\Claude-Session-Backup  [csb resume CLAUDE-SESSION-BACKUP__2026-7-15__fixing-multiterm-search]
+   2. DAZZLECMD__2026-7-5__fiber-nuance-with-FQCN  5d19h before shutdown
+      start at: C:\code\dazzlecmd\github  [csb resume DAZZLECMD__2026-7-5__fiber-nuance-with-FQCN]
+   ...
+```
+
+Open your preferred terminal, position the tab, paste the row's `csb resume` command; repeat. csb never spawns windows -- which terminal, which tab, and where they go is yours.
+
+**How it works.** The shutdown *fence* is read live from the Windows System event log (boot 6005 / clean shutdown 6006 / unexpected 6008 / restart-initiated 1074 -- the Windows Update signature), and membership comes from the activity timestamps already in the index. Read-only: nothing is stored, no hooks fire, and an update restart's double shutdown/boot cycle is collapsed into one fence.
+
+**The default window is the whole prior epoch** (everything since the previous fence), on purpose: sessions routinely sit open-but-idle for days, and a tight window would silently miss exactly the windows you most want back. `--window <hours>` overrides it when you want just the recent tail.
+
+**Honest by design.** "Active within the window" is evidence, not proof: a session idle longer than the window is missed, and one exited shortly before the shutdown is included. The roster therefore says *active*, never *open*, and orders by activity -- exact open/close tracking is the observation phase of the session-sets epic. Purged members appear marked, and their `csb resume` hint restores them from git on the way (same flow as any pruned resume).
+
+**Freshness.** If the index was last updated before the shutdown, the roster warns on stderr -- the final pre-shutdown activity may not have been indexed yet. `csb backup` catches it up.
+
+Named sets (curated groups you define, independent of restarts) and index addressing (`csb resume set <N>`) are the next phases of the same epic.
 
 ## Reading conversations (distill)
 

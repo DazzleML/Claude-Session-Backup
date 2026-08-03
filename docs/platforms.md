@@ -28,6 +28,7 @@
 - File paths are handled via `pathlib.Path` throughout — Windows backslashes and UNC paths should work; if you find a path that doesn't, please file an issue.
 - PowerShell 5.1 vs PowerShell 7: both work. Git Bash and MSYS2 also work.
 - `dz safedel` integration (when available) is respected for file deletions.
+- **Boot epochs (`csb set show last`) are Windows-only for now** — the shutdown fence is read from the Windows System event log (IDs 6005/6006/6008/1074) via PowerShell. POSIX fence reading (`journalctl` / `last`) is planned under the session-sets epic; until then the command reports the limitation cleanly off-Windows. Everything else about session sets is platform-independent.
 
 ### Linux
 

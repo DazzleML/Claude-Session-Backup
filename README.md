@@ -69,6 +69,7 @@ csb backup
 - **Session restore**: Recover deleted sessions from git history with `csb restore`
 - **Readable chat logs**: `csb distill` renders any session as an IM-style log -- the full JSONL stays preserved regardless
 - **Fork lineage**: `csb tree` shows which session spawned which as an indented tree -- including purged ancestors csb still remembers, so a chain never reads headless
+- **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special, answered from the event log and the index, with a paste-able resume command per row
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
 - **Unattended operation**: `--no-gpg-sign`, `--quiet`, lock file -- designed for cron and Task Scheduler
 - **Cross-platform**: Works on Windows, Linux, macOS, BSD
@@ -84,6 +85,7 @@ csb list                        # Timeline of sessions (filter, sort, --deleted)
 csb scan -d <path> --deleted    # Find (and bulk-restore) what was purged in a folder
 csb search "oauth callback"     # Full-text search across every conversation
 csb tree [filter] [path]        # Fork lineage: which session spawned which
+csb set show last               # What was active before the last shutdown (restart recovery)
 csb distill <query>             # Read a session as a chat log -> ~/.claude/distilled/
 csb resume <query>              # Reopen in Claude Code (UUID, prefix, name, keyword...)
 csb view <query>                # Open in Claude Code History Viewer

@@ -46,6 +46,15 @@ from .git_ops import (
     git_status,
 )
 from .lockfile import backup_lock
+from .epochs import (
+    FenceUnavailableError,
+    build_roster,
+    epoch_window,
+    latest_epoch,
+    parse_index_ts,
+    read_fences,
+)
+from .set_render import epoch_header_segments, render_roster
 from .index import (
     count_deleted_with_filter,
     find_sessions_by_folder_usage,
@@ -3137,6 +3146,183 @@ def cmd_build_fts5(args) -> int:
         )
     finally:
         conn.close()
+    return 0
+
+
+# ── csb set: session sets -- boot epochs now, named sets with #62 ────────
+#
+# A "set" is a group of sessions that belong together. Two kinds share the
+# verb (epic #60 decision): EPOCH sets are observed automatically ("what
+# was active when the machine went down" -- zero user effort), NAMED sets
+# are curated (#62). One noun, one renderer, one addressing scheme.
+
+def cmd_set(args) -> int:
+    """Dispatcher for `csb set <action>` (#60, #61).
+
+    Actions:
+      show <set>   -- numbered roster ('last' = the most recent boot epoch)
+
+    Named-set CRUD (new / list / add / rm) arrives with #62.
+    """
+    action = getattr(args, "set_action", None)
+    if action is None:
+        print(
+            "csb set: pick an action.\n"
+            "  csb set show last   -- what was active at the last shutdown\n"
+            "\n"
+            "Run `csb set <action> -h` for per-action options.",
+            file=sys.stderr,
+        )
+        return 2
+    if action == "show":
+        return cmd_set_show(args)
+    # argparse's choices shouldn't let us reach here; defensive.
+    print(f"Unknown set action: {action}", file=sys.stderr)
+    return 2
+
+
+def _iso_z(dt) -> str:
+    """Aware datetime -> the index's Z-suffixed ISO convention."""
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def cmd_set_show(args) -> int:
+    """`csb set show last` -- sessions active before the last shutdown (#61).
+
+    Read-only reconstruction: boot/shutdown fences come from the OS event
+    log live (never stored), membership from the existing index timestamps.
+    The heuristic is honest about itself -- "active within the window",
+    never "open" (activity is not liveness until #64 records real
+    open/close events), and activity order, never open order.
+    """
+    # Session names are user text -- never let a cp1252/cp437 console
+    # raise UnicodeEncodeError over one character (cmd_tree pattern; no
+    # forced UTF-8, only tolerant errors).
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
+    name = getattr(args, "set_name", None)
+    if name != "last":
+        print(
+            f"Unknown set '{name}' -- this version supports only 'last' "
+            "(the most recent boot epoch). Named sets arrive with #62.",
+            file=sys.stderr,
+        )
+        return 1
+
+    json_mode = getattr(args, "json", False)
+    try:
+        fences = read_fences()
+    except FenceUnavailableError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    epoch = latest_epoch(fences)
+    if epoch is None:
+        if json_mode:
+            print(json.dumps(
+                {"kind": "epoch", "name": "last", "epoch": None,
+                 "members": [], "missing_timestamps": 0},
+                indent=2,
+            ))
+            return 0
+        print("No shutdown fence found in the event log -- nothing to "
+              "reconstruct.")
+        print("  Note: the System log may have rotated past the last restart.",
+              file=sys.stderr)
+        return 0
+
+    lo, hi, window_source = epoch_window(epoch, getattr(args, "window", None))
+    window_hours = (hi - lo).total_seconds() / 3600.0
+
+    config = _get_config(args)
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    rows = conn.execute(
+        "SELECT session_id, session_name, project, start_folder,"
+        "       started_at, last_active_at, jsonl_path, jsonl_mtime,"
+        "       deleted_at, is_fork"
+        "  FROM sessions"
+    ).fetchall()
+    last_scan_row = conn.execute(
+        "SELECT scanned_at FROM scan_history ORDER BY scan_id DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+
+    members, missing = build_roster(rows, lo, hi)
+
+    # Freshness advisory (#59 family): an index last updated before the
+    # shutdown cannot contain the final pre-shutdown activity. Advisory,
+    # never forced; stderr so --json stdout stays pure.
+    last_scan = parse_index_ts(last_scan_row[0]) if last_scan_row else None
+    if last_scan is not None and last_scan < epoch.shutdown_utc:
+        from .timeline import relative_date
+        print(
+            f"Note: the index was last updated {relative_date(last_scan_row[0])} "
+            "-- before this shutdown, so final pre-shutdown activity may be "
+            "missing. Run `csb backup` to capture it.",
+            file=sys.stderr,
+        )
+
+    if json_mode:
+        payload = {
+            "kind": "epoch",
+            "name": "last",
+            "epoch": {
+                "shutdown_at": _iso_z(epoch.shutdown_utc),
+                "boot_at": _iso_z(epoch.boot_utc) if epoch.boot_utc else None,
+                "cause": epoch.cause,
+                "window_start": _iso_z(lo),
+                "window_hours": round(window_hours, 1),
+                "window_source": window_source,
+            },
+            "members": [
+                {k: m[k] for k in (
+                    "index", "session_id", "session_name", "project",
+                    "start_folder", "started_at", "last_active_at",
+                    "purged", "is_fork", "in_index",
+                )}
+                for m in members
+            ],
+            "missing_timestamps": missing,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    if not rows:
+        print("The index has no sessions -- nothing to place in the epoch.")
+        guidance = _empty_state_guidance(config)
+        if guidance:
+            for line in guidance:
+                print(line)
+        else:
+            print("  Run `csb backup` to index + back up, or `csb backup "
+                  "--no-commit` to index without git.")
+        return 0
+
+    header = epoch_header_segments(epoch, len(members), window_hours,
+                                   window_source)
+    if not members:
+        for segs in header:
+            _style_print(segs)
+        print()
+        print("No sessions with activity in that window before the shutdown.")
+        print("  Tip: `--window <hours>` widens or narrows the search.",
+              file=sys.stderr)
+        return 0
+
+    footers = []
+    if missing:
+        noun = "session lacks" if missing == 1 else "sessions lack"
+        footers.append(
+            f"Note: {missing} {noun} activity timestamps and cannot be "
+            "placed in any window."
+        )
+    render_roster(members, header, footer_notes=tuple(footers),
+                  shutdown_utc=epoch.shutdown_utc)
     return 0
 
 
