@@ -88,6 +88,7 @@ csb tree [filter] [path]        # Fork lineage: which session spawned which
 csb set show last               # What was active before the last shutdown (restart recovery)
 csb distill <query>             # Read a session as a chat log -> ~/.claude/distilled/
 csb resume <query>              # Reopen in Claude Code (UUID, prefix, name, keyword...)
+csb resume set <N>              # Reclaim member N of a set, in THIS terminal
 csb view <query>                # Open in Claude Code History Viewer
 csb restore <session-id>        # Recover a deleted session from git history
 csb status                      # Summary stats

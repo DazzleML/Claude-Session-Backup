@@ -540,7 +540,23 @@ def build_parser():
         "session_id", metavar="query",
         help="Session UUID/prefix, exact session NAME, .jsonl path, folder, "
              "sesslog dir name, or keyword (#42 -- every format csb view "
-             "accepts; a superset of claude --resume's native surface)",
+             "accepts; a superset of claude --resume's native surface). "
+             "The literal word `set` switches to index addressing -- see "
+             "below.",
+    )
+    # Index addressing (#63): `csb resume set <N>` reclaims member N of a
+    # set by its roster number. A trailing nargs="*" rather than a
+    # subparser, because argparse cannot host both a subparser and a free
+    # positional query on one parser -- `set` is dispatched as a sentinel
+    # in cmd_resume instead. Everything after `--` is split off before
+    # parsing, so `csb resume set 2 -- --fork-session` still forwards.
+    p_resume.add_argument(
+        "selector", nargs="*", metavar="...", default=[],
+        help="With query=`set`: [<set-name>] <N> -- the roster number from "
+             "`csb set show`. `csb resume set 2` takes member 2 of the last "
+             "boot epoch; `csb resume set CSB-STACK 2` of a named set. "
+             "Numbers are stable positions, so they mean the same thing "
+             "every time.",
     )
     # Pruned-session handling (v0.3.14, #34): if the session has deleted_at
     # set, Claude Code can't resume it (JSONL missing). These flags control

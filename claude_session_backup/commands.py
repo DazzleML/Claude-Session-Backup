@@ -3264,6 +3264,91 @@ def _named_set_roster(conn, entry):
     return members
 
 
+def _materialize_set_roster(config, name, window_hours=None):
+    """The FULL roster for a set -- epoch (`last`) or named (#63).
+
+    One path serves `csb set show` and `csb resume set <N>`, so an index
+    printed by the first always addresses the same session in the second.
+
+    **This function takes no filter parameters, and that absence is the
+    contract.** Row numbers are positions in the full roster; if filtering
+    ever moves in here, a filtered view would renumber and
+    `csb resume set 2` would silently resolve to a different session than
+    the one the user just read. Filtering belongs to the renderer.
+
+    Returns ``(roster, 0)`` or ``(None, exit_code)`` with the error
+    already printed. A roster is a dict with ``kind`` / ``name`` /
+    ``epoch`` (None for named sets and when no fence exists) /
+    ``members`` / ``missing_timestamps``; an empty ``members`` list is a
+    valid roster, not an error -- callers decide how to present it.
+    """
+    if name == "last":
+        try:
+            fences = read_fences()
+        except FenceUnavailableError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return None, 1
+        epoch = latest_epoch(fences)
+        if epoch is None:
+            return {
+                "kind": "epoch", "name": "last", "epoch": None,
+                "members": [], "missing_timestamps": 0,
+                "window_hours": None, "window_source": None,
+                "last_scan_at": None,
+            }, 0
+
+        lo, hi, window_source = epoch_window(epoch, window_hours)
+        conn = open_db(config["index_path"])
+        init_schema(conn)
+        rows = conn.execute(
+            "SELECT session_id, session_name, project, start_folder,"
+            "       started_at, last_active_at, jsonl_path, jsonl_mtime,"
+            "       deleted_at, is_fork"
+            "  FROM sessions"
+        ).fetchall()
+        last_scan_row = conn.execute(
+            "SELECT scanned_at FROM scan_history ORDER BY scan_id DESC LIMIT 1"
+        ).fetchone()
+        conn.close()
+        members, missing = build_roster(rows, lo, hi)
+        return {
+            "kind": "epoch", "name": "last", "epoch": epoch,
+            "members": members, "missing_timestamps": missing,
+            "window_lo": lo, "window_hi": hi,
+            "window_hours": (hi - lo).total_seconds() / 3600.0,
+            "window_source": window_source,
+            "last_scan_at": last_scan_row[0] if last_scan_row else None,
+            "index_empty": not rows,
+        }, 0
+
+    try:
+        entry = session_sets.get_set(config["claude_dir"], name,
+                                     warn=_set_warn)
+    except session_sets.SetError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return None, 1
+    if entry is None:
+        print(
+            f"No set named '{name}'. Use 'last' for the most recent boot "
+            "epoch, or `csb set list` to see named sets.",
+            file=sys.stderr,
+        )
+        return None, 1
+
+    stored = session_sets.resolve_set_name(config["claude_dir"], name) or name
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    members = _named_set_roster(conn, entry)
+    conn.close()
+    return {
+        "kind": "named", "name": stored, "epoch": None,
+        "members": members, "missing_timestamps": 0,
+        "created_at": entry.get("created_at"),
+        "updated_at": entry.get("updated_at"),
+        "window_hours": None, "window_source": None, "last_scan_at": None,
+    }, 0
+
+
 def _cmd_set_show_named(args, name, json_mode) -> int:
     """`csb set show <name>` for a NAMED set (#62).
 
@@ -3272,33 +3357,19 @@ def _cmd_set_show_named(args, name, json_mode) -> int:
     works against either.
     """
     config = _get_config(args)
-    try:
-        entry = session_sets.get_set(config["claude_dir"], name,
-                                     warn=_set_warn)
-    except session_sets.SetError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-    if entry is None:
-        print(
-            f"No set named '{name}'. Use 'last' for the most recent boot "
-            "epoch, or `csb set list` to see named sets.",
-            file=sys.stderr,
-        )
-        return 1
-
-    stored = session_sets.resolve_set_name(config["claude_dir"], name) or name
-    conn = open_db(config["index_path"])
-    init_schema(conn)
-    members = _named_set_roster(conn, entry)
-    conn.close()
+    roster, code = _materialize_set_roster(config, name)
+    if roster is None:
+        return code
+    stored = roster["name"]
+    members = roster["members"]
 
     if json_mode:
         print(json.dumps({
             "kind": "named",
             "name": stored,
             "epoch": None,
-            "created_at": entry.get("created_at"),
-            "updated_at": entry.get("updated_at"),
+            "created_at": roster.get("created_at"),
+            "updated_at": roster.get("updated_at"),
             "members": [
                 {k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
@@ -3554,13 +3625,13 @@ def cmd_set_show(args) -> int:
     if name != "last":
         return _cmd_set_show_named(args, name, json_mode)
 
-    try:
-        fences = read_fences()
-    except FenceUnavailableError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
+    config = _get_config(args)
+    roster, code = _materialize_set_roster(
+        config, "last", getattr(args, "window", None))
+    if roster is None:
+        return code
 
-    epoch = latest_epoch(fences)
+    epoch = roster["epoch"]
     if epoch is None:
         if json_mode:
             print(json.dumps(
@@ -3575,33 +3646,21 @@ def cmd_set_show(args) -> int:
               file=sys.stderr)
         return 0
 
-    lo, hi, window_source = epoch_window(epoch, getattr(args, "window", None))
-    window_hours = (hi - lo).total_seconds() / 3600.0
-
-    config = _get_config(args)
-    conn = open_db(config["index_path"])
-    init_schema(conn)
-    rows = conn.execute(
-        "SELECT session_id, session_name, project, start_folder,"
-        "       started_at, last_active_at, jsonl_path, jsonl_mtime,"
-        "       deleted_at, is_fork"
-        "  FROM sessions"
-    ).fetchall()
-    last_scan_row = conn.execute(
-        "SELECT scanned_at FROM scan_history ORDER BY scan_id DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
-
-    members, missing = build_roster(rows, lo, hi)
+    members = roster["members"]
+    missing = roster["missing_timestamps"]
+    lo = roster["window_lo"]
+    window_hours = roster["window_hours"]
+    window_source = roster["window_source"]
 
     # Freshness advisory (#59 family): an index last updated before the
     # shutdown cannot contain the final pre-shutdown activity. Advisory,
     # never forced; stderr so --json stdout stays pure.
-    last_scan = parse_index_ts(last_scan_row[0]) if last_scan_row else None
+    last_scan_at = roster["last_scan_at"]
+    last_scan = parse_index_ts(last_scan_at)
     if last_scan is not None and last_scan < epoch.shutdown_utc:
         from .timeline import relative_date
         print(
-            f"Note: the index was last updated {relative_date(last_scan_row[0])} "
+            f"Note: the index was last updated {relative_date(last_scan_at)} "
             "-- before this shutdown, so final pre-shutdown activity may be "
             "missing. Run `csb backup` to capture it.",
             file=sys.stderr,
@@ -3632,7 +3691,7 @@ def cmd_set_show(args) -> int:
         print(json.dumps(payload, indent=2, default=str))
         return 0
 
-    if not rows:
+    if roster.get("index_empty"):
         print("The index has no sessions -- nothing to place in the epoch.")
         guidance = _empty_state_guidance(config)
         if guidance:
@@ -4993,14 +5052,127 @@ def cmd_resume(args) -> int:
     title semantics -- csb resolves it to the UUID, so Claude always
     receives the one format that is unconditionally direct), .jsonl path,
     directory, sesslog folder name, or free-text keyword.
-    """
-    from .pathkit import derive_start_at
 
+    The literal query ``set`` switches to index addressing
+    (``csb resume set <N>``, #63) -- dispatched here as a sentinel
+    because argparse cannot host a subparser alongside a free positional
+    query on the same parser.
+    """
+    # getattr, not args.selector: many call sites (and every pre-#63 test)
+    # build an args namespace without the new positional.
+    selector = list(getattr(args, "selector", None) or [])
+    if args.session_id == "set":
+        return _cmd_resume_set(args, selector)
+    if selector:
+        print(
+            f"csb resume takes one query -- got extra arguments: "
+            f"{' '.join(selector)}\n"
+            "  For index addressing use `csb resume set <N>`; to pass flags "
+            "to claude, put them after `--`.",
+            file=sys.stderr,
+        )
+        return 2
+    return _resume_query(args, args.session_id)
+
+
+def _cmd_resume_set(args, selector) -> int:
+    """`csb resume set [<name>] <N>` -- reclaim member N of a set (#63).
+
+    Reclaiming a set is a loop the USER drives: read the roster, open a
+    terminal where you want it, run this. csb supplies the addressing,
+    never the window -- it cannot know which emulator, tab, or placement
+    you meant, and guessing wrong is worse than not guessing, because
+    then you have to close what you did not want.
+
+    Indices are positions in the FULL roster (see
+    :func:`_materialize_set_roster`), so a number means the same session
+    today, tomorrow, and after the next restart.
+    """
+    if not selector:
+        print(
+            "csb resume set: which member?\n"
+            "  csb resume set <N>            member N of the last boot epoch\n"
+            "  csb resume set <name> <N>     member N of a named set\n"
+            "\n"
+            "Run `csb set show last` for the numbered roster.\n"
+            "(To resume a session literally named 'set', use its UUID -- "
+            "`set` is a grammar token here.)",
+            file=sys.stderr,
+        )
+        return 2
+
+    set_name, index_token = ("last", selector[0]) if len(selector) == 1 \
+        else (selector[0], selector[1])
+    if len(selector) > 2:
+        print(
+            f"csb resume set takes at most a name and a number -- got: "
+            f"{' '.join(selector)}",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        index = int(index_token)
+    except ValueError:
+        print(
+            f"'{index_token}' is not a roster number. Use the number shown "
+            f"by `csb set show {set_name}`.",
+            file=sys.stderr,
+        )
+        return 2
+    if index < 1:
+        print("Roster numbers start at 1.", file=sys.stderr)
+        return 2
+
+    config = _get_config(args)
+    roster, code = _materialize_set_roster(config, set_name)
+    if roster is None:
+        return code
+
+    members = roster["members"]
+    if not members:
+        if roster["kind"] == "epoch" and roster["epoch"] is None:
+            print("No shutdown fence found in the event log -- no epoch to "
+                  "resume from.", file=sys.stderr)
+        else:
+            print(f"Set '{roster['name']}' has no members.", file=sys.stderr)
+        return 1
+    if index > len(members):
+        noun = "member" if len(members) == 1 else "members"
+        print(
+            f"Set '{roster['name']}' has {len(members)} {noun} -- valid "
+            f"indices are 1-{len(members)}.",
+            file=sys.stderr,
+        )
+        return 1
+
+    member = members[index - 1]
+    if not member.get("in_index", True):
+        print(
+            f"Member {index} ({member['session_id']}) is no longer in the "
+            "index -- purged beyond recovery, or the index needs "
+            "`csb update rebuild-index`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    session = get_session(conn, member["session_id"])
+    conn.close()
+    if session is None:
+        print(f"Member {index} ({member['session_id']}) could not be loaded "
+              "from the index.", file=sys.stderr)
+        return 1
+    return _resume_session_row(args, config, session)
+
+
+def _resume_query(args, query: str) -> int:
+    """Resolve ``query`` to a session and hand off to the launcher."""
     config = _get_config(args)
     conn = open_db(config["index_path"])
     init_schema(conn)
 
-    query = args.session_id
     # Historical UUID/prefix resolver first (prefix/suffix matching,
     # ambiguity reporting with exit code 2). miss_ok: a plain no-match or
     # non-ID-shaped input (a session NAME, path, keyword) falls through to
@@ -5025,6 +5197,23 @@ def cmd_resume(args) -> int:
             return 1
         session = result
     conn.close()
+    return _resume_session_row(args, config, session)
+
+
+def _resume_session_row(args, config, session) -> int:
+    """Launch ``claude --resume`` for an already-resolved session (#63).
+
+    Extracted so `csb resume <query>` and `csb resume set <N>` share one
+    launcher rather than two. Everything that makes resume more than a
+    subprocess call lives here -- the pruned-session restore offer, the
+    transcript preflight, cwd derivation, and the passthrough forwarding
+    -- so index addressing inherits all of it by construction instead of
+    by remembering to reimplement it.
+
+    csb NEVER spawns a terminal: this launches in the one it was invoked
+    from, exactly as it always has.
+    """
+    from .pathkit import derive_start_at
 
     full_id = session["session_id"]
     name = session.get("session_name") or "(unnamed)"

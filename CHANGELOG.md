@@ -9,6 +9,24 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.8.2] -- 2026-08-04 (beta)
+
+**Index addressing: `csb resume set <N>` (#63).** The roster numbers from v0.8.0 and v0.8.1 become addresses. Reclaiming a set is a loop *you* drive -- read the roster, open the terminal you want, run one command, repeat. **csb never spawns a terminal, window, or tab**; it launches in the one you invoked it from, exactly as `csb resume` always has. csb cannot know which emulator, tab, or placement you meant, and guessing wrong is worse than not guessing.
+
+### Added
+- **`csb resume set <N>`** -- reclaim member N of the most recent boot epoch. **`csb resume set <name> <N>`** for a named set; **`csb resume set last <N>`** is the explicit form of the first.
+- Everything after `--` still forwards, so **`csb resume set 2 -- --fork-session`** branches from member 2 rather than resuming it. This needed no passthrough change: `--` is split off before parsing.
+
+### Notes
+- **Numbers are stable, and that is a guarantee rather than an implementation detail.** An index is a position in the *full* roster, so `csb resume set 3` means the same session today, tomorrow, and after the next restart. `--window` changes what is displayed, never what a number addresses. Both `csb set show` and `csb resume set` now read through one materializer that deliberately takes no filter parameters -- if filtering ever leaked into it, a narrowed view would renumber and `resume set 2` would quietly resolve to a different session than the one just read.
+- **Indices settle a case names cannot.** Sessions can share a name -- easy across a project's branches -- and a duplicate name makes the roster's `csb resume <name>` hint ambiguous. A number never is.
+- `csb resume <query>` is unchanged. The launcher (pruned-session restore offer, transcript preflight, cwd derivation, passthrough forwarding) was extracted so both paths share it, which is why index addressing inherits every one of those behaviors rather than reimplementing them.
+- Because `set` is a grammar token after `resume`, a session literally named `set` is reachable by its UUID.
+- Errors name the way out: an out-of-range index reports the valid range, a non-numeric one points at `csb set show`, and a member no longer in the index says so instead of failing at launch.
+
+### Docs
+- [`docs/commands.md`](docs/commands.md) gains "Reclaiming a set" -- the three forms, the stable-number guarantee, and the no-spawn rule stated plainly.
+
 ## [0.8.1] -- 2026-08-03 (beta)
 
 **Named sets (#62).** v0.8.0 shipped the *observed* kind of session set -- the boot epoch, which answers "what was I running when it died". This adds the *curated* kind: a group you define, independent of any restart, answering "which sessions do I reload together". Same verb, same roster, no new machinery -- a named set is just a name and a list of sessions.
@@ -1164,7 +1182,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.2...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

@@ -1,0 +1,377 @@
+"""`csb resume set <N>`: index addressing into sets and epochs (#63).
+
+claude is never actually launched here -- `subprocess.run` is mocked at
+the module boundary; the human checklist covers real launches. The
+load-bearing test in this file is the no-spawn guarantee: csb must
+launch exactly one session in the terminal it was invoked from, and
+must never create a window, tab, or terminal of its own.
+"""
+
+import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+import pytest
+
+import claude_session_backup.cli as cli
+import claude_session_backup.commands as commands_module
+import claude_session_backup.epochs as epochs
+from claude_session_backup.index import init_schema, open_db
+from claude_session_backup.session_sets import create_set
+
+# The same canned fence history the Phase 1 tests use: a 2026-07-25
+# update restart, prior epoch starting at the 07-15 boot.
+FENCE_OUTPUT = (
+    "2026-07-25T16:17:18.0000000Z|6005\n"
+    "2026-07-25T16:16:32.0000000Z|6006\n"
+    "2026-07-25T16:16:18.0000000Z|1074\n"
+    "2026-07-15T08:18:17.0000000Z|6005\n"
+    "2026-07-15T08:17:38.0000000Z|6006\n"
+)
+
+# Distinct leading bytes so prefixes never collide.
+UUID_1 = "11111111-bbbb-cccc-dddd-000000000001"
+UUID_2 = "22222222-bbbb-cccc-dddd-000000000002"
+UUID_3 = "33333333-bbbb-cccc-dddd-000000000003"
+UUID_GONE = "99999999-bbbb-cccc-dddd-000000000099"
+
+
+@pytest.fixture
+def fences(monkeypatch):
+    monkeypatch.setattr(epochs.sys, "platform", "win32")
+    monkeypatch.setattr(epochs, "_run_powershell", lambda *a, **k: FENCE_OUTPUT)
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    """Claude dir + index with three in-window sessions, launcher mocked.
+
+    Activity times are ordered so the roster is deterministic:
+    ALPHA (07-18) = 1, BETA (07-20) = 2, GAMMA (07-22) = 3.
+    """
+    claude_dir = tmp_path / "claude"
+    (claude_dir / "projects" / "C--code-test").mkdir(parents=True)
+    db = tmp_path / "resume.db"
+    conn = open_db(db)
+    init_schema(conn, quiet=True)
+    for sid, nm, active in (
+        (UUID_1, "ALPHA__session", "2026-07-18T00:00:00Z"),
+        (UUID_2, "BETA__session", "2026-07-20T00:00:00Z"),
+        (UUID_3, "GAMMA__session", "2026-07-22T00:00:00Z"),
+    ):
+        jsonl = claude_dir / "projects" / "C--code-test" / f"{sid}.jsonl"
+        jsonl.write_text('{"type":"user"}\n', encoding="utf-8")
+        conn.execute(
+            "INSERT INTO sessions (session_id, session_name, project,"
+            " start_folder, started_at, last_active_at, jsonl_path, is_fork)"
+            " VALUES (?, ?, 'C--code-test', ?, '2026-07-01T00:00:00Z', ?, ?, 0)",
+            (sid, nm, str(tmp_path), active,
+             f"projects/C--code-test/{sid}.jsonl"),
+        )
+    conn.commit()
+    conn.close()
+
+    run_mock = MagicMock(return_value=SimpleNamespace(returncode=0))
+    import subprocess as subprocess_module
+    monkeypatch.setattr(subprocess_module, "run", run_mock)
+    monkeypatch.setattr(commands_module.shutil, "which",
+                        lambda name: "C:\\bin\\claude.exe")
+    # Real signature is (ok, reason) -- a bare True unpacks to garbage.
+    monkeypatch.setattr(commands_module, "_transcript_is_resumable",
+                        lambda p: (True, ""))
+    return SimpleNamespace(claude_dir=claude_dir, db=db, run=run_mock,
+                           tmp=tmp_path)
+
+
+def _run(env, *argv):
+    """Invoke the CLI with this env's dirs, inserted BEFORE any `--`.
+
+    Appending them blindly would put `--claude-dir`/`--db` into the
+    passthrough for any command that uses `--`, silently falling back to
+    the real ~/.claude index -- a test-isolation leak, not a fake pass.
+    """
+    argv = list(argv)
+    flags = ["--claude-dir", str(env.claude_dir), "--db", str(env.db)]
+    if "--" in argv:
+        cut = argv.index("--")
+        argv = argv[:cut] + flags + argv[cut:]
+    else:
+        argv = argv + flags
+    return cli.main(argv)
+
+
+def _claude_calls(env):
+    """Only the `claude` invocations.
+
+    subprocess.run is patched module-wide, so it also catches csb's own
+    git calls (the repo-state banner). Filtering for claude keeps these
+    assertions about launches rather than about incidental plumbing.
+    """
+    calls = []
+    for call in env.run.call_args_list:
+        argv = call[0][0] if call[0] else None
+        if argv and str(argv[0]).replace(".exe", "").endswith("claude"):
+            calls.append(argv)
+    return calls
+
+
+def _launched_uuid(env):
+    """The UUID csb passed to `claude --resume` (exactly one launch)."""
+    calls = _claude_calls(env)
+    assert len(calls) == 1, f"expected 1 claude launch, got {len(calls)}"
+    argv = calls[0]
+    assert argv[1] == "--resume"
+    return argv[2]
+
+
+# ── the selector forms ───────────────────────────────────────────────────
+
+class TestSelectorForms:
+    def test_bare_index_uses_last_epoch(self, fences, env):
+        assert _run(env, "resume", "set", "2") == 0
+        assert _launched_uuid(env) == UUID_2
+
+    def test_explicit_last_is_equivalent(self, fences, env):
+        assert _run(env, "resume", "set", "last", "2") == 0
+        assert _launched_uuid(env) == UUID_2
+
+    def test_named_set_index(self, fences, env):
+        create_set(env.claude_dir, "CSB-STACK", [UUID_3, UUID_1])
+        assert _run(env, "resume", "set", "CSB-STACK", "2") == 0
+        assert _launched_uuid(env) == UUID_1  # insertion order, not activity
+
+    def test_first_and_last_members(self, fences, env):
+        assert _run(env, "resume", "set", "1") == 0
+        assert _launched_uuid(env) == UUID_1
+
+    def test_plain_resume_still_works(self, fences, env):
+        assert _run(env, "resume", "BETA__session") == 0
+        assert _launched_uuid(env) == UUID_2
+
+
+# ── the no-spawn guarantee (the load-bearing AC) ─────────────────────────
+
+class TestNeverSpawns:
+    def test_exactly_one_launch_no_terminal(self, fences, env, monkeypatch):
+        """csb launches ONE claude in the current terminal -- nothing else.
+
+        Any call to Popen, os.system, os.startfile, or a shell would mean
+        csb had created a window of its own, which it must never do.
+        """
+        import os
+        import subprocess as subprocess_module
+        forbidden = []
+        monkeypatch.setattr(subprocess_module, "Popen",
+                            lambda *a, **k: forbidden.append("Popen"))
+        monkeypatch.setattr(os, "system",
+                            lambda *a, **k: forbidden.append("os.system"))
+        if hasattr(os, "startfile"):
+            monkeypatch.setattr(os, "startfile",
+                                lambda *a, **k: forbidden.append("startfile"))
+
+        assert _run(env, "resume", "set", "2") == 0
+        assert forbidden == []
+        assert len(_claude_calls(env)) == 1
+        # No shell, and cwd is a real directory -- the terminal csb was
+        # invoked from, not a new one.
+        kwargs = env.run.call_args[1]  # the claude launch is the last call
+        assert kwargs.get("shell") in (None, False)
+        assert "creationflags" not in kwargs
+
+    def test_forwards_passthrough_to_claude(self, fences, env):
+        assert _run(env, "resume", "set", "2", "--", "--fork-session") == 0
+        argv = _claude_calls(env)[0]
+        assert argv[-1] == "--fork-session"
+        assert argv[1] == "--resume" and argv[2] == UUID_2
+
+
+# ── inherited behavior from the shared launcher ──────────────────────────
+
+class TestSharedLauncher:
+    def test_purged_member_routes_through_restore_on_resume(
+            self, fences, env, monkeypatch, capsys):
+        """A pruned member reaches the v0.3.14 restore path, not the launcher.
+
+        Guaranteed structurally -- `_resume_session_row` is shared with
+        `csb resume <query>`, so the pruned decision happens before any
+        launch -- but pinned here so a future refactor cannot quietly
+        route index addressing around it.
+        """
+        import sqlite3
+        conn = sqlite3.connect(env.db)
+        conn.execute("UPDATE sessions SET deleted_at = '2026-07-26T00:00:00Z'"
+                     " WHERE session_id = ?", (UUID_2,))
+        conn.commit()
+        conn.close()
+
+        seen = {}
+        decision = {"value": "abort"}
+
+        def fake_decision(args, session, name, verb="resume"):
+            seen["session_id"] = session["session_id"]
+            seen["verb"] = verb
+            return decision["value"]
+
+        monkeypatch.setattr(commands_module, "_resolve_pruned_decision",
+                            fake_decision)
+
+        # "abort" = the user declined to restore. That is a choice, not a
+        # failure, so it exits 0 -- but nothing is launched.
+        assert _run(env, "resume", "set", "2") == 0
+        assert seen["session_id"] == UUID_2
+        assert seen["verb"] == "resume"
+        assert _claude_calls(env) == []
+
+        # "error" = non-TTY with no flag: exits 1, still no blind launch.
+        seen.clear()
+        decision["value"] = "error"
+        assert _run(env, "resume", "set", "2") == 1
+        assert seen["session_id"] == UUID_2
+        assert _claude_calls(env) == []
+
+    def test_active_member_skips_the_pruned_path(self, fences, env,
+                                                 monkeypatch):
+        called = []
+        monkeypatch.setattr(commands_module, "_resolve_pruned_decision",
+                            lambda *a, **k: called.append(1) or "abort")
+        assert _run(env, "resume", "set", "1") == 0
+        assert called == []
+        assert _launched_uuid(env) == UUID_1
+
+
+# ── the stable-index contract ────────────────────────────────────────────
+
+class TestStableIndices:
+    def test_show_and_resume_agree(self, fences, env, capsys):
+        """Member N in `csb set show` is member N in `csb resume set`.
+
+        Both go through _materialize_set_roster, which takes no filter
+        parameters -- that absence is what keeps the numbers meaning the
+        same thing in both commands.
+        """
+        assert _run(env, "set", "show", "last", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        for member in payload["members"]:
+            env.run.reset_mock()
+            assert _run(env, "resume", "set", str(member["index"])) == 0
+            assert _launched_uuid(env) == member["session_id"]
+
+    def test_window_narrowing_does_not_renumber_resume(self, fences, env,
+                                                       capsys):
+        """A narrower VIEW must not change what `resume set N` means.
+
+        `csb set show --window` is a display-time narrowing; the resume
+        path always addresses the full roster. If filtering ever leaked
+        into the shared materializer, this is the test that catches it.
+        """
+        assert _run(env, "set", "show", "last", "--window", "48") == 0
+        capsys.readouterr()
+        # Even though a 48h view shows fewer rows, index 1 still means
+        # the first member of the FULL roster.
+        assert _run(env, "resume", "set", "1") == 0
+        assert _launched_uuid(env) == UUID_1
+
+
+# ── errors ───────────────────────────────────────────────────────────────
+
+class TestErrors:
+    def test_bare_set_asks_which_member(self, fences, env, capsys):
+        rc = _run(env, "resume", "set")
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "which member" in err
+        assert "csb set show last" in err
+        assert _claude_calls(env) == []
+
+    def test_bare_set_documents_the_named_set_escape(self, fences, env,
+                                                     capsys):
+        """#63 AC deviation: `csb resume -- set` is unimplementable (the
+        `--` split removes it before parsing), so the documented route
+        for a session literally named `set` is its UUID."""
+        _run(env, "resume", "set")
+        assert "UUID" in capsys.readouterr().err
+
+    def test_out_of_range_names_the_valid_range(self, fences, env, capsys):
+        rc = _run(env, "resume", "set", "99")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "1-3" in err
+        assert _claude_calls(env) == []
+
+    def test_zero_and_negative_rejected(self, fences, env, capsys):
+        assert _run(env, "resume", "set", "0") == 2
+        assert "start at 1" in capsys.readouterr().err
+        assert _claude_calls(env) == []
+
+    def test_non_numeric_index(self, fences, env, capsys):
+        rc = _run(env, "resume", "set", "CSB-STACK")
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "not a roster number" in err
+
+    def test_unknown_named_set(self, fences, env, capsys):
+        rc = _run(env, "resume", "set", "NO-SUCH-SET", "1")
+        assert rc == 1
+        assert "No set named" in capsys.readouterr().err
+
+    def test_too_many_selector_args(self, fences, env, capsys):
+        rc = _run(env, "resume", "set", "A", "B", "C")
+        assert rc == 2
+        assert "at most a name and a number" in capsys.readouterr().err
+
+    def test_empty_named_set(self, fences, env, capsys):
+        create_set(env.claude_dir, "EMPTY-SET", [])
+        rc = _run(env, "resume", "set", "EMPTY-SET", "1")
+        assert rc == 1
+        assert "no members" in capsys.readouterr().err
+
+    def test_member_no_longer_in_index(self, fences, env, capsys):
+        create_set(env.claude_dir, "STALE", [UUID_GONE])
+        rc = _run(env, "resume", "set", "STALE", "1")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "no longer in the index" in err
+        assert _claude_calls(env) == []
+
+    def test_extra_args_on_plain_resume_rejected(self, fences, env, capsys):
+        rc = _run(env, "resume", "ALPHA__session", "extra")
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "takes one query" in err
+        assert _claude_calls(env) == []
+
+
+# ── grammar (parser level) ───────────────────────────────────────────────
+
+class TestGrammar:
+    @pytest.mark.parametrize("argv,session_id,selector", [
+        (["resume", "set", "2"], "set", ["2"]),
+        (["resume", "set", "CSB-STACK", "2"], "set", ["CSB-STACK", "2"]),
+        (["resume", "set", "last", "2"], "set", ["last", "2"]),
+        (["resume", "MY-SESSION"], "MY-SESSION", []),
+        (["resume", "set"], "set", []),
+    ])
+    def test_forms_parse(self, argv, session_id, selector):
+        args = cli.build_parser().parse_args(argv)
+        assert args.session_id == session_id
+        assert args.selector == selector
+
+    def test_passthrough_split_precedes_parsing(self):
+        """`--` is carved off before argparse sees argv, which is why the
+        index form needs no passthrough change at all."""
+        head, passthrough = cli._split_passthrough(
+            ["resume", "set", "2", "--", "--fork-session"])
+        assert passthrough == ["--fork-session"]
+        args = cli.build_parser().parse_args(head)
+        assert args.session_id == "set" and args.selector == ["2"]
+
+    def test_legacy_args_without_selector_still_dispatch(self, fences, env):
+        """Namespaces built before #63 lack `selector` entirely -- the
+        getattr guard in cmd_resume is what keeps them working."""
+        args = SimpleNamespace(
+            session_id="BETA__session", claude_dir=str(env.claude_dir),
+            db=str(env.db), quiet=False, passthrough=[],
+            restore_pruned=False, no_restore_pruned=False,
+        )
+        assert commands_module.cmd_resume(args) == 0
+        assert _launched_uuid(env) == UUID_2

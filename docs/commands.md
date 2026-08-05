@@ -53,6 +53,8 @@ csb set show <name>                   # A named set's roster
 csb set list                          # Every named set, plus the 'last' epoch
 csb set add <name> <session>...       # Extend a named set
 csb set rm <name> [<session>...]      # Remove members, or delete the set
+csb resume set <N>                    # Reclaim member N of the last boot epoch
+csb resume set <name> <N>             # Reclaim member N of a named set
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
 csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
@@ -276,7 +278,31 @@ Members resolve with csb's usual vocabulary (UUID or prefix, session name, path,
 
 A member that has left the index (purged beyond recovery, or an index needing a rebuild) is shown **marked, not dropped** — a set that quietly shrinks is a set that lies about what it holds.
 
-Index addressing (`csb resume set <N>`) is the next phase of the same epic.
+### Reclaiming a set: `csb resume set <N>`
+
+The roster's numbers are addresses. Reclaiming a set is a loop **you** drive, one window at a time:
+
+```bash
+csb set show last            # read the numbered roster
+                             # ...open your terminal, position the tab...
+csb resume set 1             # reclaim member 1 -- here, in this window
+                             # ...next window, your choice of emulator...
+csb resume set 3
+```
+
+| Form | Means |
+|---|---|
+| `csb resume set <N>` | member N of the most recent boot epoch |
+| `csb resume set <name> <N>` | member N of a named set |
+| `csb resume set last <N>` | the explicit form of the first |
+
+**csb never spawns a terminal, window, or tab.** `csb resume set <N>` launches one session in the terminal you ran it from — exactly what `csb resume <query>` has always done. csb cannot know which emulator you use, where the tab belongs, or how you arrange things, and guessing wrong is worse than not guessing: you would have to close what you did not want.
+
+Everything after `--` still forwards, so `csb resume set 2 -- --fork-session` branches from member 2 instead of resuming it.
+
+**Numbers are stable.** An index is a position in the *full* roster, so `csb resume set 3` means the same session today, tomorrow, and after the next restart. A narrower view (`--window`) changes what is *displayed*, never what a number addresses. This also settles a case names cannot: if two sessions share a name — easy to do across a project's branches — the name is ambiguous and the number is not.
+
+Because `set` is a grammar token here, a session literally named `set` is reachable by its UUID rather than `csb resume set`.
 
 ## Reading conversations (distill)
 
