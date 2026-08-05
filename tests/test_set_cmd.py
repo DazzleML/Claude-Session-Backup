@@ -228,12 +228,16 @@ class TestEmptyAndErrorStates:
         assert "Windows-only" in captured.err
         assert "#60" in captured.err
 
-    def test_unknown_set_name_points_at_62(self, fences, db_path, tmp_path,
-                                           capsys):
+    def test_unknown_set_name_names_both_routes(self, fences, db_path,
+                                                tmp_path, capsys):
+        """A name that is neither 'last' nor an existing set errors with
+        both ways out -- the epoch keyword and the listing command."""
         rc = _run(["set", "show", "CSB-STACK"], tmp_path, db_path)
         captured = capsys.readouterr()
         assert rc == 1
-        assert "#62" in captured.err
+        assert "No set named 'CSB-STACK'" in captured.err
+        assert "last" in captured.err
+        assert "csb set list" in captured.err
 
     def test_empty_index_gets_guidance(self, fences, tmp_path, capsys):
         empty = tmp_path / "empty.db"

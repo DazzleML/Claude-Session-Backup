@@ -987,6 +987,66 @@ def build_parser():
              "members; emitted even when empty)",
     )
 
+    # csb set new / list / add / rm -- named sets (#62)
+    p_set_new = set_sub.add_parser(
+        "new",
+        help="Create a named set from one or more sessions",
+        description=(
+            "Create a named set -- a curated group of sessions that belong "
+            "together, independent of any restart. Members are stored as "
+            "full UUIDs (resolved now), so renaming a session later does "
+            "not break the set. Names follow docs/naming.md: PURPOSE for a "
+            "standing set (CSB-STACK), YYYY-M-D__topic for a snapshot."
+        ),
+    )
+    _add_common_flags(p_set_new)
+    p_set_new.add_argument("set_name", metavar="<name>", help="Set name")
+    p_set_new.add_argument(
+        "sessions", nargs="+", metavar="<session>",
+        help="Sessions to include (UUID/prefix, name, path, or keyword)",
+    )
+
+    p_set_list = set_sub.add_parser(
+        "list",
+        help="List named sets (and the most recent boot epoch)",
+        description="List every named set with its member count, plus the "
+                    "most recent boot epoch as the 'last' entry.",
+    )
+    _add_common_flags(p_set_list)
+    p_set_list.add_argument(
+        "--json", action="store_true", help="Machine-readable list",
+    )
+
+    p_set_add = set_sub.add_parser(
+        "add",
+        help="Add sessions to an existing named set",
+        description="Add one or more sessions to a named set. Adding a "
+                    "session that is already a member is a no-op.",
+    )
+    _add_common_flags(p_set_add)
+    p_set_add.add_argument("set_name", metavar="<name>", help="Set name")
+    p_set_add.add_argument(
+        "sessions", nargs="+", metavar="<session>",
+        help="Sessions to add (UUID/prefix, name, path, or keyword)",
+    )
+
+    p_set_rm = set_sub.add_parser(
+        "rm",
+        help="Remove sessions from a named set, or delete the whole set",
+        description=(
+            "Remove one or more sessions from a named set. With no "
+            "sessions listed, deletes the entire set -- the sets file is "
+            "committed in the user class, so a deletion is recoverable "
+            "from your backup store's git history."
+        ),
+    )
+    _add_common_flags(p_set_rm)
+    p_set_rm.add_argument("set_name", metavar="<name>", help="Set name")
+    p_set_rm.add_argument(
+        "sessions", nargs="*", metavar="<session>",
+        help="Sessions to remove; omit to delete the whole set",
+    )
+
     # rebuild-index
     # ── csb update: umbrella for "reach in and refresh a representation" ops ──
     # Lives at the top level so all maintenance verbs group cleanly. Targets:

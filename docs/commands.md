@@ -48,6 +48,11 @@ csb tree -f / -ff                     # Per-node detail (same levels as list/sca
 csb set show last                     # What was active before the last shutdown (boot epoch)
 csb set show last --window 24         # Same, fixed activity window in hours
 csb set show last --json              # Machine-readable roster envelope
+csb set new <name> <session>...       # Create a named set (curated group)
+csb set show <name>                   # A named set's roster
+csb set list                          # Every named set, plus the 'last' epoch
+csb set add <name> <session>...       # Extend a named set
+csb set rm <name> [<session>...]      # Remove members, or delete the set
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
 csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
@@ -252,7 +257,26 @@ Open your preferred terminal, position the tab, paste the row's `csb resume` com
 
 **Freshness.** If the index was last updated before the shutdown, the roster warns on stderr -- the final pre-shutdown activity may not have been indexed yet. `csb backup` catches it up.
 
-Named sets (curated groups you define, independent of restarts) and index addressing (`csb resume set <N>`) are the next phases of the same epic.
+### Named sets
+
+An epoch is observed; a **named set** is curated. It answers the other question — "which sessions do I reload *together*" — and needs no restart, no fences, and no foresight beyond deciding the group:
+
+```bash
+csb set new CSB-STACK <session> <session>   # create from any session queries
+csb set show CSB-STACK                      # same numbered roster as an epoch
+csb set add CSB-STACK <session>             # extend
+csb set rm  CSB-STACK <session>             # remove a member
+csb set rm  CSB-STACK                       # delete the whole set
+csb set list                                # every named set, plus the 'last' epoch
+```
+
+Members resolve with csb's usual vocabulary (UUID or prefix, session name, path, keyword) and are **stored as full UUIDs**, so renaming a session later never breaks a set. Naming conventions and the three reserved names live in [naming.md](naming.md#naming-sets).
+
+**Where they live, and why it matters.** Sets are stored in `csb-sets.json` in your backup store and committed in the *user* class alongside settings and skills. That is deliberate: set membership is not derivable from transcripts, so an index table would be silently erased by `csb update rebuild-index` — a command csb actively recommends. As user data in git, sets survive rebuilds by construction, ride existing backups, and a bad edit is one `git checkout` away. A corrupt sets file is therefore reported rather than silently reset.
+
+A member that has left the index (purged beyond recovery, or an index needing a rebuild) is shown **marked, not dropped** — a set that quietly shrinks is a set that lies about what it holds.
+
+Index addressing (`csb resume set <N>`) is the next phase of the same epic.
 
 ## Reading conversations (distill)
 

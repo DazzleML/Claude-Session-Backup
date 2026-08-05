@@ -68,6 +68,10 @@ USER_DIRS = [
 
 USER_FILES = [
     "CLAUDE.md",
+    # Named session sets (#62). Curated user data, not derivable from
+    # transcripts -- so it lives here rather than in the rebuildable index,
+    # and rides the user commit like any other config.
+    "csb-sets.json",
     "settings.json",
     "settings.local.json",
 ]

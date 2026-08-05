@@ -9,6 +9,29 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.8.1] -- 2026-08-03 (beta)
+
+**Named sets (#62).** v0.8.0 shipped the *observed* kind of session set -- the boot epoch, which answers "what was I running when it died". This adds the *curated* kind: a group you define, independent of any restart, answering "which sessions do I reload together". Same verb, same roster, no new machinery -- a named set is just a name and a list of sessions.
+
+### Added
+- **`csb set new <name> <session>...`** -- create a named set. Members resolve with csb's usual vocabulary (UUID or prefix, session name, path, keyword) and are stored as **full UUIDs**, so renaming a session later never breaks a set.
+- **`csb set show <name>`** -- a named set's roster, rendered by the same numbered renderer as `csb set show last`. One display path for both kinds, so the addressing scheme arriving in the next phase works against either.
+- **`csb set list`** -- every named set with its member count and last-updated date, plus the most recent boot epoch as the `last` entry.
+- **`csb set add <name> <session>...`** and **`csb set rm <name> [<session>...]`** -- extend or trim a set; `rm` with no sessions deletes the whole set. Adding an existing member or removing a non-member is a clear no-op rather than an error.
+- **`--json`** on `set list` and `set show <name>`.
+
+### Notes
+- **Sets live in git, not the index.** `csb-sets.json` sits in the backup store and is committed in the **user** class alongside settings and skills. Set membership is not derivable from transcripts, so an index table would be silently erased by `csb update rebuild-index` -- a command csb actively recommends. As user data in git, sets survive rebuilds *by construction*, ride existing backups, and a bad edit is one `git checkout` away.
+- **A corrupt sets file is reported, never silently reset.** It is curated user data; replacing it with an empty document to make a command succeed would destroy work. The error names the file and its git history.
+- **A member that has left the index is shown marked, not dropped** -- a set that quietly shrinks is a set that lies about what it holds.
+- **Three names are reserved** and rejected at creation: `last` (the boot epoch), `set` (a grammar token after `csb resume`), and bare integers (they would collide with the index addressing arriving next). Near-misses like `last-one` and `42-things` are fine. A reserved name found in a hand-edited file is skipped with a warning rather than honored, so it can never shadow the epoch from inside the data.
+- **Writes are atomic** (same-directory temp file plus `os.replace`), so a crash mid-write leaves the previous file intact rather than a truncated one.
+- `csb set list` degrades rather than fails where boot-fence reading cannot work -- named sets are platform-independent even though epochs are currently Windows-only.
+
+### Docs
+- [`docs/naming.md`](docs/naming.md) gains "Naming sets" -- the two shapes (standing `PURPOSE` vs snapshot `YYYY-M-D__topic`), why set names deliberately do *not* inherit `PROJECT__DATE__topic` (sets span projects), and the reserved names.
+- [`docs/commands.md`](docs/commands.md) gains the CRUD surface, where the file lives, and why that location is the point.
+
 ## [0.8.0] -- 2026-08-02 (beta)
 
 **Restart recovery: `csb set show last` (#61).** A forced restart preserves every session and destroys the one thing csb could not recover -- which sessions were *active together* when the machine went down. Reconstructing that meant scrolling `csb list` and reasoning from memory. Now one command answers it, reading the shutdown fence from the Windows event log and membership from timestamps the index already had. Read-only: no hooks fire, nothing is stored, no schema changes. 1408 tests pass.
@@ -1141,7 +1164,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.1...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

@@ -205,6 +205,32 @@ Fork lineage is covered in full in [commands.md](commands.md#fork-lineage-csb-tr
 | `STRL--Spiritism--READMEs--_git-setup` | `--` runs aren't a tier; use `__` for fields |
 | `Fix Auth Bug` | spaces and mixed case fight shell quoting and filters |
 
+## Naming sets
+
+A **named set** (`csb set new <name> <session>...`) groups sessions that belong together — the three windows that go with one task, or a standing working set you reload often. Set names use the same separator grammar as session names (`__` field, `_` word, `-` compound), but **not** the `PROJECT__DATE__topic` shape, for two reasons:
+
+- **Sets routinely span projects.** A working set might hold two sessions in one repo and one in a sibling library — a leading `PROJECT` field would be wrong for exactly the interesting case. Single-project groups are already findable with `csb list <project>`.
+- **A date is identity for some sets and noise for others.** A standing set outlives any date; a snapshot of one moment is *defined* by its date.
+
+So there are two shapes:
+
+| Kind | Shape | Examples | Why |
+|---|---|---|---|
+| **Standing** — a working set you reload often | `PURPOSE` | `CSB-STACK`, `DAZZLE-LIBS`, `ORACLE-PAIR` | No date: it persists. Named for *purpose*, not project, because it may span several |
+| **Snapshot** — a moment worth keeping | `YYYY-M-D__topic` | `2026-8-2__pre-update-restart` | Date **first**, because the date *is* the identity |
+
+### Reserved names
+
+Three names are rejected at creation, because the `csb set` grammar already claims them:
+
+| Rejected | Why |
+|---|---|
+| `last` | names the most recent boot epoch — `csb set show last` |
+| `set` | a grammar token after `csb resume` |
+| bare integers (`1`, `42`, `0042`) | collide with `csb resume set <N>` index addressing |
+
+Near-misses are fine: `last-one`, `set-aside`, and `42-things` all work. Only the exact tokens are taken.
+
 ## A note on scope
 
 These are conventions, not rules csb enforces. csb indexes whatever name a session has — including none. Legacy and auto-generated names keep working through substring matching; the convention simply makes the *fast* queries land. Adopt it going forward and rename old sessions opportunistically; there's no migration to run.

@@ -29,6 +29,15 @@ python -m pytest tests/ -v
 
 All tests use `--no-gpg-sign` and disable GPG signing in test git repos to avoid key prompts.
 
+### Runtime dependencies
+
+Beyond [rich](https://github.com/Textualize/rich) for terminal rendering, csb sits on two libraries from the DazzleLib stack — both installed automatically by `pip install -e ".[dev]"`, listed here because their pins carry reasons:
+
+- **[dazzle-filekit](https://github.com/DazzleLib/dazzle-filekit)** — cross-platform file operations (symlink recreation, timestamp restore). `csb restore` uses it to rebuild claude-session-logger's `transcript.jsonl` symlink with a graceful no-privilege fallback, and its `is_device_path` keeps shell artifacts like `2>/dev/null` and Windows reserved names out of the folder index.
+- **[dazzle-lib](https://github.com/DazzleLib/dazzle-lib)** — the stack's bedrock (shared Protocols, payload schemas, exception root; stdlib-only by charter). Pinned explicitly rather than taken transitively because csb consumes the path-exposure Continuum primitive behind `csb show --paths`, and is deliberately that module's first outside consumer — the canary for its API before it comes under the stability lock.
+
+If you touch either boundary, check the pin comments in `pyproject.toml` first; they record why the floor is where it is.
+
 ## Project Structure
 
 The project has two layers: the Python CLI (`csb`) and the Claude Code plugin that wraps it.

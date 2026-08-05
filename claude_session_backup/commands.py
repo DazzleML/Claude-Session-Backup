@@ -54,6 +54,7 @@ from .epochs import (
     parse_index_ts,
     read_fences,
 )
+from . import session_sets
 from .set_render import epoch_header_segments, render_roster
 from .index import (
     count_deleted_with_filter,
@@ -3168,7 +3169,12 @@ def cmd_set(args) -> int:
     if action is None:
         print(
             "csb set: pick an action.\n"
-            "  csb set show last   -- what was active at the last shutdown\n"
+            "  csb set show last            -- what was active at the last shutdown\n"
+            "  csb set show <name>          -- a named set's roster\n"
+            "  csb set new <name> <session>...   -- create a named set\n"
+            "  csb set list                 -- every named set\n"
+            "  csb set add <name> <session>...   -- extend a set\n"
+            "  csb set rm <name> [<session>...]  -- remove members, or the set\n"
             "\n"
             "Run `csb set <action> -h` for per-action options.",
             file=sys.stderr,
@@ -3176,9 +3182,348 @@ def cmd_set(args) -> int:
         return 2
     if action == "show":
         return cmd_set_show(args)
+    if action == "new":
+        return cmd_set_new(args)
+    if action == "list":
+        return cmd_set_list(args)
+    if action == "add":
+        return cmd_set_add(args)
+    if action == "rm":
+        return cmd_set_rm(args)
     # argparse's choices shouldn't let us reach here; defensive.
     print(f"Unknown set action: {action}", file=sys.stderr)
     return 2
+
+
+def _set_warn(msg):
+    """Warning sink for session_sets loaders -- stderr, never stdout."""
+    print(f"Warning: {msg}", file=sys.stderr)
+
+
+def _resolve_sessions_for_set(conn, queries, claude_dir):
+    """Resolve CLI session queries to full UUIDs.
+
+    Returns ``(uuids, exit_code)``. Resolution uses the same vocabulary as
+    every other csb command (`_resolve_session_flexible`), and a single
+    unresolvable query aborts the whole operation -- a half-built set is
+    worse than none, because the user would have to work out which
+    members landed.
+    """
+    uuids = []
+    for query in queries:
+        session, code = _resolve_session_flexible(conn, query, claude_dir)
+        if session is None:
+            return None, (code or 1)
+        uuids.append(session["session_id"])
+    return uuids, 0
+
+
+def _named_set_roster(conn, entry):
+    """Materialize a named set's members into roster dicts.
+
+    Members whose session is no longer in the index are rendered marked
+    rather than dropped (#62 AC): a set that silently shrinks is a set
+    that lies about what it holds. Indices are 1-based positions in the
+    FULL member list -- the same stable-numbering contract the epoch
+    roster established, which Phase 3's `csb resume set <N>` relies on.
+    """
+    members = []
+    for index, raw in enumerate(entry.get("members", []), start=1):
+        sid = raw["session_id"]
+        session = get_session(conn, sid)
+        if session is None:
+            members.append({
+                "index": index,
+                "session_id": sid,
+                "session_name": None,
+                "project": None,
+                "start_folder": None,
+                "started_at": None,
+                "last_active_at": None,
+                "jsonl_path": None,
+                "jsonl_mtime": None,
+                "purged": False,
+                "is_fork": False,
+                "in_index": False,
+            })
+            continue
+        members.append({
+            "index": index,
+            "session_id": sid,
+            "session_name": session.get("session_name"),
+            "project": session.get("project"),
+            "start_folder": session.get("start_folder"),
+            "started_at": session.get("started_at"),
+            "last_active_at": session.get("last_active_at"),
+            "jsonl_path": session.get("jsonl_path"),
+            "jsonl_mtime": session.get("jsonl_mtime"),
+            "purged": bool(session.get("deleted_at")),
+            "is_fork": bool(session.get("is_fork")),
+            "in_index": True,
+        })
+    return members
+
+
+def _cmd_set_show_named(args, name, json_mode) -> int:
+    """`csb set show <name>` for a NAMED set (#62).
+
+    Shares the epoch roster's renderer and its stable 1-based numbering,
+    so both kinds of set read identically and Phase 3's index addressing
+    works against either.
+    """
+    config = _get_config(args)
+    try:
+        entry = session_sets.get_set(config["claude_dir"], name,
+                                     warn=_set_warn)
+    except session_sets.SetError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if entry is None:
+        print(
+            f"No set named '{name}'. Use 'last' for the most recent boot "
+            "epoch, or `csb set list` to see named sets.",
+            file=sys.stderr,
+        )
+        return 1
+
+    stored = session_sets.resolve_set_name(config["claude_dir"], name) or name
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    members = _named_set_roster(conn, entry)
+    conn.close()
+
+    if json_mode:
+        print(json.dumps({
+            "kind": "named",
+            "name": stored,
+            "epoch": None,
+            "created_at": entry.get("created_at"),
+            "updated_at": entry.get("updated_at"),
+            "members": [
+                {k: m[k] for k in (
+                    "index", "session_id", "session_name", "project",
+                    "start_folder", "started_at", "last_active_at",
+                    "purged", "is_fork", "in_index",
+                )}
+                for m in members
+            ],
+            "missing_timestamps": 0,
+        }, indent=2, default=str))
+        return 0
+
+    count = len(members)
+    noun = "member" if count == 1 else "members"
+    header = [[
+        (f"Set '{stored}'", "bold"),
+        (f" -- {count} {noun}", "dim"),
+    ]]
+    if not members:
+        for segs in header:
+            _style_print(segs)
+        print()
+        print("This set has no members.")
+        print(f"  Add some: `csb set add {stored} <session>`", file=sys.stderr)
+        return 0
+
+    footers = []
+    unresolved = sum(1 for m in members if not m["in_index"])
+    if unresolved:
+        noun = "member is" if unresolved == 1 else "members are"
+        footers.append(
+            f"Note: {unresolved} {noun} no longer in the index -- purged "
+            "beyond recovery, or the index needs `csb update rebuild-index`."
+        )
+    render_roster(members, header, footer_notes=tuple(footers),
+                  shutdown_utc=None)
+    return 0
+
+
+def cmd_set_new(args) -> int:
+    """`csb set new <name> <session>...` -- create a named set (#62)."""
+    config = _get_config(args)
+    name = args.set_name
+    try:
+        session_sets.validate_set_name(name)
+    except session_sets.SetError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    try:
+        uuids, code = _resolve_sessions_for_set(
+            conn, args.sessions, config["claude_dir"])
+    finally:
+        conn.close()
+    if uuids is None:
+        return code
+
+    try:
+        session_sets.create_set(config["claude_dir"], name, uuids)
+    except session_sets.SetError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    noun = "session" if len(uuids) == 1 else "sessions"
+    print(f"Created set '{name}' with {len(uuids)} {noun}.")
+    print(f"  csb set show {name}", file=sys.stderr)
+    return 0
+
+
+def cmd_set_add(args) -> int:
+    """`csb set add <name> <session>...` -- extend a named set (#62)."""
+    config = _get_config(args)
+    name = args.set_name
+    stored = session_sets.resolve_set_name(config["claude_dir"], name,
+                                           warn=_set_warn)
+    if stored is None:
+        print(f"No set named '{name}' -- create it with `csb set new {name} "
+              "<session>`.", file=sys.stderr)
+        return 1
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    try:
+        uuids, code = _resolve_sessions_for_set(
+            conn, args.sessions, config["claude_dir"])
+    finally:
+        conn.close()
+    if uuids is None:
+        return code
+
+    added = skipped = 0
+    for sid in uuids:
+        if session_sets.add_member(config["claude_dir"], stored, sid):
+            added += 1
+        else:
+            skipped += 1
+    if added:
+        noun = "session" if added == 1 else "sessions"
+        print(f"Added {added} {noun} to '{stored}'.")
+    if skipped:
+        noun = "session was" if skipped == 1 else "sessions were"
+        print(f"{skipped} {noun} already a member of '{stored}' -- no change.")
+    return 0
+
+
+def cmd_set_rm(args) -> int:
+    """`csb set rm <name> [<session>...]` -- remove members or the set (#62)."""
+    config = _get_config(args)
+    name = args.set_name
+    stored = session_sets.resolve_set_name(config["claude_dir"], name,
+                                           warn=_set_warn)
+    if stored is None:
+        print(f"No set named '{name}' -- `csb set list` shows what exists.",
+              file=sys.stderr)
+        return 1
+
+    if not args.sessions:
+        session_sets.delete_set(config["claude_dir"], stored)
+        print(f"Deleted set '{stored}'.")
+        print("  The sets file is committed in the user class -- recoverable "
+              "from your backup store's git history.", file=sys.stderr)
+        return 0
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    try:
+        uuids, code = _resolve_sessions_for_set(
+            conn, args.sessions, config["claude_dir"])
+    finally:
+        conn.close()
+    if uuids is None:
+        return code
+
+    removed = missing = 0
+    for sid in uuids:
+        if session_sets.remove_member(config["claude_dir"], stored, sid):
+            removed += 1
+        else:
+            missing += 1
+    if removed:
+        noun = "session" if removed == 1 else "sessions"
+        print(f"Removed {removed} {noun} from '{stored}'.")
+    if missing:
+        noun = "session was" if missing == 1 else "sessions were"
+        print(f"{missing} {noun} not a member of '{stored}' -- nothing removed.")
+    return 0
+
+
+def cmd_set_list(args) -> int:
+    """`csb set list` -- named sets plus the most recent boot epoch (#62)."""
+    config = _get_config(args)
+    json_mode = getattr(args, "json", False)
+    try:
+        sets = session_sets.list_sets(config["claude_dir"], warn=_set_warn)
+    except session_sets.SetError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+
+    # The epoch section is best-effort: named sets are platform-independent
+    # and must list even where fence reading cannot work (POSIX, no
+    # PowerShell). Degrade to a note, never fail the whole command.
+    epoch = None
+    epoch_note = None
+    try:
+        epoch = latest_epoch(read_fences())
+        if epoch is None:
+            epoch_note = "no shutdown fence found in the event log"
+    except FenceUnavailableError as exc:
+        epoch_note = str(exc)
+
+    if json_mode:
+        payload = {
+            "sets": [
+                {
+                    "name": name,
+                    "members": len(entry.get("members", [])),
+                    "created_at": entry.get("created_at"),
+                    "updated_at": entry.get("updated_at"),
+                }
+                for name, entry in sets
+            ],
+            "epoch": (
+                {
+                    "name": "last",
+                    "shutdown_at": _iso_z(epoch.shutdown_utc),
+                    "cause": epoch.cause,
+                }
+                if epoch is not None else None
+            ),
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    from .timeline import relative_date
+
+    if sets:
+        print("Named sets:")
+        for name, entry in sets:
+            count = len(entry.get("members", []))
+            noun = "member" if count == 1 else "members"
+            updated = entry.get("updated_at")
+            when = f"  updated {relative_date(updated)}" if updated else ""
+            _style_print([
+                ("  ", None), (name, "bold cyan"),
+                (f"  {count} {noun}", None), (when, "dim"),
+            ])
+    else:
+        print("No named sets yet.")
+        print("  Create one: `csb set new CSB-STACK <session> <session>`",
+              file=sys.stderr)
+
+    print()
+    print("Boot epochs:")
+    if epoch is not None:
+        _style_print([
+            ("  ", None), ("last", "bold cyan"),
+            (f"  shutdown {_iso_z(epoch.shutdown_utc)}", None),
+            (f"  ({epoch.cause})", "dim"),
+            ("   csb set show last", "dim"),
+        ])
+    else:
+        print(f"  (unavailable -- {epoch_note})")
+    return 0
 
 
 def _iso_z(dt) -> str:
@@ -3205,15 +3550,10 @@ def cmd_set_show(args) -> int:
             pass
 
     name = getattr(args, "set_name", None)
-    if name != "last":
-        print(
-            f"Unknown set '{name}' -- this version supports only 'last' "
-            "(the most recent boot epoch). Named sets arrive with #62.",
-            file=sys.stderr,
-        )
-        return 1
-
     json_mode = getattr(args, "json", False)
+    if name != "last":
+        return _cmd_set_show_named(args, name, json_mode)
+
     try:
         fences = read_fences()
     except FenceUnavailableError as exc:

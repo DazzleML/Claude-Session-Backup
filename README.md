@@ -13,14 +13,14 @@
 
 ## The Problem
 
-Claude Code stores session data in `~/.claude/projects/` as JSONL files. These can be silently deleted during upgrades, lossy-compacted via `/compact`, or lost when session compatibility breaks between versions. Once gone, your conversation history -- including debugging sessions, architectural decisions, and code review context -- is unrecoverable.
+Claude Code stores session data in `~/.claude/projects/` as JSONL files. These can be silently deleted during upgrades, [lossy](https://github.com/jhlee0409/claude-code-history-viewer/issues/238#issuecomment-4199548325)-[compacted](https://platform.claude.com/docs/en/build-with-claude/compaction) via [/compact](https://code.claude.com/docs/en/commands#:~:text=/compact%20%5Binstructions%5D,and%20memory%20files), or lost when session compatibility breaks between versions. Once gone, your conversation history -- including debugging sessions, architectural decisions, and code review context -- is unrecoverable.
 
 **csb** preserves every session in your existing `~/.claude` git repository, builds a searchable metadata index, detects deletions, and can restore lost sessions from git history.
 
 > [!NOTE]
-> **Beta software (as of v0.6.0) -- feature-complete and in daily use.** Everything on the original roadmap has shipped: backup, deletion detection, content search (JSONL+sesslogs+FTS5), full session restore (a deleted session's complete footprint recovered from git -- transcript, subagents, tool-results, logger sesslogs -- with original timestamps and symlinks, resumable in Claude Code), a viewer launcher (`csb view`), a human-readable chat-log layer (`csb distill`), and guided onboarding (`csb setup`).
+> **Beta (as of v0.6.0) -- feature-complete and in daily use.** Everything on the original roadmap has shipped: backup, deletion detection, content search (JSONL+sesslogs+FTS5), full session restore (a deleted session's complete footprint recovered from git -- transcript, subagents, tool-results, logger sesslogs -- with original timestamps and symlinks, resumable in Claude Code), a viewer launcher (`csb view`), a human-readable chat-log layer (`csb distill`), and guided onboarding (`csb setup`).
 >
-> Beta means the tool works well for real daily use -- not that the surfaces are frozen. Breaking changes may still land between versions when the design calls for it. Please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues) for anything rough -- and, as with any backup tool, keep a second copy of anything truly irreplaceable.
+> Beta means the tool works well for real daily use, not that the interface is frozen. Breaking changes may still happen between versions when the design calls for it. Please [file issues](https://github.com/DazzleML/Claude-Session-Backup/issues) for anything rough. And, as with any backup tool, keep a second copy of anything truly irreplaceable.
 
 ## Quick Start
 
@@ -95,24 +95,28 @@ csb status                      # Summary stats
 
 Every command, every flag, and the nitty-gritties live in **[docs/commands.md](docs/commands.md)**.
 
-### Naming sessions (do this one thing)
+### Naming sessions (do this on start)
 
-Every csb lookup -- `list`, `scan`, `tree`, `resume` -- matches against the session **name**. Claude Code only assigns a UUID, so an unnamed vault is a wall of `3b0924e5-...` that you can only search by *content*. Naming is what makes it browsable, and it's the difference between finding old work in a second and excavating it.
+Every csb lookup (`list`, `scan`, `tree`, `resume`) matches against the session **name**. Claude Code only assigns a UUID, so an unnamed vault is a wall of `3b0924e5-...` that you can only [search](https://github.com/DazzleML/Claude-Session-Backup/blob/main/docs/commands.md#searching-conversations) by *content*. Naming is what makes Claude Code sessions easily browsable, and it's the difference between finding old work in a second or two, versus having to excavate older sessions.
 
-**Hand-name it with `/rename` the moment you walk into a new session**, before any work. You know what you set out to do; nothing else in the system does yet, and nothing reconstructs it as well later. Claude Code then shows that name at the top-right of the input bar, so it also tells you which window is which when several projects are open at once.
+**Hand-name it with `/rename` the moment you walk into a new session**, before any work. Starting a new project you know what you've set out to do; whereas nothing else in the system does yet, and nothing reconstructs it quite as well later. Claude Code then shows that name at the top-right of the text input bar, so it also helps distinguish which Claude window is which when several projects are open at once.
 
-The convention that makes lookups easier and less painful later -- **what**, **when**, **about**:
+The convention that makes lookups easier and less painful later is this -- **what**, **when**, **about**:
 
 ```
 PROJECT__DATE__topic-words
+```
 
+For example:
+
+```
 CLAUDE-SESSION-BACKUP__2026-7-26__add-tree-functionality
 DAZZLECMD__2026-7-5__fiber-nuance-with-FQCN
 ```
 
 The project leads so `csb list DAZZLECMD` and `csb tree "DAZZLECMD*"` anchor on it.
 
-Renaming later is always safe, so rename if the work drifts and name old sessions after the fact. **[docs/naming.md](docs/naming.md)** has the rest: the separator grammar, `/renameAI` for backlogs of older unclear sessions, the workflow that leaves a searchable trail, naming forks so `csb tree` reads as a narrative, and anti-patterns.
+Renaming later is completely safe, so rename if the work drifts and name old sessions after the fact. The **[docs/naming.md](docs/naming.md)** file covers everything else: the separator grammar, `/renameAI` for backlogs of older unclear sessions, the workflow that leaves a searchable trail, naming forks so `csb tree` reads as a narrative, anti-patterns, and more.
 
 ### Common workflows
 
@@ -264,7 +268,8 @@ Like the project?
 ## Related Projects
 
 - [claude-session-logger](https://github.com/DazzleML/claude-session-logger) - Real-time per-session tool/conversation logging; csb backs up and restores its files, and its session naming + state-file conventions shaped csb's
-- [dazzle-filekit](https://github.com/DazzleLib/dazzle-filekit) - Cross-platform file operations toolkit (symlink recreation, timestamp restore)
+- [Claude-Code-Infinite-Perfect-Context](https://github.com/DazzleML/Claude-Code-Infinite-Perfect-Context) (WIP) - Reverse compaction: search past turns and fork into them at full pre-compaction fidelity. csb preserves the pre-compaction transcript it reaches back into, and `csb tree` shows the forks it creates
+- [dazzle-claude-config](https://github.com/DazzleML/dazzle-claude-config) - Sync Claude Code configuration across machines (`ccs`). Complementary territory: csb backs `~/.claude` up, ccs distributes it
 
 ## Acknowledgements
 
