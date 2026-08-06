@@ -120,7 +120,8 @@ def ambiguous_names_in(members: list[dict]) -> frozenset:
 
 
 def member_row_segments(member: dict, shutdown_utc=None,
-                        ambiguous_names=frozenset()) -> list[Segments]:
+                        ambiguous_names=frozenset(),
+                        gap_label: str = "before shutdown") -> list[Segments]:
     """One roster member -> its display lines as segment lists.
 
     Line 1: `  N. <name>  <gap> before shutdown  [markers]`
@@ -140,7 +141,7 @@ def member_row_segments(member: dict, shutdown_utc=None,
     la = parse_index_ts(member["last_active_at"])
     if la is not None and shutdown_utc is not None:
         gap = format_gap(shutdown_utc - la)
-        line1.append((f"  {gap} before shutdown", "yellow"))
+        line1.append((f"  {gap} {gap_label}", "yellow"))
     # Live tiers (#64). "running" only ever appears process-verified;
     # a registry-only row says what is actually known.
     live_status = member.get("live_status")
@@ -148,6 +149,9 @@ def member_row_segments(member: dict, shutdown_utc=None,
         line1.append(("  [running]", "green"))
     elif live_status == "unverified":
         line1.append(("  [no exit observed]", "yellow"))
+    elif live_status == "exited":
+        # An erased registry entry IS an observed exit -- hence the tag.
+        line1.append(("  [exited]", "dim"))
     if member.get("open_at_shutdown"):
         line1.append(("  [open at shutdown]", "bold"))
     if member["is_fork"]:
@@ -197,6 +201,7 @@ def render_roster(
     *,
     footer_notes: tuple[str, ...] = (),
     shutdown_utc=None,
+    gap_label: str = "before shutdown",
     stream=None,
     use_color: Optional[bool] = None,
 ) -> None:
@@ -209,7 +214,8 @@ def render_roster(
     # `csb resume <name>` cannot resolve a duplicate.
     ambiguous = ambiguous_names_in(members)
     for member in members:
-        for segs in member_row_segments(member, shutdown_utc, ambiguous):
+        for segs in member_row_segments(member, shutdown_utc, ambiguous,
+                                        gap_label=gap_label):
             _emit(segs, stream=stream, use_color=use_color)
     for note in footer_notes:
         _emit([("", None)], stream=stream, use_color=use_color)

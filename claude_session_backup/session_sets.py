@@ -41,14 +41,32 @@ from typing import Optional
 SETS_FILENAME = "csb-sets.json"
 FORMAT_VERSION = 1
 
-# Words the `csb set` / `csb resume set` grammar claims. A set named
-# `last` would shadow the boot epoch; `current` would shadow the live
-# registry view (#64); one named `set` would be unreachable after
-# `csb resume`; a bare integer would collide with `csb resume set <N>`
-# index addressing.
-RESERVED_NAMES = frozenset({"last", "set", "current"})
+# Tokens the `csb set` grammar claims -- the FULL grammar is reserved up
+# front (Phase 6 R1), including tokens whose features land later: a set
+# named `last~1` or `2026-8-9` created today would be orphaned the day
+# epoch-history addressing ships, and un-reserving is painful while
+# reserving is free. `last` = the previous epoch; `current` = the live
+# registry view; `boot` = the epoch in progress; `set` stays reserved as
+# a name (kept even though the resume-side sentinel is gone -- a set
+# named `set` is hopelessly confusing in every sentence about it); bare
+# integers collide with index addressing; `last~N` and bare-date shapes
+# are the history addresses. `YYYY-M-D__topic` snapshot names are NOT
+# reserved -- the `__` breaks the date shape.
+RESERVED_NAMES = frozenset({"last", "set", "current", "boot"})
 
 _BARE_INT_RE = re.compile(r"^\d+$")
+_EPOCH_TILDE_RE = re.compile(r"^last~\d+$", re.IGNORECASE)
+_DATE_SHAPED_RE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}$")
+
+
+def is_reserved_name(name: str) -> bool:
+    """THE reserved-name predicate -- one definition shared by creation
+    validation and the hand-edited-file skip, so they can never drift."""
+    lowered = name.lower()
+    return (lowered in RESERVED_NAMES
+            or bool(_BARE_INT_RE.match(name))
+            or bool(_EPOCH_TILDE_RE.match(name))
+            or bool(_DATE_SHAPED_RE.match(name)))
 
 
 class SetError(Exception):
@@ -78,16 +96,12 @@ def validate_set_name(name: str) -> None:
             f"Set name {name!r} has leading or trailing whitespace -- "
             "use the trimmed form."
         )
-    if name.lower() in RESERVED_NAMES:
+    if is_reserved_name(name):
         raise SetError(
-            f"'{name}' is reserved -- 'last' names the most recent boot "
-            "epoch and 'set' is a grammar token after `csb resume`. "
-            "See docs/naming.md for set-name conventions."
-        )
-    if _BARE_INT_RE.match(name):
-        raise SetError(
-            f"'{name}' is reserved -- bare integers collide with "
-            "`csb resume set <N>` index addressing. "
+            f"'{name}' is reserved by the `csb set` grammar -- view names "
+            "(current/boot/last), `last~N` history addresses, bare dates, "
+            "and bare integers are all claimed. A suffix frees the shape: "
+            "'2026-8-9__topic' and 'last-one' are fine. "
             "See docs/naming.md for set-name conventions."
         )
 
@@ -126,7 +140,7 @@ def load_sets(claude_dir, *, warn=None) -> dict:
         )
     cleaned = {}
     for name, entry in raw["sets"].items():
-        if name.lower() in RESERVED_NAMES or _BARE_INT_RE.match(name):
+        if is_reserved_name(name):
             if warn:
                 warn(
                     f"Skipping set '{name}' from {path} -- that name is "

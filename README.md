@@ -70,7 +70,7 @@ csb backup
 - **Readable chat logs**: `csb distill` renders any session as an IM-style log -- the full JSONL stays preserved regardless
 - **Fork lineage**: `csb tree` shows which session spawned which as an indented tree -- including purged ancestors csb still remembers, so a chain never reads headless
 - **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special, answered from the event log and the index, with a paste-able resume command per row
-- **Live session tracking**: `csb set show current` knows what is open *right now* -- csb's hooks register every session on start and erase the record on clean close, so leftovers are crash evidence, `csb set new NAME --from current` freezes the group, and `csb resume set NAME` lists what's left to reclaim
+- **Live session tracking**: `csb set show current` knows what is open *right now* -- csb's hooks register every session on start and erase the record on clean close, so leftovers are crash evidence, `csb set new NAME --from current` freezes the group, and `csb resume --set NAME` lists what's left to reclaim
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
 - **Unattended operation**: `--no-gpg-sign`, `--quiet`, lock file -- designed for cron and Task Scheduler
 - **Cross-platform**: Works on Windows, Linux, macOS, BSD
@@ -90,7 +90,7 @@ csb set show last               # What was active before the last shutdown (rest
 csb set show current            # What is open right now (live registry)
 csb distill <query>             # Read a session as a chat log -> ~/.claude/distilled/
 csb resume <query>              # Reopen in Claude Code (UUID, prefix, name, keyword...)
-csb resume set <N>              # Reclaim member N of a set, in THIS terminal
+csb resume --set <N>            # Reclaim member N of a set, in THIS terminal
 csb view <query>                # Open in Claude Code History Viewer
 csb restore <session-id>        # Recover a deleted session from git history
 csb status                      # Summary stats

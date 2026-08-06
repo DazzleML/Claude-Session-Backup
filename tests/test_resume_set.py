@@ -128,20 +128,20 @@ def _launched_uuid(env):
 
 class TestSelectorForms:
     def test_bare_index_uses_last_epoch(self, fences, env):
-        assert _run(env, "resume", "set", "2") == 0
+        assert _run(env, "resume", "--set", "2") == 0
         assert _launched_uuid(env) == UUID_2
 
     def test_explicit_last_is_equivalent(self, fences, env):
-        assert _run(env, "resume", "set", "last", "2") == 0
+        assert _run(env, "resume", "--set", "last", "2") == 0
         assert _launched_uuid(env) == UUID_2
 
     def test_named_set_index(self, fences, env):
         create_set(env.claude_dir, "CSB-STACK", [UUID_3, UUID_1])
-        assert _run(env, "resume", "set", "CSB-STACK", "2") == 0
+        assert _run(env, "resume", "--set", "CSB-STACK", "2") == 0
         assert _launched_uuid(env) == UUID_1  # insertion order, not activity
 
     def test_first_and_last_members(self, fences, env):
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         assert _launched_uuid(env) == UUID_1
 
     def test_plain_resume_still_works(self, fences, env):
@@ -169,7 +169,7 @@ class TestNeverSpawns:
             monkeypatch.setattr(os, "startfile",
                                 lambda *a, **k: forbidden.append("startfile"))
 
-        assert _run(env, "resume", "set", "2") == 0
+        assert _run(env, "resume", "--set", "2") == 0
         assert forbidden == []
         assert len(_claude_calls(env)) == 1
         # No shell, and cwd is a real directory -- the terminal csb was
@@ -179,7 +179,7 @@ class TestNeverSpawns:
         assert "creationflags" not in kwargs
 
     def test_forwards_passthrough_to_claude(self, fences, env):
-        assert _run(env, "resume", "set", "2", "--", "--fork-session") == 0
+        assert _run(env, "resume", "--set", "2", "--", "--fork-session") == 0
         argv = _claude_calls(env)[0]
         assert argv[-1] == "--fork-session"
         assert argv[1] == "--resume" and argv[2] == UUID_2
@@ -217,7 +217,7 @@ class TestSharedLauncher:
 
         # "abort" = the user declined to restore. That is a choice, not a
         # failure, so it exits 0 -- but nothing is launched.
-        assert _run(env, "resume", "set", "2") == 0
+        assert _run(env, "resume", "--set", "2") == 0
         assert seen["session_id"] == UUID_2
         assert seen["verb"] == "resume"
         assert _claude_calls(env) == []
@@ -225,7 +225,7 @@ class TestSharedLauncher:
         # "error" = non-TTY with no flag: exits 1, still no blind launch.
         seen.clear()
         decision["value"] = "error"
-        assert _run(env, "resume", "set", "2") == 1
+        assert _run(env, "resume", "--set", "2") == 1
         assert seen["session_id"] == UUID_2
         assert _claude_calls(env) == []
 
@@ -234,7 +234,7 @@ class TestSharedLauncher:
         called = []
         monkeypatch.setattr(commands_module, "_resolve_pruned_decision",
                             lambda *a, **k: called.append(1) or "abort")
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         assert called == []
         assert _launched_uuid(env) == UUID_1
 
@@ -253,7 +253,7 @@ class TestStableIndices:
         payload = json.loads(capsys.readouterr().out)
         for member in payload["members"]:
             env.run.reset_mock()
-            assert _run(env, "resume", "set", str(member["index"])) == 0
+            assert _run(env, "resume", "--set", str(member["index"])) == 0
             assert _launched_uuid(env) == member["session_id"]
 
     def test_window_narrowing_keeps_canonical_indices(self, fences, env,
@@ -284,7 +284,7 @@ class TestStableIndices:
         assert view["members"][0]["session_id"] == UUID_3
 
         # The number the user just read must resolve to what they saw.
-        assert _run(env, "resume", "set", "3") == 0
+        assert _run(env, "resume", "--set", "3") == 0
         assert _launched_uuid(env) == UUID_3
 
     def test_wider_window_is_a_noop_not_an_expansion(self, fences, env,
@@ -300,31 +300,35 @@ class TestStableIndices:
 # ── errors ───────────────────────────────────────────────────────────────
 
 class TestErrors:
-    def test_bare_set_asks_which_member(self, fences, env, capsys):
-        rc = _run(env, "resume", "set")
-        err = capsys.readouterr().err
-        assert rc == 2
-        assert "which member" in err
-        assert "csb set show last" in err
+    def test_bare_dashset_is_the_reclaim_menu_of_last(self, fences, env,
+                                                      capsys):
+        """R1: bare `--set` (const="last") lists the last epoch's members
+        not currently open -- with an empty registry, all of them."""
+        rc = _run(env, "resume", "--set")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "available to reclaim" in out
         assert _claude_calls(env) == []
 
-    def test_bare_set_documents_the_named_set_escape(self, fences, env,
-                                                     capsys):
-        """#63 AC deviation: `csb resume -- set` is unimplementable (the
-        `--` split removes it before parsing), so the documented route
-        for a session literally named `set` is its UUID."""
-        _run(env, "resume", "set")
-        assert "UUID" in capsys.readouterr().err
+    def test_literal_set_is_just_a_query_now(self, fences, env, capsys):
+        """The sentinel is gone: `csb resume set` resolves 'set' as an
+        ordinary session query (here: no such session -> rc 1), never a
+        grammar token. A session literally named `set` is resumable."""
+        rc = _run(env, "resume", "set")
+        assert rc == 1
+        err_out = capsys.readouterr()
+        assert "which member" not in err_out.err
+        assert _claude_calls(env) == []
 
     def test_out_of_range_names_the_valid_range(self, fences, env, capsys):
-        rc = _run(env, "resume", "set", "99")
+        rc = _run(env, "resume", "--set", "99")
         err = capsys.readouterr().err
         assert rc == 1
         assert "1-3" in err
         assert _claude_calls(env) == []
 
     def test_zero_and_negative_rejected(self, fences, env, capsys):
-        assert _run(env, "resume", "set", "0") == 2
+        assert _run(env, "resume", "--set", "0") == 2
         assert "start at 1" in capsys.readouterr().err
         assert _claude_calls(env) == []
 
@@ -333,72 +337,73 @@ class TestErrors:
         """Since #64, bare `csb resume set <name>` is the reclaim menu
         (what's still available), not an error. An unknown set still
         errors."""
-        rc = _run(env, "resume", "set", "CSB-STACK")
+        rc = _run(env, "resume", "--set", "CSB-STACK")
         err = capsys.readouterr().err
         assert rc == 1
         assert "No set named" in err
 
     def test_name_plus_non_numeric_still_errors(self, fences, env, capsys):
-        rc = _run(env, "resume", "set", "CSB-STACK", "two")
+        rc = _run(env, "resume", "--set", "CSB-STACK", "two")
         err = capsys.readouterr().err
         assert rc == 2
         assert "not a roster number" in err
 
     def test_unknown_named_set(self, fences, env, capsys):
-        rc = _run(env, "resume", "set", "NO-SUCH-SET", "1")
+        rc = _run(env, "resume", "--set", "NO-SUCH-SET", "1")
         assert rc == 1
         assert "No set named" in capsys.readouterr().err
 
-    def test_too_many_selector_args(self, fences, env, capsys):
-        rc = _run(env, "resume", "set", "A", "B", "C")
-        assert rc == 2
-        assert "at most a name and a number" in capsys.readouterr().err
+    def test_too_many_args_rejected_by_argparse(self, fences, env, capsys):
+        with pytest.raises(SystemExit) as exc:
+            _run(env, "resume", "--set", "A", "B", "C")
+        assert exc.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
 
     def test_empty_named_set(self, fences, env, capsys):
         create_set(env.claude_dir, "EMPTY-SET", [])
-        rc = _run(env, "resume", "set", "EMPTY-SET", "1")
+        rc = _run(env, "resume", "--set", "EMPTY-SET", "1")
         assert rc == 1
         assert "no members" in capsys.readouterr().err
 
     def test_member_no_longer_in_index(self, fences, env, capsys):
         create_set(env.claude_dir, "STALE", [UUID_GONE])
-        rc = _run(env, "resume", "set", "STALE", "1")
+        rc = _run(env, "resume", "--set", "STALE", "1")
         err = capsys.readouterr().err
         assert rc == 1
         assert "no longer in the index" in err
         assert _claude_calls(env) == []
 
     def test_extra_args_on_plain_resume_rejected(self, fences, env, capsys):
-        rc = _run(env, "resume", "ALPHA__session", "extra")
-        err = capsys.readouterr().err
-        assert rc == 2
-        assert "takes one query" in err
-        assert _claude_calls(env) == []
+        with pytest.raises(SystemExit) as exc:
+            _run(env, "resume", "ALPHA__session", "extra")
+        assert exc.value.code == 2
+        assert "unrecognized arguments" in capsys.readouterr().err
 
 
 # ── grammar (parser level) ───────────────────────────────────────────────
 
 class TestGrammar:
-    @pytest.mark.parametrize("argv,session_id,selector", [
-        (["resume", "set", "2"], "set", ["2"]),
-        (["resume", "set", "CSB-STACK", "2"], "set", ["CSB-STACK", "2"]),
-        (["resume", "set", "last", "2"], "set", ["last", "2"]),
-        (["resume", "MY-SESSION"], "MY-SESSION", []),
-        (["resume", "set"], "set", []),
+    @pytest.mark.parametrize("argv,from_set,query", [
+        (["resume", "--set", "2"], "2", None),
+        (["resume", "--set", "CSB-STACK", "2"], "CSB-STACK", "2"),
+        (["resume", "--set", "last", "2"], "last", "2"),
+        (["resume", "--set"], "last", None),          # const kicks in
+        (["resume", "MY-SESSION"], None, "MY-SESSION"),
+        (["resume", "set"], None, "set"),              # plain query now
     ])
-    def test_forms_parse(self, argv, session_id, selector):
+    def test_forms_parse(self, argv, from_set, query):
         args = cli.build_parser().parse_args(argv)
-        assert args.session_id == session_id
-        assert args.selector == selector
+        assert args.from_set == from_set
+        assert args.session_id == query
 
     def test_passthrough_split_precedes_parsing(self):
         """`--` is carved off before argparse sees argv, which is why the
         index form needs no passthrough change at all."""
         head, passthrough = cli._split_passthrough(
-            ["resume", "set", "2", "--", "--fork-session"])
+            ["resume", "--set", "2", "--", "--fork-session"])
         assert passthrough == ["--fork-session"]
         args = cli.build_parser().parse_args(head)
-        assert args.session_id == "set" and args.selector == ["2"]
+        assert args.from_set == "2" and args.session_id is None
 
     def test_legacy_args_without_selector_still_dispatch(self, fences, env):
         """Namespaces built before #63 lack `selector` entirely -- the
@@ -446,7 +451,7 @@ class TestLiveGuard:
             raise AssertionError("scan must not run without a registry hit")
 
         monkeypatch.setattr(lv, "scan", forbidden_scan)
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         assert "appears to be open" not in capsys.readouterr().err
         assert len(_claude_calls(env)) == 1
 
@@ -455,14 +460,14 @@ class TestLiveGuard:
         self._make_live(env, monkeypatch, UUID_1)
         monkeypatch.setattr(commands_module.sys.stdin, "isatty",
                             lambda: False)
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         err = capsys.readouterr().err
         assert "appears to be open" in err and "777" in err
         assert len(_claude_calls(env)) == 1  # advisory: still launched
 
     def test_no_allow_live_refuses(self, fences, env, monkeypatch, capsys):
         self._make_live(env, monkeypatch, UUID_1)
-        assert _run(env, "resume", "set", "1", "--no-allow-live") == 0
+        assert _run(env, "resume", "--set", "1", "--no-allow-live") == 0
         err = capsys.readouterr().err
         assert "not resuming" in err
         assert "--fork-session" in err
@@ -471,13 +476,13 @@ class TestLiveGuard:
     def test_allow_live_skips_the_prompt(self, fences, env, monkeypatch,
                                          capsys):
         self._make_live(env, monkeypatch, UUID_1)
-        assert _run(env, "resume", "set", "1", "--allow-live") == 0
+        assert _run(env, "resume", "--set", "1", "--allow-live") == 0
         assert len(_claude_calls(env)) == 1
 
     def test_fork_session_is_exempt(self, fences, env, monkeypatch, capsys):
         """Branching provably mints a new session id -- never warn."""
         self._make_live(env, monkeypatch, UUID_1)
-        assert _run(env, "resume", "set", "1", "--",
+        assert _run(env, "resume", "--set", "1", "--",
                     "--fork-session") == 0
         assert "appears to be open" not in capsys.readouterr().err
         argv = _claude_calls(env)[0]
@@ -489,7 +494,7 @@ class TestLiveGuard:
         self._make_live(env, monkeypatch, UUID_1)
         monkeypatch.setattr(commands_module.sys.stdin, "isatty",
                             lambda: False)
-        assert _run(env, "resume", "set", "1", "--", "--model", "opus") == 0
+        assert _run(env, "resume", "--set", "1", "--", "--model", "opus") == 0
         assert "appears to be open" in capsys.readouterr().err
 
     def test_registry_only_hit_warns_without_pid(self, fences, env,
@@ -506,7 +511,7 @@ class TestLiveGuard:
                                              tzinfo=timezone.utc))
         monkeypatch.setattr(commands_module.sys.stdin, "isatty",
                             lambda: False)
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         err = capsys.readouterr().err
         assert "appears to be open" in err
         assert "pid" not in err  # registry-only: no process proof
@@ -519,7 +524,7 @@ class TestLiveGuard:
             raise RuntimeError("WMI on fire")
 
         monkeypatch.setattr(lv, "scan", boom)
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         assert len(_claude_calls(env)) == 1
 
     def test_fork_in_combo_is_still_exempt(self, fences, env, monkeypatch,
@@ -527,7 +532,7 @@ class TestLiveGuard:
         """`-- --model opus --fork-session`: exemption keys on the fork
         flag's PRESENCE (session-id divergence), not on it being alone."""
         self._make_live(env, monkeypatch, UUID_1)
-        assert _run(env, "resume", "set", "1", "--",
+        assert _run(env, "resume", "--set", "1", "--",
                     "--model", "opus", "--fork-session") == 0
         assert "appears to be open" not in capsys.readouterr().err
 
@@ -540,9 +545,9 @@ class TestLiveGuard:
         monkeypatch.setattr(commands_module.sys.stdin, "isatty",
                             lambda: True)
         monkeypatch.setattr("builtins.input", lambda prompt: "n")
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         assert _claude_calls(env) == []
 
         monkeypatch.setattr("builtins.input", lambda prompt: "y")
-        assert _run(env, "resume", "set", "1") == 0
+        assert _run(env, "resume", "--set", "1") == 0
         assert len(_claude_calls(env)) == 1

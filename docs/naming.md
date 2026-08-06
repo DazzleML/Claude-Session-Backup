@@ -221,14 +221,17 @@ So there are two shapes:
 
 ### Reserved names
 
-Three names are rejected at creation, because the `csb set` grammar already claims them:
+Some shapes are rejected at creation, because the `csb set` grammar already claims them:
 
 | Rejected | Why |
 |---|---|
 | `last` | names the most recent boot epoch — `csb set show last` |
 | `current` | names the live registry view — `csb set show current` |
-| `set` | a grammar token after `csb resume` |
-| bare integers (`1`, `42`, `0042`) | collide with `csb resume set <N>` index addressing |
+| `boot` | names the epoch-in-progress view — `csb set show boot` |
+| `last~N` (e.g. `last~1`) | epoch-history addresses (previous boots) |
+| bare dates (`2026-8-9`) | epoch date-addresses; `2026-8-9__topic` stays legal |
+| `set` | reserved for grammar safety around the `csb set` command family |
+| bare integers (`1`, `42`, `0042`) | collide with `csb resume --set <N>` index addressing |
 
 Near-misses are fine: `last-one`, `set-aside`, and `42-things` all work. Only the exact tokens are taken.
 

@@ -3237,7 +3237,7 @@ def _named_set_roster(conn, entry):
     rather than dropped (#62 AC): a set that silently shrinks is a set
     that lies about what it holds. Indices are 1-based positions in the
     FULL member list -- the same stable-numbering contract the epoch
-    roster established, which Phase 3's `csb resume set <N>` relies on.
+    roster established, which `csb resume --set <N>` relies on.
     """
     members = []
     for index, raw in enumerate(entry.get("members", []), start=1):
@@ -3279,7 +3279,7 @@ def _named_set_roster(conn, entry):
 def _materialize_set_roster(config, name):
     """The canonical roster for a set -- epoch (`last`) or named (#63).
 
-    One path serves `csb set show` and `csb resume set <N>`, so an index
+    One path serves `csb set show` and `csb resume --set <N>`, so an index
     printed by the first always addresses the same session in the second.
 
     **This function takes no filter parameters, and that absence is the
@@ -3291,7 +3291,7 @@ def _materialize_set_roster(config, name):
 
     That split is load-bearing. An earlier version accepted the window
     here, so `csb set show last --window 60` renumbered from 1 over a
-    subset while `csb resume set 1` still addressed the full roster --
+    subset while resume-by-index still addressed the full roster --
     two different sessions behind one number, in a workflow whose whole
     premise is "read the roster, walk away, run the next one". The
     docstring claimed this contract while the signature broke it.
@@ -3305,6 +3305,8 @@ def _materialize_set_roster(config, name):
     window_hours = None  # canonical roster: never narrowed here
     if name == "current":
         return _materialize_current_roster(config), 0
+    if name == "boot":
+        return _materialize_boot_roster(config)
     if name == "last":
         try:
             fences = read_fences()
@@ -3372,6 +3374,118 @@ def _materialize_set_roster(config, name):
     }, 0
 
 
+_INVOCATION_NOTE = ("(row numbers reflect this invocation -- they renumber "
+                    "as sessions open and close; hints use stable names)")
+
+
+def _cmd_set_show_boot(args, json_mode) -> int:
+    """`csb set show boot` -- everything active since this boot (R1)."""
+    config = _get_config(args)
+    roster, code = _materialize_set_roster(config, "boot")
+    if roster is None:
+        return code
+    all_members = roster["members"]
+    boot_utc = roster["boot_utc"]
+
+    display_window = getattr(args, "window", None)
+    members, hidden = _filter_roster_for_display(
+        all_members, roster["as_of"], display_window)
+
+    if json_mode:
+        payload = {
+            "kind": "boot",
+            "name": "boot",
+            "epoch": None,
+            "boot_at": _iso_z(boot_utc),
+            "as_of": _iso_z(roster["as_of"]),
+            "hooks_active": roster["hooks_active"],
+            "scan_ok": roster["scan_ok"],
+            "bare_processes": roster["bare_processes"],
+            "display_window_hours": display_window,
+            "roster_size": len(all_members),
+            "hidden_by_window": hidden,
+            "members": [
+                {k: m[k] for k in (
+                    "index", "session_id", "session_name", "project",
+                    "start_folder", "started_at", "last_active_at",
+                    "purged", "is_fork", "in_index", "live_status", "pid",
+                )}
+                for m in members
+            ],
+            "missing_timestamps": roster["missing_timestamps"],
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    from .set_render import render_roster as _render
+    from .timeline import relative_date
+
+    running = sum(1 for m in all_members
+                  if m.get("live_status") == "running")
+    unverified = sum(1 for m in all_members
+                     if m.get("live_status") == "unverified")
+    exited = sum(1 for m in all_members if m.get("live_status") == "exited")
+
+    header = [[
+        ("Active this boot", "bold"),
+        (f" -- booted {relative_date(_iso_z(boot_utc))}", "dim"),
+        (" -- as of this invocation", "dim"),
+    ]]
+    noun = "session" if len(all_members) == 1 else "sessions"
+    tier_line = [
+        (f"{len(all_members)} {noun}: ", None),
+        (f"{running} running", "green" if running else None),
+        (f", {unverified} no exit observed",
+         "yellow" if unverified else None),
+        (f", {exited} exited", None),
+    ]
+    header.append(tier_line)
+    header.append([(_INVOCATION_NOTE, "dim")])
+    if hidden:
+        header.append([
+            (f"Showing {len(members)} of {len(all_members)} -- narrowed to "
+             f"{display_window:g}h before now. ", None),
+            ("Numbers stay canonical, so gaps are expected.", "dim"),
+        ])
+
+    if not all_members:
+        for segs in header[:1]:
+            _style_print(segs)
+        print("No sessions with activity since this boot.")
+        return 0
+
+    # Stable hints on a live view: running rows get name-based fork hints.
+    from .set_render import ambiguous_names_in, _resume_hint_target
+    ambiguous = ambiguous_names_in(members)
+    for m in members:
+        if m.get("live_status") == "running":
+            m["hint_override"] = (
+                f"csb resume {_resume_hint_target(m, ambiguous)} "
+                "-- --fork-session"
+            )
+
+    footers = []
+    if not roster["hooks_active"]:
+        footers.append(
+            "exit detection unavailable (no hook activity observed this "
+            "boot) -- rows show activity only."
+        )
+    if roster["missing_timestamps"]:
+        n = roster["missing_timestamps"]
+        noun2 = "session lacks" if n == 1 else "sessions lack"
+        footers.append(f"Note: {n} {noun2} activity timestamps and cannot "
+                       "be placed in any window.")
+    if not members and hidden:
+        for segs in header:
+            _style_print(segs)
+        print(f"No sessions active within {display_window:g}h of now.")
+        return 0
+
+    _render(members, header, footer_notes=tuple(footers),
+            shutdown_utc=roster["as_of"], gap_label="ago")
+    return 0
+
+
 def _cmd_set_show_current(args, json_mode) -> int:
     """`csb set show current` -- what is open right now (#64)."""
     config = _get_config(args)
@@ -3433,6 +3547,7 @@ def _cmd_set_show_current(args, json_mode) -> int:
         (f", {unverified} no exit observed", "yellow" if unverified else None),
     ]
     header.append(tier_line)
+    header.append([(_INVOCATION_NOTE, "dim")])
     if not roster["scan_ok"]:
         header.append([
             ("Process verification unavailable -- every row is registry-only.",
@@ -3451,10 +3566,13 @@ def _cmd_set_show_current(args, json_mode) -> int:
     # Per-state hints (the C11/#64 rule): a RUNNING session must not get a
     # plain resume hint -- that would invite a second client onto one
     # transcript. Branch from it instead.
+    from .set_render import ambiguous_names_in, _resume_hint_target
+    ambiguous = ambiguous_names_in(members)
     for m in members:
         if m["live_status"] == "running":
             m["hint_override"] = (
-                f"csb resume set current {m['index']} -- --fork-session"
+                f"csb resume {_resume_hint_target(m, ambiguous)} "
+                "-- --fork-session"
             )
 
     _render(members, header, footer_notes=tuple(footers), shutdown_utc=None)
@@ -3792,6 +3910,16 @@ def cmd_set_show(args) -> int:
             )
             return 2
         return _cmd_set_show_current(args, json_mode)
+    if name == "boot":
+        if getattr(args, "open_only", False):
+            print(
+                "`--open` reads the last-shutdown snapshot; `boot` is the "
+                "epoch in progress -- nothing has shut down yet. Use "
+                "`csb set show last --open`.",
+                file=sys.stderr,
+            )
+            return 2
+        return _cmd_set_show_boot(args, json_mode)
     if name != "last":
         return _cmd_set_show_named(args, name, json_mode)
 
@@ -3884,7 +4012,7 @@ def cmd_set_show(args) -> int:
                 "window_hours": round(window_hours, 1),
                 "window_source": window_source,
             },
-            # `index` is the CANONICAL position -- what `csb resume set <N>`
+            # `index` is the CANONICAL position -- what `csb resume --set <N>`
             # addresses -- so a narrowed view yields gaps, never a
             # renumbering. roster_size is the unfiltered total.
             "display_window_hours": display_window,
@@ -3925,7 +4053,7 @@ def cmd_set_show(args) -> int:
             (f"Showing {len(members)} of {len(all_members)} -- "
              f"{narrow_desc}. ", None),
             ("Numbers stay canonical, so gaps are expected and "
-             "`csb resume set <N>` still matches.", "dim"),
+             "`csb resume --set` numbers still match.", "dim"),
         ])
     if not members:
         for segs in header:
@@ -5283,26 +5411,31 @@ def cmd_resume(args) -> int:
     receives the one format that is unconditionally direct), .jsonl path,
     directory, sesslog folder name, or free-text keyword.
 
-    The literal query ``set`` switches to index addressing
-    (``csb resume set <N>``, #63) -- dispatched here as a sentinel
-    because argparse cannot host a subparser alongside a free positional
-    query on the same parser.
+    Index addressing rides ``--set`` (Phase 6 R1 -- it replaced the old
+    ``set`` sentinel so no session name is ever shadowed; a session
+    literally named ``set`` resumes plainly).
     """
-    # getattr, not args.selector: many call sites (and every pre-#63 test)
-    # build an args namespace without the new positional.
-    selector = list(getattr(args, "selector", None) or [])
-    if args.session_id == "set":
-        return _cmd_resume_set(args, selector)
-    if selector:
+    # getattr: pre-R1 call sites and test namespaces lack the attribute.
+    from_set = getattr(args, "from_set", None)
+    query = getattr(args, "session_id", None)
+    if from_set is not None:
+        # `--set 3` binds "3" as the flag VALUE; integers are reserved
+        # set names, so a digit-shaped from_set can only mean an index
+        # into `last`.
+        if from_set.isdigit() and query is None:
+            return _cmd_resume_set(args, "last", from_set)
+        return _cmd_resume_set(args, from_set, query)
+    if query is None:
         print(
-            f"csb resume takes one query -- got extra arguments: "
-            f"{' '.join(selector)}\n"
-            "  For index addressing use `csb resume set <N>`; to pass flags "
-            "to claude, put them after `--`.",
+            "csb resume needs a session query, or --set for index "
+            "addressing.\n"
+            "  csb resume <query>          resume a session\n"
+            "  csb resume --set 3          member 3 of the last boot epoch\n"
+            "  csb resume --set NAME       the reclaim menu",
             file=sys.stderr,
         )
         return 2
-    return _resume_query(args, args.session_id)
+    return _resume_query(args, query)
 
 
 def _materialize_current_roster(config) -> dict:
@@ -5370,6 +5503,120 @@ def _materialize_current_roster(config) -> dict:
     }
 
 
+def _materialize_boot_roster(config):
+    """The `boot` set: everything active since this boot (Phase 6 R1).
+
+    The epoch in progress -- the view between `current` (open right now)
+    and `last` (the previous epoch). Cross-platform by construction: the
+    only boundary it needs is the current boot instant, never fence
+    history. Returns ``(roster, 0)`` or ``(None, exit_code)``.
+
+    Tier inference per member (the R1 DWP's D2 table):
+      in this-boot registry + process proof  -> running
+      in this-boot registry, no proof        -> unverified
+      absent from registry, hooks active     -> exited (its close ERASED
+                                                the entry -- an observed
+                                                exit, hence the tag)
+      absent, hooks not provably active      -> None (unadorned row --
+                                                never a guessed tag)
+    """
+    from datetime import datetime as _dt
+
+    from . import live_registry, liveness
+
+    claude_dir = config["claude_dir"]
+    boot_utc = live_registry.current_boot_utc()
+    if boot_utc is None:
+        print(
+            "Cannot determine the current boot time on this system -- the "
+            "`boot` view is defined by it. (`current` and `last` may still "
+            "work.)",
+            file=sys.stderr,
+        )
+        return None, 1
+    now_utc = _dt.now(timezone.utc)
+
+    entries = live_registry.read_entries(claude_dir)
+    this_boot, _pre = live_registry.split_by_boot(entries, boot_utc)
+    registry_ids = {e["session_id"]: e for e in this_boot}
+    snapshot = live_registry.read_snapshot(claude_dir)
+    snap_captured = live_registry.parse_entry_ts(
+        (snapshot or {}).get("captured_at"))
+    hooks_active = bool(this_boot) or (
+        snap_captured is not None and snap_captured >= boot_utc)
+
+    scan = liveness.scan() if this_boot else liveness.LiveScan(ok=True)
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    rows = conn.execute(
+        "SELECT session_id, session_name, project, start_folder,"
+        "       started_at, last_active_at, jsonl_path, jsonl_mtime,"
+        "       deleted_at, is_fork"
+        "  FROM sessions"
+    ).fetchall()
+    members, missing = build_roster(rows, boot_utc, now_utc)
+
+    indexed_ids = set()
+    for m in members:
+        indexed_ids.add(m["session_id"])
+        entry = registry_ids.get(m["session_id"])
+        if entry is not None:
+            pid = liveness.verify_member(scan, m["session_id"],
+                                         m["session_name"])
+            m["live_status"] = "running" if pid is not None else "unverified"
+            m["pid"] = pid
+        elif hooks_active:
+            m["live_status"] = "exited"
+            m["pid"] = None
+        else:
+            m["live_status"] = None
+            m["pid"] = None
+
+    # Registry-only appendix: open sessions csb has not indexed yet (same
+    # union `current` shows), appended AFTER the activity-ordered members
+    # so their churn never renumbers index-backed rows.
+    index = len(members)
+    for entry in this_boot:
+        sid = entry["session_id"]
+        if sid in indexed_ids:
+            continue
+        session = get_session(conn, sid) or {}
+        pid = liveness.verify_member(scan, sid, session.get("session_name"))
+        index += 1
+        members.append({
+            "index": index,
+            "session_id": sid,
+            "session_name": session.get("session_name"),
+            "project": session.get("project"),
+            "start_folder": session.get("start_folder") or entry.get("cwd"),
+            "started_at": entry.get("started_at"),
+            "last_active_at": session.get("last_active_at"),
+            "jsonl_path": session.get("jsonl_path"),
+            "jsonl_mtime": session.get("jsonl_mtime"),
+            "purged": bool(session.get("deleted_at")),
+            "is_fork": bool(session.get("is_fork")),
+            "in_index": bool(session),
+            "live_status": "running" if pid is not None else "unverified",
+            "pid": pid,
+        })
+    conn.close()
+
+    return {
+        "kind": "boot",
+        "name": "boot",
+        "epoch": None,
+        "boot_utc": boot_utc,
+        "as_of": now_utc,
+        "members": members,
+        "missing_timestamps": missing,
+        "hooks_active": hooks_active,
+        "scan_ok": scan.ok,
+        "bare_processes": len(scan.bare_pids),
+        "window_hours": None, "window_source": None, "last_scan_at": None,
+    }, 0
+
+
 def _live_session_ids(config) -> set:
     """Session ids open THIS boot per the registry (the liveness rule)."""
     from . import live_registry
@@ -5387,7 +5634,7 @@ def _filter_roster_for_display(members, shutdown_utc, window_hours):
     assigned in the canonical roster, so a narrowed view shows gaps
     (``1, 3, 5``) rather than renumbering -- the gaps are the honest
     signal that rows were filtered out, and they keep
-    `csb resume set 3` meaning what the reader just saw.
+    `csb resume --set 3` meaning what the reader just saw.
 
     A window wider than the epoch simply matches everything: there is
     nothing before the previous fence that belongs to *this* epoch.
@@ -5405,8 +5652,8 @@ def _filter_roster_for_display(members, shutdown_utc, window_hours):
     return kept, len(members) - len(kept)
 
 
-def _cmd_resume_set(args, selector) -> int:
-    """`csb resume set [<name>] <N>` -- reclaim member N of a set (#63).
+def _cmd_resume_set(args, set_name: str, index_token) -> int:
+    """`csb resume --set [NAME] [N]` -- reclaim member N of a set (#63/R1).
 
     Reclaiming a set is a loop the USER drives: read the roster, open a
     terminal where you want it, run this. csb supplies the addressing,
@@ -5416,45 +5663,22 @@ def _cmd_resume_set(args, selector) -> int:
 
     Indices are positions in the FULL roster (see
     :func:`_materialize_set_roster`), so a number means the same session
-    today, tomorrow, and after the next restart.
+    today, tomorrow, and after the next restart. ``index_token=None`` is
+    the RECLAIM MENU: what is still available to reopen (available = not
+    currently open per the registry; exiting a session returns it,
+    because a clean close removes its entry -- liveness, not progress).
     """
-    if not selector:
-        print(
-            "csb resume set: which member?\n"
-            "  csb resume set <N>            member N of the last boot epoch\n"
-            "  csb resume set <name> <N>     member N of a named set\n"
-            "\n"
-            "Run `csb set show last` for the numbered roster.\n"
-            "(To resume a session literally named 'set', use its UUID -- "
-            "`set` is a grammar token here.)",
-            file=sys.stderr,
-        )
-        return 2
-
-    if len(selector) > 2:
-        print(
-            f"csb resume set takes at most a name and a number -- got: "
-            f"{' '.join(selector)}",
-            file=sys.stderr,
-        )
-        return 2
-
-    if len(selector) == 1 and not selector[0].isdigit():
-        # Name with no number: the RECLAIM MENU (#64/C11) -- what is still
-        # available to reopen. Available = not currently open per the
-        # registry; exiting a session returns it to this list because a
-        # clean close removes its entry. Liveness, not progress.
-        return _reclaim_menu(args, selector[0])
-
-    set_name, index_token = ("last", selector[0]) if len(selector) == 1 \
-        else (selector[0], selector[1])
+    if index_token is None:
+        return _reclaim_menu(args, set_name)
 
     try:
         index = int(index_token)
     except ValueError:
         print(
             f"'{index_token}' is not a roster number. Use the number shown "
-            f"by `csb set show {set_name}`.",
+            f"by `csb set show {set_name}` -- and note the order: "
+            f"`csb resume --set {index_token} <N>` if "
+            f"'{index_token}' was meant as the set name.",
             file=sys.stderr,
         )
         return 2
@@ -5517,13 +5741,13 @@ def _cmd_resume_set(args, selector) -> int:
 
 
 def _reclaim_menu(args, set_name: str) -> int:
-    """Bare `csb resume set <name>`: what is still available to reopen.
+    """Bare `csb resume --set <name>`: what is still available to reopen.
 
     A member is AVAILABLE when it is not currently open per the Live
     Session Registry -- so exiting a session puts it back on this list,
     and resuming one (however: csb, bare `claude --resume`, anything
     that fires SessionStart) removes it. Indices stay canonical, so the
-    gaps ARE the progress indicator and `csb resume set <name> <N>`
+    gaps ARE the progress indicator and `csb resume --set <name> <N>`
     means the same thing before and after.
     """
     config = _get_config(args)
@@ -5561,7 +5785,7 @@ def _reclaim_menu(args, set_name: str) -> int:
              f"`csb set show {roster['name']}` shows everyone)", "dim"),
         ])
     for m in available:
-        m["hint_override"] = f"csb resume set {roster['name']} {m['index']}"
+        m["hint_override"] = f"csb resume --set {roster['name']} {m['index']}"
     _render(available, header, shutdown_utc=None)
     return 0
 
@@ -5689,7 +5913,7 @@ def _live_pid_for(config, session_id: str, session_name) -> Optional[int]:
 def _resume_session_row(args, config, session) -> int:
     """Launch ``claude --resume`` for an already-resolved session (#63).
 
-    Extracted so `csb resume <query>` and `csb resume set <N>` share one
+    Extracted so `csb resume <query>` and `csb resume --set <N>` share one
     launcher rather than two. Everything that makes resume more than a
     subprocess call lives here -- the pruned-session restore offer, the
     live-session guard (#67), the transcript preflight, cwd derivation,

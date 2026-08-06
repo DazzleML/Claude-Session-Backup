@@ -530,6 +530,10 @@ def build_parser():
             "`claude --resume <uuid>`. Forward extra args to claude after `--`:\n\n"
             "  csb resume <query>                    resume it\n"
             "  csb resume <query> -- --fork-session  resume + forward --fork-session to claude\n\n"
+            "Index addressing via --set (numbers from `csb set show`):\n\n"
+            "  csb resume --set 3                    member 3 of the last boot epoch\n"
+            "  csb resume --set NAME 3               member 3 of a named set\n"
+            "  csb resume --set NAME                 the reclaim menu: who is NOT open\n\n"
             "Everything after `--` is passed verbatim to claude (don't re-pass\n"
             "--resume / -r -- csb already supplies it)."
         ),
@@ -537,26 +541,25 @@ def build_parser():
     )
     _add_common_flags(p_resume)
     p_resume.add_argument(
-        "session_id", metavar="query",
+        "session_id", metavar="query", nargs="?", default=None,
         help="Session UUID/prefix, exact session NAME, .jsonl path, folder, "
              "sesslog dir name, or keyword (every format csb view "
              "accepts; a superset of claude --resume's native surface). "
-             "The literal word `set` switches to index addressing -- see "
-             "below.",
+             "With --set, this is the roster NUMBER instead.",
     )
-    # Index addressing (#63): `csb resume set <N>` reclaims member N of a
-    # set by its roster number. A trailing nargs="*" rather than a
-    # subparser, because argparse cannot host both a subparser and a free
-    # positional query on one parser -- `set` is dispatched as a sentinel
-    # in cmd_resume instead. Everything after `--` is split off before
-    # parsing, so `csb resume set 2 -- --fork-session` still forwards.
+    # Index addressing (#63, re-grammared in Phase 6 R1): --set replaced
+    # the old `set` sentinel so no session name is ever shadowed -- a
+    # session literally named `set` resumes plainly. nargs="?" with
+    # const="last" keeps the short form: `csb resume --set 3` = member 3
+    # of the last epoch. The `--` split still precedes parsing, so
+    # `csb resume --set 2 -- --fork-session` forwards.
     p_resume.add_argument(
-        "selector", nargs="*", metavar="...", default=[],
-        help="With query=`set`: [<set-name>] <N> -- the roster number from "
-             "`csb set show`. `csb resume set 2` takes member 2 of the last "
-             "boot epoch; `csb resume set CSB-STACK 2` of a named set. "
-             "Numbers are stable positions, so they mean the same thing "
-             "every time.",
+        "--set", dest="from_set", nargs="?", const="last", default=None,
+        metavar="NAME",
+        help="Address a set by roster number: `--set 3` = member 3 of the "
+             "last boot epoch; `--set NAME 3` = member 3 of NAME; bare "
+             "`--set NAME` lists who is NOT currently open (the reclaim "
+             "menu). Numbers are canonical positions from `csb set show`.",
     )
     # Pruned-session handling (v0.3.14, #34): if the session has deleted_at
     # set, Claude Code can't resume it (JSONL missing). These flags control
@@ -971,11 +974,12 @@ def build_parser():
              "named sets",
         description=(
             "csb set <action> works with session sets -- groups of sessions "
-            "that belong together. 'last' names the most recent boot epoch: "
-            "the sessions active before the machine's last shutdown, "
-            "reconstructed from the Windows event log and the existing "
-            "index (read-only; nothing is stored). Named sets arrive "
-            "with named sets."
+            "that belong together. Two kinds share the verb: EPOCH sets are "
+            "observed automatically ('current' = open right now, from the "
+            "live registry; 'last' = active before the machine's last "
+            "shutdown, from the boot fences and the index), and NAMED sets "
+            "are curated by you (create one from any view with "
+            "`csb set new <name> --from current`)."
         ),
     )
     set_sub = p_set.add_subparsers(dest="set_action", metavar="<action>")
@@ -989,9 +993,10 @@ def build_parser():
             "'what was I running before the restart?': every session with "
             "activity in the window before the most recent shutdown fence, "
             "in activity order, each with a paste-able `csb resume` "
-            "command. Honest by design: 'active within the window' is not "
-            "proof a session was open -- exact open/close tracking arrives "
-            "with live open/close tracking."
+            "command. `csb set show current` shows what is open right now, "
+            "tiered by evidence ([running] only with process proof); named "
+            "sets render with the same numbered roster. Honest by design: "
+            "'active within the window' is not proof a session was open."
         ),
     )
     # Common flags on the LEAF only (mirrors `csb update`): argparse
@@ -1002,8 +1007,9 @@ def build_parser():
     _add_common_flags(p_set_show)
     p_set_show.add_argument(
         "set_name", metavar="<set>",
-        help="'last' -- the most recent boot epoch (named sets arrive "
-             "with #62)",
+        help="'current' (open right now), 'boot' (everything active "
+             "since startup), 'last' (the previous boot epoch), or a "
+             "named set",
     )
     p_set_show.add_argument(
         "--window", type=float, default=None, metavar="HOURS",
@@ -1022,7 +1028,7 @@ def build_parser():
         help="Epoch view only: narrow to members that were provably open "
              "at the shutdown (from the live-registry boundary snapshot). "
              "A display filter -- indices keep their canonical values, so "
-             "gaps are expected and `csb resume set <N>` still matches.",
+             "gaps are expected and `csb resume --set <N>` still matches.",
     )
 
     # csb set new / list / add / rm -- named sets (#62)
@@ -1045,8 +1051,8 @@ def build_parser():
              "Optional when --from is given.",
     )
     p_set_new.add_argument(
-        "--from", dest="from_view", choices=["current", "last"],
-        default=None, metavar="{current,last}",
+        "--from", dest="from_view", choices=["current", "boot", "last"],
+        default=None, metavar="{current,boot,last}",
         help="Promote a whole view into the set: `current` freezes what is "
              "open right now (the live registry), `last` the previous boot "
              "epoch's roster. Curate afterwards by subtraction "

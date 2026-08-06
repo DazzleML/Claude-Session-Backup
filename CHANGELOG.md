@@ -9,6 +9,21 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.8.5] -- 2026-08-06 (beta)
+
+**The `boot` view, the full tier ladder, and `--set` (#68 R1).** The missing middle view: `current` shows what is open, `last` shows the previous epoch, and now **`csb set show boot`** shows everything active since startup -- the epoch in progress, cross-platform from day one. With it comes the third evidence tier and a cleaner resume grammar.
+
+### Added
+- **`csb set show boot`** -- every session active since this boot, activity-ordered, with unindexed-but-open sessions appended from the registry. `--window <hours>` narrows the view (reference instant: now; canonical indices, gaps); `--json` carries `hooks_active`/`as_of`/tiers. `csb set new NAME --from boot` freezes it.
+- **`[exited]`** completes the tier ladder: an erased registry entry IS an observed exit, so a session that ran this boot and closed cleanly says so. Never guessed: without hook evidence this boot (an entry, or a snapshot captured since boot), rows render unadorned and a footer discloses that exit detection is unavailable.
+- **`csb resume --set [NAME] [N]`** replaces the `set` sentinel: `--set 3` = member 3 of the last epoch, `--set NAME 3` = member 3 of NAME, bare `--set NAME` = the reclaim menu, bare `--set` = the menu for `last`. The query namespace is now fully clean -- **a session literally named `set` resumes plainly**, and the old sentinel's UUID escape hatch is gone because nothing needs escaping.
+- **The full reserved-name grammar lands ahead of its features**: `boot`, `last~N`, and bare-date shapes join the reserved set names now, so nobody creates a set that epoch-history addressing would later orphan. Suffixes stay legal (`2026-8-9__topic`, `last-one`).
+
+### Changed
+- **BREAKING (unreleased line): `csb resume set ...` forms are gone** -- the 0.8.x series never shipped to PyPI, so this costs nothing in the field. Old -> new: `resume set 2` -> `resume --set 2`; `resume set NAME 2` -> `resume --set NAME 2`; `resume set NAME` -> `resume --set NAME`.
+- **Live views (`current`, `boot`) print stable hints** -- session names (or UUIDs when ambiguous), never index-based commands: a quit renumbers a live roster, so a printed index hint could go stale between reading and typing. Frozen views (named sets, epochs, the reclaim menu) keep index hints -- their numbers are canonical. Both live views now say so: "row numbers reflect this invocation".
+- Stale help text rewritten (`csb set -h` had two circular sentences from mechanical edits, and described named sets as unreleased).
+
 ## [0.8.4] -- 2026-08-06 (beta)
 
 **The Live Session Registry: `csb set show current` (#64), plus the live-resume guard (#67).** Until now csb could reconstruct the *past* -- what a shutdown killed -- but could not answer the present: *what is open right now*. No activity heuristic can (measured: a provably-live session sat ~64h idle). The answer is observation, not inference: csb's own hooks now record every session open and erase the record on clean close, so **an entry that was never erased is evidence** -- of a running session this boot, or of a crash/forced shutdown before it.
@@ -1219,7 +1234,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.4...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.5...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

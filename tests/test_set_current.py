@@ -120,8 +120,8 @@ class TestShowCurrent:
         client onto one transcript (#67's scenario)."""
         _run(env, "set", "show", "current")
         out = capsys.readouterr().out
-        assert "csb resume set current 1 -- --fork-session" in out
-        assert "csb resume RUNNING__session]" not in out
+        assert "csb resume RUNNING__session -- --fork-session" in out
+        assert "csb resume RUNNING__session]" not in out  # never a PLAIN hint
         # Unverified rows keep the plain hint -- they are NOT known live.
         assert "csb resume UNVERIFIED__session" in out
 
@@ -201,7 +201,7 @@ class TestPromotion:
 
 class TestResumeSetCurrent:
     def test_index_addressing_into_current(self, env):
-        assert _run(env, "resume", "set", "current", "2") == 0
+        assert _run(env, "resume", "--set", "current", "2") == 0
         calls = _claude_calls(env)
         assert len(calls) == 1
         assert calls[0][2] == UUID_UNV
@@ -209,7 +209,7 @@ class TestResumeSetCurrent:
     def test_unindexed_member_still_launches(self, env):
         """A fresh session csb has not indexed yet is still resumable --
         claude --resume works regardless of csb's index."""
-        assert _run(env, "resume", "set", "current", "3") == 0
+        assert _run(env, "resume", "--set", "current", "3") == 0
         calls = _claude_calls(env)
         assert calls[0][2] == UUID_NEW
 
@@ -229,36 +229,36 @@ class TestReclaimMenu:
         conn.commit()
         conn.close()
 
-        rc = _run(env, "resume", "set", "WORK")
+        rc = _run(env, "resume", "--set", "WORK")
         out = capsys.readouterr().out
         assert rc == 0
         assert "1 currently open" in out
         assert "1 available to reclaim" in out
         assert "CLOSED__session" in out
         assert "RUNNING__session" not in out          # open -> hidden
-        assert "csb resume set WORK 2" in out          # canonical index kept
+        assert "csb resume --set WORK 2" in out          # canonical index kept
         assert _claude_calls(env) == []                # menu launches nothing
 
     def test_exit_returns_a_member_to_the_menu(self, env, capsys):
         """The liveness rule end to end: closing a session (registry entry
         removed) puts it back on the reclaim list."""
         create_set(env.claude_dir, "WORK", [UUID_RUN])
-        _run(env, "resume", "set", "WORK")
+        _run(env, "resume", "--set", "WORK")
         assert "nothing to reclaim" in capsys.readouterr().out
         lr.record_session_end(env.claude_dir, UUID_RUN)   # clean close
-        _run(env, "resume", "set", "WORK")
+        _run(env, "resume", "--set", "WORK")
         out = capsys.readouterr().out
         assert "1 available to reclaim" in out
         assert "RUNNING__session" in out
 
     def test_all_open_states_it_plainly(self, env, capsys):
         create_set(env.claude_dir, "ALLOPEN", [UUID_RUN, UUID_UNV])
-        rc = _run(env, "resume", "set", "ALLOPEN")
+        rc = _run(env, "resume", "--set", "ALLOPEN")
         assert rc == 0
         assert "nothing to reclaim" in capsys.readouterr().out
 
     def test_unknown_set_still_errors(self, env, capsys):
-        rc = _run(env, "resume", "set", "NO-SUCH")
+        rc = _run(env, "resume", "--set", "NO-SUCH")
         assert rc == 1
         assert "No set named" in capsys.readouterr().err
 
