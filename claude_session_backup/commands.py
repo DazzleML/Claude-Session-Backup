@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -137,19 +138,85 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
+def _rebind_streams_to_log(log_path: Path) -> None:
+    """Point None std streams at the run log (#69 AC-10, pythonw reality).
+
+    Under ``pythonw.exe`` both ``sys.stdout`` and ``sys.stderr`` are
+    ``None``: bare ``print()`` is a silent no-op, direct stream writes
+    raise, and an unhandled traceback has nowhere to go -- the process
+    would die with only an exit code. Rebinding both to the log converts
+    every one of those modes into captured, diagnosable output. Must run
+    before ANY other output; failures degrade to leaving streams as-is
+    (an unloggable run must still back up).
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(log_path, "a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+    if sys.stdout is None:
+        sys.stdout = handle
+    if sys.stderr is None:
+        sys.stderr = handle
+
+
+def _append_run_log(log_path: Path, outcome: str, rc: int,
+                    started_monotonic: float, claude_dir) -> None:
+    """One structured line per backup run (#69 AC-10/AC-13).
+
+    Wire format (stable, parsed later by schedule status -- 5b):
+      ``<local ISO ts> outcome=<ok|skipped-lock|error> rc=<n> duration_ms=<n> claude_dir=<path>``
+
+    A run that cannot write its line still succeeds (AC-10: logging
+    failure never fails the backup) -- but note the dedicated filename is
+    itself the scheduled-vs-hook source marker, so an unwritable log is
+    surfaced by schedule status as missing evidence, not silently."""
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        duration_ms = int((time.monotonic() - started_monotonic) * 1000)
+        stamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(
+                f"{stamp} outcome={outcome} rc={rc} "
+                f"duration_ms={duration_ms} claude_dir={claude_dir}\n"
+            )
+    except OSError:
+        pass
+
+
 def cmd_backup(args) -> int:
     """Scan sessions, update index, optionally git commit."""
+    log_file = getattr(args, "log_file", None)
+    log_path = Path(log_file) if log_file else None
+    if log_path is not None:
+        _rebind_streams_to_log(log_path)  # before any output (pythonw)
+    started = time.monotonic()
+
     config = _get_config(args)
     claude_dir = config["claude_dir"]
     quiet = getattr(args, "quiet", False)
 
     # Acquire lock (prevent concurrent cron runs). backup_lock now owns the
     # skip / stale-reclaim messaging (it has the lock's identity + age), so
-    # we just honor the acquired flag here.
+    # we just honor the acquired flag here. The loser still logs its line:
+    # "another instance won" is evidence the schedule fired (AC-13).
     with backup_lock(claude_dir, quiet=quiet) as acquired:
         if not acquired:
+            if log_path is not None:
+                _append_run_log(log_path, "skipped-lock", 0, started, claude_dir)
             return 0  # Not an error -- another instance is running
-        return _cmd_backup_inner(args, config, claude_dir, quiet)
+        try:
+            rc = _cmd_backup_inner(args, config, claude_dir, quiet)
+        except BaseException:
+            if log_path is not None:
+                _append_run_log(log_path, "error", -1, started, claude_dir)
+            raise
+    if log_path is not None:
+        _append_run_log(log_path, "ok" if rc == 0 else "error",
+                        rc, started, claude_dir)
+    return rc
 
 
 def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:

@@ -273,6 +273,16 @@ def build_parser():
         help="Update index but skip git commit (works without a git repo: "
              "index-only, no backup protection)",
     )
+    p_backup.add_argument(
+        "--log-file",
+        default=None,
+        metavar="PATH",
+        help="Append one structured line per run to PATH (created if "
+             "missing). Used by scheduled runs (csb setup schedule); under "
+             "a console-less interpreter (pythonw) output and tracebacks "
+             "are rebound to this file so failures stay diagnosable. "
+             "Logging failure never fails the backup.",
+    )
 
     # list
     p_list = sub.add_parser("list", help="Timeline view (default sort: last-used)")

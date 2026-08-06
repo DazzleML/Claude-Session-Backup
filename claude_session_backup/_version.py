@@ -21,7 +21,7 @@ PRE_RELEASE_NUM = 1  # PEP 440 pre-release number (e.g., a1, b2)
 PROJECT_PHASE = "beta"  # Project-wide: "prealpha", "alpha", "beta", "stable"
 
 # Auto-updated by git hooks - do not edit manually
-__version__ = "0.8.5_main_80-20260806-a34aa917"
+__version__ = "0.8.5_issue-69-scheduled-backup_81-20260806-dbe2f935"
 __app_name__ = "claude-session-backup"
 
 
