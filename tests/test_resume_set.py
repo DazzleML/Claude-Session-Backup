@@ -328,8 +328,18 @@ class TestErrors:
         assert "start at 1" in capsys.readouterr().err
         assert _claude_calls(env) == []
 
-    def test_non_numeric_index(self, fences, env, capsys):
+    def test_name_without_number_is_the_reclaim_menu(self, fences, env,
+                                                     capsys):
+        """Since #64, bare `csb resume set <name>` is the reclaim menu
+        (what's still available), not an error. An unknown set still
+        errors."""
         rc = _run(env, "resume", "set", "CSB-STACK")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "No set named" in err
+
+    def test_name_plus_non_numeric_still_errors(self, fences, env, capsys):
+        rc = _run(env, "resume", "set", "CSB-STACK", "two")
         err = capsys.readouterr().err
         assert rc == 2
         assert "not a roster number" in err
@@ -400,3 +410,139 @@ class TestGrammar:
         )
         assert commands_module.cmd_resume(args) == 0
         assert _launched_uuid(env) == UUID_2
+
+
+# ── the live-session guard (#67) ─────────────────────────────────────────
+
+class TestLiveGuard:
+    """Resuming an already-open session warns; forking is always exempt."""
+
+    def _make_live(self, env, monkeypatch, uuid, pid=777):
+        """Registry entry (the gate) + process scan (the verifier).
+
+        The guard is REGISTRY-FIRST: without an entry the expensive scan
+        never runs -- so making a session 'live' for these tests means
+        seeding both signals, exactly as a real open session would.
+        """
+        import claude_session_backup.live_registry as lreg
+        import claude_session_backup.liveness as lv
+        from datetime import datetime, timezone
+        lreg.record_session_start(env.claude_dir, uuid, source="startup")
+        monkeypatch.setattr(lreg, "current_boot_utc",
+                            lambda: datetime(2020, 1, 1,
+                                             tzinfo=timezone.utc))
+        monkeypatch.setattr(
+            lv, "scan", lambda: lv.LiveScan(by_uuid={uuid.lower(): pid},
+                                            ok=True))
+
+    def test_dead_session_resumes_byte_identically(self, fences, env,
+                                                   monkeypatch, capsys):
+        """No registry entry -> no guard -- and no process scan either
+        (registry-first: the ~free file check gates the 1-2s WMI query,
+        so a normal resume pays zero scan latency)."""
+        import claude_session_backup.liveness as lv
+
+        def forbidden_scan():
+            raise AssertionError("scan must not run without a registry hit")
+
+        monkeypatch.setattr(lv, "scan", forbidden_scan)
+        assert _run(env, "resume", "set", "1") == 0
+        assert "appears to be open" not in capsys.readouterr().err
+        assert len(_claude_calls(env)) == 1
+
+    def test_live_session_non_tty_warns_and_proceeds(self, fences, env,
+                                                     monkeypatch, capsys):
+        self._make_live(env, monkeypatch, UUID_1)
+        monkeypatch.setattr(commands_module.sys.stdin, "isatty",
+                            lambda: False)
+        assert _run(env, "resume", "set", "1") == 0
+        err = capsys.readouterr().err
+        assert "appears to be open" in err and "777" in err
+        assert len(_claude_calls(env)) == 1  # advisory: still launched
+
+    def test_no_allow_live_refuses(self, fences, env, monkeypatch, capsys):
+        self._make_live(env, monkeypatch, UUID_1)
+        assert _run(env, "resume", "set", "1", "--no-allow-live") == 0
+        err = capsys.readouterr().err
+        assert "not resuming" in err
+        assert "--fork-session" in err
+        assert _claude_calls(env) == []
+
+    def test_allow_live_skips_the_prompt(self, fences, env, monkeypatch,
+                                         capsys):
+        self._make_live(env, monkeypatch, UUID_1)
+        assert _run(env, "resume", "set", "1", "--allow-live") == 0
+        assert len(_claude_calls(env)) == 1
+
+    def test_fork_session_is_exempt(self, fences, env, monkeypatch, capsys):
+        """Branching provably mints a new session id -- never warn."""
+        self._make_live(env, monkeypatch, UUID_1)
+        assert _run(env, "resume", "set", "1", "--",
+                    "--fork-session") == 0
+        assert "appears to be open" not in capsys.readouterr().err
+        argv = _claude_calls(env)[0]
+        assert argv[-1] == "--fork-session"
+
+    def test_other_passthrough_flags_are_not_exempt(self, fences, env,
+                                                    monkeypatch, capsys):
+        """`--model opus` leaves the collision intact -- still warn."""
+        self._make_live(env, monkeypatch, UUID_1)
+        monkeypatch.setattr(commands_module.sys.stdin, "isatty",
+                            lambda: False)
+        assert _run(env, "resume", "set", "1", "--", "--model", "opus") == 0
+        assert "appears to be open" in capsys.readouterr().err
+
+    def test_registry_only_hit_warns_without_pid(self, fences, env,
+                                                 monkeypatch, capsys):
+        """The registry covers what argv cannot: a fresh session with no
+        --resume identifier still triggers the guard (pid-less wording)."""
+        import claude_session_backup.live_registry as lreg
+        import claude_session_backup.liveness as lv
+        monkeypatch.setattr(lv, "scan", lambda: lv.LiveScan(ok=True))
+        lreg.record_session_start(env.claude_dir, UUID_1, source="startup")
+        from datetime import datetime, timezone
+        monkeypatch.setattr(lreg, "current_boot_utc",
+                            lambda: datetime(2020, 1, 1,
+                                             tzinfo=timezone.utc))
+        monkeypatch.setattr(commands_module.sys.stdin, "isatty",
+                            lambda: False)
+        assert _run(env, "resume", "set", "1") == 0
+        err = capsys.readouterr().err
+        assert "appears to be open" in err
+        assert "pid" not in err  # registry-only: no process proof
+
+    def test_guard_failure_never_breaks_resume(self, fences, env,
+                                               monkeypatch, capsys):
+        import claude_session_backup.liveness as lv
+
+        def boom():
+            raise RuntimeError("WMI on fire")
+
+        monkeypatch.setattr(lv, "scan", boom)
+        assert _run(env, "resume", "set", "1") == 0
+        assert len(_claude_calls(env)) == 1
+
+    def test_fork_in_combo_is_still_exempt(self, fences, env, monkeypatch,
+                                           capsys):
+        """`-- --model opus --fork-session`: exemption keys on the fork
+        flag's PRESENCE (session-id divergence), not on it being alone."""
+        self._make_live(env, monkeypatch, UUID_1)
+        assert _run(env, "resume", "set", "1", "--",
+                    "--model", "opus", "--fork-session") == 0
+        assert "appears to be open" not in capsys.readouterr().err
+
+    def test_tty_prompt_decline_aborts_accept_proceeds(self, fences, env,
+                                                       monkeypatch, capsys):
+        """TTY path: declining launches nothing (rc 0 -- a choice, not a
+        failure; deliberate deviation from the draft's rc 1, mirroring
+        the pruned-decision precedent). Accepting proceeds."""
+        self._make_live(env, monkeypatch, UUID_1)
+        monkeypatch.setattr(commands_module.sys.stdin, "isatty",
+                            lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+        assert _run(env, "resume", "set", "1") == 0
+        assert _claude_calls(env) == []
+
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        assert _run(env, "resume", "set", "1") == 0
+        assert len(_claude_calls(env)) == 1

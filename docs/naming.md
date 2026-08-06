@@ -226,6 +226,7 @@ Three names are rejected at creation, because the `csb set` grammar already clai
 | Rejected | Why |
 |---|---|
 | `last` | names the most recent boot epoch — `csb set show last` |
+| `current` | names the live registry view — `csb set show current` |
 | `set` | a grammar token after `csb resume` |
 | bare integers (`1`, `42`, `0042`) | collide with `csb resume set <N>` index addressing |
 

@@ -9,6 +9,27 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.8.4] -- 2026-08-06 (beta)
+
+**The Live Session Registry: `csb set show current` (#64), plus the live-resume guard (#67).** Until now csb could reconstruct the *past* -- what a shutdown killed -- but could not answer the present: *what is open right now*. No activity heuristic can (measured: a provably-live session sat ~64h idle). The answer is observation, not inference: csb's own hooks now record every session open and erase the record on clean close, so **an entry that was never erased is evidence** -- of a running session this boot, or of a crash/forced shutdown before it.
+
+### Added
+- **`csb set show current`** -- every session open this boot, in **true open order** (the registry records real opens, not activity), each row tiered honestly: `[running]` only when a live process proves it, `[no exit observed]` when only the registry says so. Cross-platform from day one (boot time is trivial everywhere; no event-log dependency). Running rows get a **fork hint** rather than a resume hint -- a plain resume would invite a second client onto one transcript.
+- **The registry itself**: one JSON file per session under `csb-live/` in the backup store, written on SessionStart, removed on SessionEnd, `source=compact` never resets the open time. **UUID-keyed and name-free** -- names resolve at query time through the index, so renaming sessions costs nothing. Rides the noise commit class; works with or without claude-session-logger.
+- **The boundary sweep**: on the first hook fire after a new boot, entries stamped before it -- sessions that were open when the machine went down, since a clean close would have erased them -- freeze into a `last-shutdown.json` snapshot and clear. Crash evidence and the exact open-at-shutdown record, from the same mechanism.
+- **`csb set show last` gains `[open at shutdown]` badges** when the snapshot covers that boundary, plus **`--open`** to narrow the view to those members (a display filter -- canonical indices, gaps, `csb resume set <N>` still matches). Exactness arrives as annotation on the epoch view, not as a competing set kind.
+- **`csb set new <name> --from current|last`** -- freeze a whole view into a named set (combinable with explicit sessions), then curate by subtraction. The save-the-group half of the reclaim loop.
+- **The reclaim menu**: bare **`csb resume set <name>`** now lists members *not currently open* -- exiting a session returns it to the list, because a clean close erases its registry entry. Liveness, not progress: no stored flags, no reset command. Open members keep their numbers; the gaps are the progress indicator.
+- **`csb resume` warns before resuming an already-open session (#67)** -- two clients appending to one transcript is silent interleaving. Advisory, never blocking: TTY prompts, non-TTY warns and proceeds, `--allow-live` / `--no-allow-live` decide explicitly, and **`-- --fork-session` is always exempt** (branching provably mints a new session id; `--model` and friends are not exempt, and unknown flags fail safe). Detection layers the registry (covers fresh sessions argv cannot attribute) with a process scan (covers crashed-this-boot entries; filters Claude Desktop; matches resumed-by-name as well as by-UUID). A failed scan degrades to no warning -- liveness never breaks a resume.
+- **`current` is now a reserved set name**, alongside `last`, `set`, and bare integers.
+
+### Notes
+- **"running" is a proof, not a guess.** A row says `[running]` only when a live process demonstrably belongs to that session; otherwise `[no exit observed]`, which honestly covers both a fresh session (unattributable from argv by construction) and a crash this boot. When claude processes without `--resume` identifiers exist, the output says an unverified row may be one of them.
+- **`--window` is rejected on `current`** -- the set is bounded by the boot, not by an activity window; the error points at `csb set show last --window`.
+- **Hookless installs degrade honestly**: an empty registry reports that live tracking needs this release's hooks (`claude plugin update`), and never guesses from activity.
+- The plugin's hook script gained the registry writes -- **update the installed plugin to activate live tracking**; sessions register on their next start.
+- A session opened after the last backup (not yet indexed) still shows in `current` -- located by the registry's recorded cwd, resumable by index (`claude --resume` needs no csb index).
+
 ## [0.8.3] -- 2026-08-05 (beta)
 
 **Two fixes found by the checklist sweep across v0.8.0-v0.8.2.** Both were things the automated suite reported green on, and both were caught only by running the feature the way a person would. The first is a correctness bug in the epic's headline guarantee.
@@ -1198,7 +1219,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.4...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

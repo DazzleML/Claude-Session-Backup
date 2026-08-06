@@ -42,10 +42,11 @@ SETS_FILENAME = "csb-sets.json"
 FORMAT_VERSION = 1
 
 # Words the `csb set` / `csb resume set` grammar claims. A set named
-# `last` would shadow the boot epoch; one named `set` would be
-# unreachable after `csb resume`; a bare integer would collide with
-# `csb resume set <N>` index addressing.
-RESERVED_NAMES = frozenset({"last", "set"})
+# `last` would shadow the boot epoch; `current` would shadow the live
+# registry view (#64); one named `set` would be unreachable after
+# `csb resume`; a bare integer would collide with `csb resume set <N>`
+# index addressing.
+RESERVED_NAMES = frozenset({"last", "set", "current"})
 
 _BARE_INT_RE = re.compile(r"^\d+$")
 

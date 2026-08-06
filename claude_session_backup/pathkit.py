@@ -124,6 +124,8 @@ class ClaudePaths:
     GIT_DIR: ClassVar[str] = ".git"       # the backup store csb creates/probes
     CSB_LOGS: ClassVar[str] = "csb-logs"  # hook logs; backup-hook.py mirrors
     #                                       this name (it can't import csb)
+    LIVE_DIR: ClassVar[str] = "csb-live"  # Live Session Registry; the hook
+    #                                       mirrors this name too
 
     # Provenance sets for programmatic "is this optional for this user?"
     # reasoning (diagnostics, future doctor command). Must partition the
@@ -134,7 +136,7 @@ class ClaudePaths:
     COMPANION_NAMES: ClassVar[frozenset] = frozenset({SESSION_STATES, SESSLOGS})
     CSB_NAMES: ClassVar[frozenset] = frozenset({
         DISTILLED, FTS_DIR, DEFAULT_DB, LOCK_FILE, CONFIG_FILE,
-        GITATTRIBUTES, GIT_DIR, CSB_LOGS,
+        GITATTRIBUTES, GIT_DIR, CSB_LOGS, LIVE_DIR,
     })
 
     @classmethod

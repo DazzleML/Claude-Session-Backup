@@ -33,6 +33,7 @@ from .pathkit import ClaudePaths
 # Mirrors dz claude-cleanup categories exactly.
 
 NOISE_DIRS = [
+    "csb-live",         # Live Session Registry (#64) -- open-session entries
     "debug",
     "file-history",
     "paste-cache",

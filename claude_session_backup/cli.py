@@ -539,7 +539,7 @@ def build_parser():
     p_resume.add_argument(
         "session_id", metavar="query",
         help="Session UUID/prefix, exact session NAME, .jsonl path, folder, "
-             "sesslog dir name, or keyword (#42 -- every format csb view "
+             "sesslog dir name, or keyword (every format csb view "
              "accepts; a superset of claude --resume's native surface). "
              "The literal word `set` switches to index addressing -- see "
              "below.",
@@ -575,6 +575,21 @@ def build_parser():
         help="Refuse to restore; exit with an error and a hint to run "
              "`csb restore` separately. Useful for scripts that want to "
              "detect pruned sessions instead of recovering them.",
+    )
+    # Live-session guard (#67): resuming a session that is already open
+    # in another window makes two clients interleave into one transcript.
+    # Advisory, never blocking; `-- --fork-session` is always exempt
+    # (branching provably mints a new session id).
+    resume_live_group = p_resume.add_mutually_exclusive_group()
+    resume_live_group.add_argument(
+        "--allow-live", action="store_true", dest="allow_live",
+        help="Resume without prompting even when the session appears to "
+             "be open already (a second client on one transcript).",
+    )
+    resume_live_group.add_argument(
+        "--no-allow-live", action="store_true", dest="no_allow_live",
+        help="Refuse to resume a session that appears to be open already; "
+             "exit with a hint to branch via `-- --fork-session` instead.",
     )
 
     # view (#14): open a session in Claude Code History Viewer
@@ -953,14 +968,14 @@ def build_parser():
     p_set = sub.add_parser(
         "set",
         help="Session sets: what was active at the last shutdown (epochs); "
-             "named sets (#62)",
+             "named sets",
         description=(
             "csb set <action> works with session sets -- groups of sessions "
             "that belong together. 'last' names the most recent boot epoch: "
             "the sessions active before the machine's last shutdown, "
             "reconstructed from the Windows event log and the existing "
             "index (read-only; nothing is stored). Named sets arrive "
-            "with #62."
+            "with named sets."
         ),
     )
     set_sub = p_set.add_subparsers(dest="set_action", metavar="<action>")
@@ -976,7 +991,7 @@ def build_parser():
             "in activity order, each with a paste-able `csb resume` "
             "command. Honest by design: 'active within the window' is not "
             "proof a session was open -- exact open/close tracking arrives "
-            "with the observation phase (#64)."
+            "with live open/close tracking."
         ),
     )
     # Common flags on the LEAF only (mirrors `csb update`): argparse
@@ -1002,6 +1017,13 @@ def build_parser():
         help="Machine-readable roster (envelope with epoch metadata + "
              "members; emitted even when empty)",
     )
+    p_set_show.add_argument(
+        "--open", dest="open_only", action="store_true",
+        help="Epoch view only: narrow to members that were provably open "
+             "at the shutdown (from the live-registry boundary snapshot). "
+             "A display filter -- indices keep their canonical values, so "
+             "gaps are expected and `csb resume set <N>` still matches.",
+    )
 
     # csb set new / list / add / rm -- named sets (#62)
     p_set_new = set_sub.add_parser(
@@ -1018,8 +1040,18 @@ def build_parser():
     _add_common_flags(p_set_new)
     p_set_new.add_argument("set_name", metavar="<name>", help="Set name")
     p_set_new.add_argument(
-        "sessions", nargs="+", metavar="<session>",
-        help="Sessions to include (UUID/prefix, name, path, or keyword)",
+        "sessions", nargs="*", metavar="<session>",
+        help="Sessions to include (UUID/prefix, name, path, or keyword). "
+             "Optional when --from is given.",
+    )
+    p_set_new.add_argument(
+        "--from", dest="from_view", choices=["current", "last"],
+        default=None, metavar="{current,last}",
+        help="Promote a whole view into the set: `current` freezes what is "
+             "open right now (the live registry), `last` the previous boot "
+             "epoch's roster. Curate afterwards by subtraction "
+             "(`csb set rm <name> <session>`). Combinable with explicit "
+             "sessions (union).",
     )
 
     p_set_list = set_sub.add_parser(

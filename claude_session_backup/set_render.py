@@ -141,6 +141,15 @@ def member_row_segments(member: dict, shutdown_utc=None,
     if la is not None and shutdown_utc is not None:
         gap = format_gap(shutdown_utc - la)
         line1.append((f"  {gap} before shutdown", "yellow"))
+    # Live tiers (#64). "running" only ever appears process-verified;
+    # a registry-only row says what is actually known.
+    live_status = member.get("live_status")
+    if live_status == "running":
+        line1.append(("  [running]", "green"))
+    elif live_status == "unverified":
+        line1.append(("  [no exit observed]", "yellow"))
+    if member.get("open_at_shutdown"):
+        line1.append(("  [open at shutdown]", "bold"))
     if member["is_fork"]:
         line1.append(("  [fork]", "dim"))
     if member["purged"]:
@@ -148,13 +157,15 @@ def member_row_segments(member: dict, shutdown_utc=None,
     if not member.get("in_index", True):
         line1.append(("  [not in index]", "red"))
 
-    hint_target = _resume_hint_target(member, ambiguous_names)
+    hint = member.get("hint_override")
+    if not hint:
+        hint = f"csb resume {_resume_hint_target(member, ambiguous_names)}"
     start_at = _resolve_start_at(member)
     line2: Segments = [
         ("      start at: ", "dim"),
         (start_at, None),
         ("  [", "dim"),
-        (f"csb resume {hint_target}", "bold yellow"),
+        (hint, "bold yellow"),
         ("]", "dim"),
     ]
     return [line1, line2]

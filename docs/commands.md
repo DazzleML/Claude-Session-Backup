@@ -48,6 +48,10 @@ csb tree -f / -ff                     # Per-node detail (same levels as list/sca
 csb set show last                     # What was active before the last shutdown (boot epoch)
 csb set show last --window 24         # Same, fixed activity window in hours
 csb set show last --json              # Machine-readable roster envelope
+csb set show current                  # What is open RIGHT NOW (live registry)
+csb set show last --open              # Narrow the epoch to provably-open-at-shutdown
+csb set new <name> --from current     # Freeze the open group as a named set
+csb resume set <name>                 # Reclaim menu: members not currently open
 csb set new <name> <session>...       # Create a named set (curated group)
 csb set show <name>                   # A named set's roster
 csb set list                          # Every named set, plus the 'last' epoch
@@ -258,6 +262,26 @@ Open your preferred terminal, position the tab, paste the row's `csb resume` com
 **Honest by design.** "Active within the window" is evidence, not proof: a session idle longer than the window is missed, and one exited shortly before the shutdown is included. The roster therefore says *active*, never *open*, and orders by activity -- exact open/close tracking is the observation phase of the session-sets epic. Purged members appear marked, and their `csb resume` hint restores them from git on the way (same flow as any pruned resume).
 
 **Freshness.** If the index was last updated before the shutdown, the roster warns on stderr -- the final pre-shutdown activity may not have been indexed yet. `csb backup` catches it up.
+
+### What is open right now (`csb set show current`)
+
+The epoch answers the past; **`current` answers the present** -- every session open this boot, in true open order, from the **Live Session Registry**: csb's hooks write one file per session on start and erase it on clean close. An entry that was never erased is *evidence* -- of a running session, or of a crash. Each row is tiered honestly:
+
+- **`[running]`** -- a live process provably belongs to this session (never guessed)
+- **`[no exit observed]`** -- the registry says open, with no process proof: a fresh session (unattributable from its command line by construction), or a crash this boot
+
+Running rows carry a **fork hint** (`csb resume set current N -- --fork-session`) instead of a resume hint -- resuming an open session would put two clients on one transcript. And `csb resume` itself now warns before doing that anywhere (TTY prompts; scripts get a stderr warning and proceed; `--allow-live`/`--no-allow-live` decide explicitly; `-- --fork-session` is always exempt).
+
+The registry also makes the **reclaim loop** whole:
+
+```bash
+csb set new MY-GROUP --from current   # freeze what's open as a named set
+# ...machine restarts, sessions close, life happens...
+csb resume set MY-GROUP               # the reclaim menu: who is NOT open yet
+csb resume set MY-GROUP 2             # reopen one, in THIS terminal
+```
+
+The menu lists only members not currently open -- **exiting a session puts it back** (its clean close erased its entry), and open members keep their numbers, so the gaps are the progress indicator. After a restart, the boundary sweep freezes what was open into a snapshot: `csb set show last` badges those rows `[open at shutdown]`, and `--open` narrows the view to them (canonical indices, as always).
 
 **The roster is a snapshot, not a checklist.** It is re-derived on every call from each session's last-activity time, so **reclaiming a session removes it from later views** — once you resume it, its activity moves to "now", outside the epoch. Working top to bottom, the list shrinks behind you. That is usually what you want (what's left to reclaim), but it means the roster is not a durable record of what was open: come back a week later and the answer has drifted. A persistent view needs real open/close events rather than activity inference, which is the observation phase of this epic. If you want to freeze a roster before working through it, promote it to a named set.
 

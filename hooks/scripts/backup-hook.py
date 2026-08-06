@@ -63,7 +63,7 @@ def find_csb():
 
 
 def _read_hook_input():
-    """Parse the hook JSON from stdin -> (hook_event_name, source, session_id).
+    """Parse the hook JSON from stdin -> (hook_event_name, source, session_id, cwd).
 
     Tolerates a TTY (manual invocation), empty stdin, or non-JSON garbage by
     returning ("", "", "") -- which `_should_run_backup` treats as "run". The
@@ -73,26 +73,27 @@ def _read_hook_input():
     """
     try:
         if sys.stdin is None or sys.stdin.isatty():
-            return "", "", ""
+            return "", "", "", ""
         raw = sys.stdin.buffer.read().decode("utf-8")
     except Exception:
-        return "", "", ""
+        return "", "", "", ""
     # PowerShell's native pipe prepends a UTF-8 BOM to piped text, which
     # breaks json.loads AND silently mis-classifies the event (log lands
     # in backup-manual.log). Strip it defensively (#52 checklist run).
     raw = (raw or "").lstrip("﻿").strip()
     if not raw:
-        return "", "", ""
+        return "", "", "", ""
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
-        return "", "", ""
+        return "", "", "", ""
     if not isinstance(data, dict):
-        return "", "", ""
+        return "", "", "", ""
     return (
         data.get("hook_event_name") or "",
         data.get("source") or "",
         data.get("session_id") or "",
+        data.get("cwd") or "",
     )
 
 
@@ -278,8 +279,57 @@ def _claude_dir() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".claude"
 
 
+def _live_start(session_id, source, cwd, note):
+    """Live Session Registry (#64): record this session as OPEN.
+
+    One JSON file per session under <claude_dir>/csb-live/, removed by
+    _live_end on a clean close -- so a leftover entry is evidence (crash,
+    forced restart), not garbage. Write-if-missing: a source=compact
+    restart of the same session must not reset started_at.
+
+    Inline stdlib mirror of claude_session_backup/live_registry.py
+    (canonical semantics live THERE) -- this hook runs under whatever
+    python run-hook.mjs found, where the csb package may not be
+    importable, and a synchronous ~1ms file write is the only thing fast
+    and reliable enough for teardown. Never raises (hook context).
+    """
+    if not session_id:
+        return
+    try:
+        live = _claude_dir() / "csb-live"
+        live.mkdir(parents=True, exist_ok=True)
+        path = live / f"{session_id}.json"
+        if path.exists():
+            return
+        payload = {
+            "session_id": session_id,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "source": source or "",
+            "cwd": cwd or "",
+        }
+        tmp = live / f"{session_id}.tmp-{os.getpid()}"
+        tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+        note(f"live-registry: open {session_id[:8]} (source={source or '-'})")
+    except OSError as exc:
+        note(f"live-registry: record failed ({exc!r})")
+
+
+def _live_end(session_id, note):
+    """Live Session Registry (#64): a clean close erases the entry."""
+    if not session_id:
+        return
+    try:
+        (_claude_dir() / "csb-live" / f"{session_id}.json").unlink()
+        note(f"live-registry: closed {session_id[:8]} (clean)")
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        note(f"live-registry: clear failed ({exc!r})")
+
+
 def main():
-    hook_event_name, source, session_id = _read_hook_input()
+    hook_event_name, source, session_id, cwd = _read_hook_input()
 
     log_dir = _claude_dir() / "csb-logs"
     try:
@@ -342,6 +392,13 @@ def main():
             return os.open(str(run_log), os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o644)
         except OSError:
             return subprocess.DEVNULL
+
+    # Live Session Registry (#64): BEFORE the compact-skip gate, so a
+    # session that compacts still gets its write-if-missing entry.
+    if hook_event_name == "SessionStart":
+        _live_start(session_id, source, cwd, note)
+    elif hook_event_name == "SessionEnd":
+        _live_end(session_id, note)
 
     if not _should_run_backup(hook_event_name, source):
         note(f"skip: {hook_event_name} source={source} (PreCompact already covered compaction)")
