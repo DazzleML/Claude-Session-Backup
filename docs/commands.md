@@ -259,6 +259,8 @@ Open your preferred terminal, position the tab, paste the row's `csb resume` com
 
 **Freshness.** If the index was last updated before the shutdown, the roster warns on stderr -- the final pre-shutdown activity may not have been indexed yet. `csb backup` catches it up.
 
+**The roster is a snapshot, not a checklist.** It is re-derived on every call from each session's last-activity time, so **reclaiming a session removes it from later views** — once you resume it, its activity moves to "now", outside the epoch. Working top to bottom, the list shrinks behind you. That is usually what you want (what's left to reclaim), but it means the roster is not a durable record of what was open: come back a week later and the answer has drifted. A persistent view needs real open/close events rather than activity inference, which is the observation phase of this epic. If you want to freeze a roster before working through it, promote it to a named set.
+
 ### Named sets
 
 An epoch is observed; a **named set** is curated. It answers the other question — "which sessions do I reload *together*" — and needs no restart, no fences, and no foresight beyond deciding the group:

@@ -119,14 +119,21 @@ class TestSetShowLast:
         # Activity ASC: IN-WINDOW (07-23) is 1, PURGED (07-24) is 2.
         assert out.index("1. IN-WINDOW__session") < out.index("2. PURGED__session")
 
-    def test_window_override_narrows(self, fences, db_path, tmp_path, capsys):
-        # 24h window from the 07-25 16:16 shutdown excludes both members
-        # (07-23 17:24 is ~47h before; 07-24 10:00 is ~30h before).
+    def test_window_narrows_the_view(self, fences, db_path, tmp_path, capsys):
+        """--window narrows what is DISPLAYED, not the epoch itself.
+
+        A 24h window from the 07-25 16:16 shutdown excludes both members
+        (07-23 17:24 is ~47h before; 07-24 10:00 is ~30h before), so the
+        view empties -- and says so in terms of the narrowing rather
+        than blaming the epoch.
+        """
         rc = _run(["set", "show", "last", "--window", "24"], tmp_path, db_path)
         out = capsys.readouterr().out
         assert rc == 0
         assert "IN-WINDOW__session" not in out
-        assert "No sessions with activity" in out
+        assert "No sessions active within 24h of the shutdown" in out
+        # The epoch header still reports the real epoch, not the filter.
+        assert "since the previous fence" in out
 
     def test_missing_timestamp_counted_not_dropped(self, fences, db_path,
                                                    tmp_path, capsys):
@@ -143,6 +150,48 @@ class TestSetShowLast:
         _run(["set", "show", "last"], tmp_path, db_path)
         out = capsys.readouterr().out
         assert "1 session lacks activity timestamps" in out
+
+
+class TestDuplicateNameHints:
+    """A hint that cannot resolve is worse than no hint.
+
+    Session names collide readily -- one project branched across topics
+    yields several rows sharing a name, differing only by folder. For
+    those rows `csb resume <name>` errors on ambiguity, so the roster
+    must offer the UUID instead of recommending a command it knows will
+    fail. Found by the v0.8.2 checklist sweep against real data.
+    """
+
+    def _add_dupe(self, db_path):
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT INTO sessions (session_id, session_name, project,"
+            " start_folder, started_at, last_active_at, is_fork) VALUES"
+            " ('bbbbbbbb-cccc-dddd-eeee-000000000001', 'IN-WINDOW__session',"
+            " 'C--code-other', 'C:\\code\\other', '2026-07-01T00:00:00Z',"
+            " '2026-07-23T18:00:00Z', 0)"
+        )
+        conn.commit()
+        conn.close()
+
+    def test_duplicate_names_fall_back_to_uuid(self, fences, db_path,
+                                               tmp_path, capsys):
+        self._add_dupe(db_path)
+        _run(["set", "show", "last"], tmp_path, db_path)
+        out = capsys.readouterr().out
+        # Both duplicate rows offer a resolvable UUID...
+        assert "csb resume aaaaaaaa-bbbb-cccc-dddd-000000000001" in out
+        assert "csb resume bbbbbbbb-cccc-dddd-eeee-000000000001" in out
+        # ...and neither offers the ambiguous name.
+        assert "csb resume IN-WINDOW__session" not in out
+
+    def test_unique_names_still_get_readable_hints(self, fences, db_path,
+                                                   tmp_path, capsys):
+        self._add_dupe(db_path)
+        _run(["set", "show", "last"], tmp_path, db_path)
+        out = capsys.readouterr().out
+        # PURGED__session is unique, so it keeps the friendly form.
+        assert "csb resume PURGED__session" in out
 
 
 # ── freshness advisory (#59 family) ──────────────────────────────────────
@@ -199,14 +248,20 @@ class TestJson:
         json.loads(captured.out)  # still pure
         assert "csb backup" in captured.err
 
-    def test_empty_roster_still_emits_envelope(self, fences, db_path,
-                                               tmp_path, capsys):
+    def test_empty_view_still_emits_envelope(self, fences, db_path,
+                                             tmp_path, capsys):
         rc = _run(["set", "show", "last", "--json", "--window", "1"],
                   tmp_path, db_path)
         payload = json.loads(capsys.readouterr().out)
         assert rc == 0
         assert payload["members"] == []
-        assert payload["epoch"]["window_source"] == "override"
+        # The EPOCH is unchanged by a display filter -- its window is
+        # still the previous fence. The narrowing is reported separately,
+        # which is what keeps `resume set <N>` addressable.
+        assert payload["epoch"]["window_source"] == "previous-fence"
+        assert payload["display_window_hours"] == 1
+        assert payload["roster_size"] == 2
+        assert payload["hidden_by_window"] == 2
 
 
 # ── empty / error states ─────────────────────────────────────────────────

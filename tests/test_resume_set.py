@@ -256,20 +256,45 @@ class TestStableIndices:
             assert _run(env, "resume", "set", str(member["index"])) == 0
             assert _launched_uuid(env) == member["session_id"]
 
-    def test_window_narrowing_does_not_renumber_resume(self, fences, env,
-                                                       capsys):
-        """A narrower VIEW must not change what `resume set N` means.
+    def test_window_narrowing_keeps_canonical_indices(self, fences, env,
+                                                      capsys):
+        """A narrowed VIEW must not renumber. Regression for a real bug.
 
-        `csb set show --window` is a display-time narrowing; the resume
-        path always addresses the full roster. If filtering ever leaked
-        into the shared materializer, this is the test that catches it.
+        The original version of this test used a window that excluded
+        EVERY member, so it compared against an empty view and never
+        observed a renumbering -- it passed while
+        `csb set show last --window 60` was renumbering from 1 over a
+        subset and `csb resume set 1` addressed the full roster. Two
+        different sessions behind one number.
+
+        This version pins a NON-EMPTY narrowed view: the survivors must
+        keep their canonical numbers (gaps, not 1..n), and resuming by
+        one of those numbers must land on the session the view showed.
         """
-        assert _run(env, "set", "show", "last", "--window", "48") == 0
-        capsys.readouterr()
-        # Even though a 48h view shows fewer rows, index 1 still means
-        # the first member of the FULL roster.
-        assert _run(env, "resume", "set", "1") == 0
-        assert _launched_uuid(env) == UUID_1
+        # Shutdown is 2026-07-25T16:16Z; GAMMA (07-22) is ~88h before,
+        # BETA (07-20) ~136h, ALPHA (07-18) ~184h. A 100h window keeps
+        # GAMMA alone -- canonical index 3.
+        assert _run(env, "set", "show", "last", "--window", "100",
+                    "--json") == 0
+        view = json.loads(capsys.readouterr().out)
+        assert view["roster_size"] == 3
+        assert view["hidden_by_window"] == 2
+        assert [m["index"] for m in view["members"]] == [3], \
+            "narrowed view renumbered instead of keeping canonical indices"
+        assert view["members"][0]["session_id"] == UUID_3
+
+        # The number the user just read must resolve to what they saw.
+        assert _run(env, "resume", "set", "3") == 0
+        assert _launched_uuid(env) == UUID_3
+
+    def test_wider_window_is_a_noop_not_an_expansion(self, fences, env,
+                                                     capsys):
+        """Nothing precedes the previous fence in THIS epoch."""
+        assert _run(env, "set", "show", "last", "--window", "10000",
+                    "--json") == 0
+        view = json.loads(capsys.readouterr().out)
+        assert view["hidden_by_window"] == 0
+        assert [m["index"] for m in view["members"]] == [1, 2, 3]
 
 
 # ── errors ───────────────────────────────────────────────────────────────

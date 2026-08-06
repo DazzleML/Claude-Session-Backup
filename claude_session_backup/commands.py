@@ -3264,17 +3264,25 @@ def _named_set_roster(conn, entry):
     return members
 
 
-def _materialize_set_roster(config, name, window_hours=None):
-    """The FULL roster for a set -- epoch (`last`) or named (#63).
+def _materialize_set_roster(config, name):
+    """The canonical roster for a set -- epoch (`last`) or named (#63).
 
     One path serves `csb set show` and `csb resume set <N>`, so an index
     printed by the first always addresses the same session in the second.
 
     **This function takes no filter parameters, and that absence is the
-    contract.** Row numbers are positions in the full roster; if filtering
-    ever moves in here, a filtered view would renumber and
-    `csb resume set 2` would silently resolve to a different session than
-    the one the user just read. Filtering belongs to the renderer.
+    contract.** Row numbers are positions in the canonical roster -- for
+    an epoch, every session active between the previous fence and the
+    shutdown. Narrowing (``--window``) is a DISPLAY concern applied by
+    the caller via :func:`_filter_roster_for_display`, which preserves
+    these numbers and shows gaps.
+
+    That split is load-bearing. An earlier version accepted the window
+    here, so `csb set show last --window 60` renumbered from 1 over a
+    subset while `csb resume set 1` still addressed the full roster --
+    two different sessions behind one number, in a workflow whose whole
+    premise is "read the roster, walk away, run the next one". The
+    docstring claimed this contract while the signature broke it.
 
     Returns ``(roster, 0)`` or ``(None, exit_code)`` with the error
     already printed. A roster is a dict with ``kind`` / ``name`` /
@@ -3282,6 +3290,7 @@ def _materialize_set_roster(config, name, window_hours=None):
     ``members`` / ``missing_timestamps``; an empty ``members`` list is a
     valid roster, not an error -- callers decide how to present it.
     """
+    window_hours = None  # canonical roster: never narrowed here
     if name == "last":
         try:
             fences = read_fences()
@@ -3626,8 +3635,7 @@ def cmd_set_show(args) -> int:
         return _cmd_set_show_named(args, name, json_mode)
 
     config = _get_config(args)
-    roster, code = _materialize_set_roster(
-        config, "last", getattr(args, "window", None))
+    roster, code = _materialize_set_roster(config, "last")
     if roster is None:
         return code
 
@@ -3646,7 +3654,12 @@ def cmd_set_show(args) -> int:
               file=sys.stderr)
         return 0
 
-    members = roster["members"]
+    # The canonical roster is the epoch; --window narrows what is SHOWN
+    # while indices keep their canonical values (gaps, never renumbering).
+    all_members = roster["members"]
+    display_window = getattr(args, "window", None)
+    members, hidden = _filter_roster_for_display(
+        all_members, epoch.shutdown_utc, display_window)
     missing = roster["missing_timestamps"]
     lo = roster["window_lo"]
     window_hours = roster["window_hours"]
@@ -3678,6 +3691,12 @@ def cmd_set_show(args) -> int:
                 "window_hours": round(window_hours, 1),
                 "window_source": window_source,
             },
+            # `index` is the CANONICAL position -- what `csb resume set <N>`
+            # addresses -- so a narrowed view yields gaps, never a
+            # renumbering. roster_size is the unfiltered total.
+            "display_window_hours": display_window,
+            "roster_size": len(all_members),
+            "hidden_by_window": hidden,
             "members": [
                 {k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
@@ -3702,15 +3721,29 @@ def cmd_set_show(args) -> int:
                   "--no-commit` to index without git.")
         return 0
 
-    header = epoch_header_segments(epoch, len(members), window_hours,
+    header = epoch_header_segments(epoch, len(all_members), window_hours,
                                    window_source)
+    if hidden:
+        header.append([
+            (f"Showing {len(members)} of {len(all_members)} -- narrowed to "
+             f"{display_window:g}h before shutdown. ", None),
+            ("Numbers stay canonical, so gaps are expected and "
+             "`csb resume set <N>` still matches.", "dim"),
+        ])
     if not members:
         for segs in header:
             _style_print(segs)
         print()
-        print("No sessions with activity in that window before the shutdown.")
-        print("  Tip: `--window <hours>` widens or narrows the search.",
-              file=sys.stderr)
+        if hidden:
+            print(f"No sessions active within {display_window:g}h of the "
+                  "shutdown.")
+            print("  Tip: drop `--window` to see the whole epoch.",
+                  file=sys.stderr)
+        else:
+            print("No sessions with activity in that window before the "
+                  "shutdown.")
+            print("  Tip: `--window <hours>` narrows the view.",
+                  file=sys.stderr)
         return 0
 
     footers = []
@@ -5073,6 +5106,31 @@ def cmd_resume(args) -> int:
         )
         return 2
     return _resume_query(args, args.session_id)
+
+
+def _filter_roster_for_display(members, shutdown_utc, window_hours):
+    """Narrow a roster for DISPLAY, preserving canonical index numbers.
+
+    Returns ``(kept, hidden_count)``. Members keep the ``index`` they were
+    assigned in the canonical roster, so a narrowed view shows gaps
+    (``1, 3, 5``) rather than renumbering -- the gaps are the honest
+    signal that rows were filtered out, and they keep
+    `csb resume set 3` meaning what the reader just saw.
+
+    A window wider than the epoch simply matches everything: there is
+    nothing before the previous fence that belongs to *this* epoch.
+    """
+    if window_hours is None or shutdown_utc is None:
+        return members, 0
+    from datetime import timedelta
+
+    cutoff = shutdown_utc - timedelta(hours=window_hours)
+    kept = []
+    for member in members:
+        la = parse_index_ts(member["last_active_at"])
+        if la is not None and la >= cutoff:
+            kept.append(member)
+    return kept, len(members) - len(kept)
 
 
 def _cmd_resume_set(args, selector) -> int:

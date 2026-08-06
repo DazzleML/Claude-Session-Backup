@@ -9,6 +9,22 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.8.3] -- 2026-08-05 (beta)
+
+**Two fixes found by the checklist sweep across v0.8.0-v0.8.2.** Both were things the automated suite reported green on, and both were caught only by running the feature the way a person would. The first is a correctness bug in the epic's headline guarantee.
+
+### Fixed
+- **`csb resume set <N>` could resolve to a different session than the one shown at position N.** `csb set show last --window 60` renumbered its roster from 1 over whatever survived the narrower window, while `csb resume set N` always addressed the *unnarrowed* roster. On real data, index 1 meant a different session at every window width. Anyone reading a narrowed roster and reclaiming from it would have opened the wrong session, silently -- in the exact workflow ("read the list, walk away, run the next one") the numbering exists to serve.
+
+  `--window` is now a **display filter**: the canonical roster is always the epoch, indices keep their canonical values, and a narrowed view shows gaps (`7, 8`) rather than renumbering. The gaps are the honest signal that rows were filtered. `--json` gained `roster_size`, `hidden_by_window`, and `display_window_hours` so machine consumers can tell a filtered view from a whole one.
+
+  The internal split was already documented as the rule -- `_materialize_set_roster`'s docstring said "this function takes no filter parameters, and that absence is the contract" while its signature accepted a window. The code now matches the contract. The regression test that should have caught this used a window excluding *every* member, so it compared against an empty view and never observed a renumbering; it now pins a non-empty narrowed view.
+
+- **The roster recommended a command that could not work.** Sessions sharing a name -- routine when one project is worked from several clones or worktrees -- each got a `csb resume <name>` hint that fails on ambiguity. Duplicated names now fall back to the UUID in their hint; unique names keep the readable form.
+
+### Docs
+- [`docs/commands.md`](docs/commands.md) now states that the roster is a snapshot rather than a checklist: reclaiming a session removes it from later views, because membership is inferred from last-activity time. Useful behavior (what's left to reclaim), but it means the roster is not a durable record of what was open -- and nothing on screen previously said so.
+
 ## [0.8.2] -- 2026-08-04 (beta)
 
 **Index addressing: `csb resume set <N>` (#63).** The roster numbers from v0.8.0 and v0.8.1 become addresses. Reclaiming a set is a loop *you* drive -- read the roster, open the terminal you want, run one command, repeat. **csb never spawns a terminal, window, or tab**; it launches in the one you invoked it from, exactly as `csb resume` always has. csb cannot know which emulator, tab, or placement you meant, and guessing wrong is worse than not guessing.
@@ -1182,7 +1198,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.3...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

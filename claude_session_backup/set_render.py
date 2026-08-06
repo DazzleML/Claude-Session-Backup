@@ -106,7 +106,21 @@ def epoch_header_segments(
     return [line1, line2]
 
 
-def member_row_segments(member: dict, shutdown_utc=None) -> list[Segments]:
+def ambiguous_names_in(members: list[dict]) -> frozenset:
+    """Session names appearing on more than one row of this roster."""
+    seen, dupes = set(), set()
+    for member in members:
+        name = member.get("session_name")
+        if not name:
+            continue
+        if name in seen:
+            dupes.add(name)
+        seen.add(name)
+    return frozenset(dupes)
+
+
+def member_row_segments(member: dict, shutdown_utc=None,
+                        ambiguous_names=frozenset()) -> list[Segments]:
     """One roster member -> its display lines as segment lists.
 
     Line 1: `  N. <name>  <gap> before shutdown  [markers]`
@@ -134,7 +148,7 @@ def member_row_segments(member: dict, shutdown_utc=None) -> list[Segments]:
     if not member.get("in_index", True):
         line1.append(("  [not in index]", "red"))
 
-    hint_target = _resume_hint_target(member)
+    hint_target = _resume_hint_target(member, ambiguous_names)
     start_at = _resolve_start_at(member)
     line2: Segments = [
         ("      start at: ", "dim"),
@@ -146,15 +160,22 @@ def member_row_segments(member: dict, shutdown_utc=None) -> list[Segments]:
     return [line1, line2]
 
 
-def _resume_hint_target(member: dict) -> str:
+def _resume_hint_target(member: dict, ambiguous_names=frozenset()) -> str:
     """What the per-row `csb resume` hint should name.
 
-    The session name when it exists and is shell-safe as one word (double-
-    click-copyable); the full UUID otherwise. Full UUID rather than short
-    form so the hint also works with bare `claude --resume`.
+    The session name when it exists, is shell-safe as one word, and is
+    UNIQUE in this roster; the full UUID otherwise.
+
+    The uniqueness check matters more than it looks. Session names
+    collide readily -- a project branched across topics produces several
+    rows with one name, differing only by folder -- and for those rows
+    `csb resume <name>` cannot resolve. Printing it anyway would make the
+    roster recommend a command guaranteed to fail on exactly the rows
+    the index-addressing feature exists to disambiguate.
     """
     name = member["session_name"]
-    if name and " " not in name and not name.startswith("-"):
+    if (name and " " not in name and not name.startswith("-")
+            and name not in ambiguous_names):
         return name
     return member["session_id"]
 
@@ -173,8 +194,11 @@ def render_roster(
         _emit(segs, stream=stream, use_color=use_color)
     if members:
         _emit([("", None)], stream=stream, use_color=use_color)
+    # Names that repeat in THIS roster fall back to UUIDs in their hints:
+    # `csb resume <name>` cannot resolve a duplicate.
+    ambiguous = ambiguous_names_in(members)
     for member in members:
-        for segs in member_row_segments(member, shutdown_utc):
+        for segs in member_row_segments(member, shutdown_utc, ambiguous):
             _emit(segs, stream=stream, use_color=use_color)
     for note in footer_notes:
         _emit([("", None)], stream=stream, use_color=use_color)
