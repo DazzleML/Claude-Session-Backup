@@ -1082,7 +1082,7 @@ def test_status_repoless_shows_advice(monkeypatch, mock_claude_dir_repoless, tmp
     db = tmp_path / "status.db"
     cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir_repoless), db=str(db)))
     out = capsys.readouterr().out
-    assert "Git repo:      NO" in out
+    assert "Git repo:       NO" in out
     assert "backups disabled" in out
     assert "csb backup --no-commit" in out
 
@@ -1676,7 +1676,7 @@ def test_status_refused_line(monkeypatch, mock_claude_dir_repoless, tmp_path, ca
     cmd_status(SimpleNamespace(claude_dir=str(mock_claude_dir_repoless),
                                db=str(tmp_path / "st.db")))
     out = capsys.readouterr().out
-    assert "Git repo:      REFUSED" in out
+    assert "Git repo:       REFUSED" in out
     assert "git said: fatal: detected dubious ownership" in out
     assert "backups disabled" not in out   # absent-only advice stays absent-only
 

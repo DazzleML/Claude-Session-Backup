@@ -1134,7 +1134,9 @@ def build_parser():
     p_set_new.add_argument("set_name", metavar="<name>", help="Set name")
     p_set_new.add_argument(
         "sessions", nargs="*", metavar="<session>",
-        help="Sessions to include (UUID/prefix, name, path, or keyword). "
+        help="Sessions to include: UUID/prefix, name, path, keyword, or a "
+             "view-index token like `boot:15` / `last~2:7` / `OTHERSET:4` "
+             "-- row N of any roster you just read (each grab is echoed). "
              "Optional when --from is given.",
     )
     p_set_new.add_argument(
@@ -1170,7 +1172,8 @@ def build_parser():
     p_set_add.add_argument("set_name", metavar="<name>", help="Set name")
     p_set_add.add_argument(
         "sessions", nargs="+", metavar="<session>",
-        help="Sessions to add (UUID/prefix, name, path, or keyword)",
+        help="Sessions to add (UUID/prefix, name, path, keyword, or a "
+             "view-index token like `boot:15` -- row N of a roster)",
     )
 
     p_set_rm = set_sub.add_parser(
@@ -1187,7 +1190,9 @@ def build_parser():
     p_set_rm.add_argument("set_name", metavar="<name>", help="Set name")
     p_set_rm.add_argument(
         "sessions", nargs="*", metavar="<session>",
-        help="Sessions to remove; omit to delete the whole set",
+        help="Sessions to remove (any query, or a view-index token -- "
+             "`csb set rm MYSET MYSET:3` removes the row you are looking "
+             "at); omit to delete the whole set",
     )
 
     # rebuild-index

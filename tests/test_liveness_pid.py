@@ -331,8 +331,12 @@ class TestHookMirror:
     def hook_env(self, tmp_path, monkeypatch):
         monkeypatch.setenv("CLAUDE_DIR", str(tmp_path))
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-        return SimpleNamespace(bh=_load_hook(), dir=tmp_path,
-                               notes=[])
+        bh = _load_hook()
+        # These tests pin the ENV-channel semantics; the ancestry walk
+        # (which would find pytest's real claude ancestor) has its own
+        # class -- null its seam so the env fallback drives.
+        monkeypatch.setattr(bh, "_process_table", lambda: None)
+        return SimpleNamespace(bh=bh, dir=tmp_path, notes=[])
 
     def _note(self, hook_env):
         return hook_env.notes.append
@@ -369,11 +373,66 @@ class TestHookMirror:
 
     def test_missing_env_degrades_to_no_pid(self, hook_env, monkeypatch):
         monkeypatch.delenv("CSB_HOOK_HOST_PID", raising=False)
+        monkeypatch.setattr(hook_env.bh, "_process_table", lambda: None)
         hook_env.bh._live_start(UUID_GHOST, "startup", "C:/x",
                                 self._note(hook_env))
         raw = json.loads((hook_env.dir / "csb-live" /
                           f"{UUID_GHOST}.json").read_text(encoding="utf-8"))
         assert "pid" not in raw
+
+
+class TestHostWalk:
+    """#78: Claude Code runs hook commands through a shell, so node's
+    ppid is a TRANSIENT cmd/sh that dies with the hook -- captured live
+    twice (fork-birth and compact both stamped already-dead shells).
+    The walk climbs to the real claude CLI ancestor."""
+
+    TABLE = [
+        (100, 90, "python.exe backup-hook.py"),
+        (90, 80, "node run-hook.mjs"),
+        (80, 70, "C:\\Windows\\system32\\cmd.exe /c node ..."),  # transient
+        (70, 1, 'C:\\Users\\X\\.local\\bin\\claude.EXE --resume abc'),
+        (1, 1, "wininit.exe"),
+    ]
+
+    def _bh(self, monkeypatch, table, env_pid=None):
+        bh = _load_hook()
+        monkeypatch.setattr(bh, "_process_table", lambda: table)
+        if env_pid is not None:
+            monkeypatch.setenv("CSB_HOOK_HOST_PID", str(env_pid))
+        else:
+            monkeypatch.delenv("CSB_HOOK_HOST_PID", raising=False)
+        return bh
+
+    def test_walk_climbs_past_the_transient_shell(self, monkeypatch):
+        """RED-GREEN anchor: env ppid says 80 (the shell); the walk
+        must return 70 (the claude CLI that outlives the hook)."""
+        bh = self._bh(monkeypatch, self.TABLE, env_pid=80)
+        assert bh._host_pid(start_pid=100) == 70
+
+    def test_desktop_claude_ancestor_is_skipped(self, monkeypatch):
+        table = [
+            (100, 90, "python.exe backup-hook.py"),
+            (90, 85, "node run-hook.mjs"),
+            (85, 70, "Claude.exe --type=renderer"),  # Desktop, not CLI
+            (70, 1, "claude --resume xyz"),
+        ]
+        bh = self._bh(monkeypatch, table)
+        assert bh._host_pid(start_pid=100) == 70
+
+    def test_no_claude_ancestor_falls_back_to_env(self, monkeypatch):
+        table = [
+            (100, 90, "python.exe backup-hook.py"),
+            (90, 50, "node run-hook.mjs"),
+            (50, 1, "bash"),
+            (1, 1, "init"),
+        ]
+        bh = self._bh(monkeypatch, table, env_pid=90)
+        assert bh._host_pid(start_pid=100) == 90
+
+    def test_unreadable_table_falls_back_to_env(self, monkeypatch):
+        bh = self._bh(monkeypatch, None, env_pid=42)
+        assert bh._host_pid(start_pid=100) == 42
 
 
 # ── scan(): by_pid construction and old-mock tolerance ────────────────

@@ -307,6 +307,7 @@ An epoch is observed; a **named set** is curated. It answers the other question 
 
 ```bash
 csb set new CSB-STACK <session> <session>   # create from any session queries
+csb set new CSB-STACK boot:1 boot:8 boot:15 # ...or grab rows BY NUMBER from any roster you just read
 csb set new TUESDAY --from last~1           # freeze a historical epoch (or --from 2026-7-15)
 csb set show CSB-STACK                      # same numbered roster as an epoch
 csb set add CSB-STACK <session>             # extend
@@ -317,7 +318,7 @@ csb set list                                # named sets + the live row + the ep
 
 A set promoted from an epoch remembers where it froze from -- `promoted from 'last~1' (shutdown ...)` -- which stays true as that epoch's address drifts deeper into history.
 
-Members resolve with csb's usual vocabulary (UUID or prefix, session name, path, keyword) and are **stored as full UUIDs**, so renaming a session later never breaks a set. Naming conventions and the reserved names live in [naming.md](naming.md#naming-sets).
+Members resolve with csb's usual vocabulary (UUID or prefix, session name, path, keyword) **plus view-index tokens**: `<view-or-set>:<N>` grabs row N of that roster -- `boot:15`, `current:3`, `last~2:7`, `2026-7-15:2`, or `OTHERSET:4`. Every grab echoes what it resolved (`boot:15 -> SESSION-NAME (3b7e878d)`), because live-view numbers shift as sessions open and close -- the echo makes a mis-grab visible and `set rm` undoes it. Epoch tokens address the roster `show` *displayed* (including the empty-epoch fallthrough), a miss aborts the whole command, and the self-referential form works: `csb set rm MYSET MYSET:3` removes the row you're looking at. A session literally *named* like `notes:1` still resolves by name unless a set called `notes` exists. Members are **stored as full UUIDs**, so renaming a session later never breaks a set. Naming conventions and the reserved names live in [naming.md](naming.md#naming-sets).
 
 **Where they live, and why it matters.** Sets are stored in `csb-sets.json` in your backup store and committed in the *user* class alongside settings and skills. That is deliberate: set membership is not derivable from transcripts, so an index table would be silently erased by `csb update rebuild-index` — a command csb actively recommends. As user data in git, sets survive rebuilds by construction, ride existing backups, and a bad edit is one `git checkout` away. A corrupt sets file is therefore reported rather than silently reset.
 

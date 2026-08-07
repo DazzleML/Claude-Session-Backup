@@ -279,19 +279,86 @@ def _claude_dir() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".claude"
 
 
-def _host_pid():
-    """The hosting claude process PID, from run-hook.mjs (#72), or None.
+_HOST_MARKERS = ("--type=", "WindowsApps", "crashpad", "--user-data-dir")
 
-    run-hook.mjs is a direct child of the claude process, so its
-    process.ppid is ground truth -- the one identity signal that works
-    for fresh, forked, AND in-app-switched sessions, none of which can
-    be attributed from process argv after launch. Absent or garbled env
-    (old run-hook.mjs, manual invocation) degrades to None.
-    """
+
+def _is_claude_cli(cmdline):
+    """Mirror of liveness.is_claude_cli (this hook cannot import csb)."""
+    if not cmdline:
+        return False
+    if any(marker in cmdline for marker in _HOST_MARKERS):
+        return False
+    exe = cmdline.split()[0].strip('"').lower()
+    return exe.endswith("claude") or exe.endswith("claude.exe")
+
+
+def _process_table():
+    """[(pid, ppid, cmdline)] or None. THE mock seam for tests."""
     try:
-        return int(os.environ.get("CSB_HOOK_HOST_PID", ""))
-    except (TypeError, ValueError):
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                 "Get-CimInstance Win32_Process | "
+                 "Select-Object ProcessId,ParentProcessId,CommandLine | "
+                 "ConvertTo-Json -Compress"],
+                capture_output=True, text=True, timeout=15, check=False,
+            ).stdout
+            rows = json.loads(out) if out.strip() else []
+            if isinstance(rows, dict):
+                rows = [rows]
+            return [(r.get("ProcessId"), r.get("ParentProcessId"),
+                     r.get("CommandLine") or "") for r in rows]
+        table = []
+        out = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,args="],
+            capture_output=True, text=True, timeout=15, check=False,
+        ).stdout
+        for line in out.splitlines():
+            parts = line.strip().split(None, 2)
+            if len(parts) >= 2:
+                table.append((parts[0], parts[1],
+                              parts[2] if len(parts) > 2 else ""))
+        return table
+    except Exception:  # noqa: BLE001 -- advisory; never break a hook
         return None
+
+
+def _host_pid(start_pid=None):
+    """The hosting claude CLI's PID, or None (#72, corrected #78).
+
+    process.ppid alone is ONE LEVEL SHORT: Claude Code executes hook
+    commands through a shell, so node's parent is a TRANSIENT cmd/sh
+    that dies when the hook finishes -- captured live twice (fork-birth
+    and compact both stamped already-dead shells while the real host,
+    created the same second as the entry, ran on). So: WALK the
+    ancestry from this process upward until a claude CLI cmdline
+    appears. The env ppid remains the fallback when the table cannot
+    be read -- better a maybe-transient pid than none.
+    """
+    env_pid = None
+    try:
+        env_pid = int(os.environ.get("CSB_HOOK_HOST_PID", ""))
+    except (TypeError, ValueError):
+        pass
+    table = _process_table()
+    if table:
+        parents = {}
+        cmdlines = {}
+        for pid, ppid, cmdline in table:
+            try:
+                parents[int(pid)] = int(ppid)
+            except (TypeError, ValueError):
+                continue
+            cmdlines[int(pid)] = cmdline
+        current = start_pid if start_pid is not None else os.getpid()
+        for _hop in range(12):  # bounded walk; never loops
+            parent = parents.get(current)
+            if parent is None or parent == current:
+                break
+            if _is_claude_cli(cmdlines.get(parent, "")):
+                return parent
+            current = parent
+    return env_pid
 
 
 def _live_start(session_id, source, cwd, note):

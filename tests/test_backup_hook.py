@@ -122,6 +122,10 @@ def captured_popen(monkeypatch, tmp_path):
     # Repo present by default -- the probe shells out via subprocess.run,
     # which would otherwise hit the fake Popen. Repo-less tests override.
     monkeypatch.setattr(bh, "_git_repo_state", lambda d: "ok")
+    # The #78 ancestry walk also rides subprocess.run -> the fake Popen
+    # would count it as a spawn; these tests count BACKUP spawns. The
+    # walk has its own tests (TestHostWalk in test_liveness_pid.py).
+    monkeypatch.setattr(bh, "_process_table", lambda: None)
     # keep logs out of the real ~/.claude
     monkeypatch.setattr(bh.Path, "home", lambda: tmp_path)
     return _FakePopen

@@ -49,6 +49,7 @@ csb never spawns a terminal, window, or tab -- you choose where each session lan
 
 ```bash
 csb set new CSB-STACK <session> <session>   # declare
+csb set new CSB-STACK boot:1 boot:8 boot:15 # ...or grab roster rows by number
 csb set add CSB-STACK <session>             # extend
 csb set new TUESDAY --from 2026-7-15        # freeze a whole epoch
 csb set new NOW --from current              # freeze what is open right now

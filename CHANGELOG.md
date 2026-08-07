@@ -9,6 +9,17 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.4] -- 2026-08-07 (beta)
+
+### Added
+- **Grab roster rows by number**: `csb set add NAME boot:15` (and `new`/`rm`) accept `<view-or-set>:<N>` tokens for any roster -- `boot:`, `current:`, `last~2:`, a date, or another set. Every grab echoes what it resolved (live-view numbers shift; the echo makes a mis-grab visible and `set rm` undoes it), epoch tokens address the roster `show` displayed, a miss aborts the whole command, and `csb set rm MYSET MYSET:3` removes the row you're looking at. Sessions literally named like `notes:1` still resolve by name unless a set called `notes` exists.
+
+- **`csb set add` to a set that doesn't exist offers to create it** (interactive terminals only -- Y/n, defaulting to yes, then the full `set new` path with its echoes). Scripts keep the deterministic error, which now hands back the exact `csb set new ...` retry with the tokens you typed.
+
+### Fixed
+- **Hook pid capture was one level short.** Claude Code runs hook commands through a shell, so the captured "host" was a transient cmd/sh that died with the hook -- live sessions could never earn `[running]` from organic capture (two dead stamps on one real entry proved it). The hook now walks the process ancestry to the actual claude CLI, on Windows and POSIX, with the old behavior as fallback when the table is unreadable. Ships with the plugin; entries heal at each session's next hook fire after updating.
+- **`csb status` aligned and easier to read**: one label column throughout, the last-scan time in your local timezone with the stored UTC beside it, and light color (git state, un-backed-up warnings) where the terminal supports it.
+
 ## [0.9.3] -- 2026-08-07 (beta)
 
 **The session-sets epic completes: `last` everywhere, history addressable, promotion with provenance.** `csb set show last` was the one Windows-only surface; only one epoch had a name; a frozen set forgot where it came from. This release closes all three -- and it was built capture-first: the parsers were frozen against real command output (WSL2/systemd 249), which caught a silent systemd behavior that would have shipped broken.
@@ -1297,7 +1308,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.4...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

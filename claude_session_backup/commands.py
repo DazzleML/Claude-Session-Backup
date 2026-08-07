@@ -1760,32 +1760,48 @@ def cmd_status(args) -> int:
     unbacked = find_unbacked_sessions(conn, claude_dir) if is_repo else []
     conn.close()
 
+    # One label column for every line (user report: three different
+    # historical paddings read as raggedness). The 16-wide field
+    # reproduces the pinned "Un-backed-up:   " spacing exactly.
+    def _sline(label, value, style=None):
+        _style_print([(f"  {label + ':':<16}", None), (str(value), style)])
+
     print(f"Claude Session Backup Status")
-    print(f"  Claude dir:    {claude_dir}")
+    _sline("Claude dir", claude_dir, "dim")
     if repo_state == "refused":
-        print(f"  Git repo:      REFUSED (a repo exists; git declines it "
-              f"in this shell)")
+        _sline("Git repo", "REFUSED (a repo exists; git declines it "
+               "in this shell)", "red")
         first = (repo_detail or "").splitlines()[:1]
         if first:
             print(f"    git said: {first[0]}")
         print(f"    (run `csb setup` for diagnosis and fixes -- do NOT "
               f"re-initialize)")
     elif repo_state == "error":
-        print(f"  Git repo:      GIT ERROR ({repo_detail})")
+        _sline("Git repo", f"GIT ERROR ({repo_detail})", "red")
     else:
-        print(f"  Git repo:      {'yes' if is_repo else 'NO'}")
+        _sline("Git repo", "yes" if is_repo else "NO",
+               "green" if is_repo else "red")
     if repo_state == "absent":
         print(f"    (backups disabled -- run `csb setup` to configure, or "
               f"`git -C {claude_dir} init`;")
         print(f"     `csb backup --no-commit` builds the search index without git)")
-    print(f"  Total sessions: {stats['total_sessions']}")
-    print(f"  Active:         {stats['active_sessions']}")
-    print(f"  Deleted:        {stats['deleted_sessions']}")
-    print(f"  Projects:       {stats['projects']}")
+    _sline("Total sessions", stats['total_sessions'])
+    _sline("Active", stats['active_sessions'])
+    _sline("Deleted", stats['deleted_sessions'], "dim")
+    _sline("Projects", stats['projects'])
 
     if stats["last_scan"]:
         scan = stats["last_scan"]
-        print(f"  Last scan:      {scan['scanned_at']}")
+        # Local wall time first (the human answer to "when?"), the
+        # stored UTC beside it for searchability -- both, per user.
+        scanned_dt = parse_index_ts(scan["scanned_at"])
+        if scanned_dt is not None:
+            from .set_render import format_local
+            when = (f"{format_local(scanned_dt)}  "
+                    f"({_iso_z(scanned_dt)})")
+        else:
+            when = scan["scanned_at"]
+        _sline("Last scan", when)
         print(f"    Found: {scan['sessions_found']}, New: {scan['sessions_new']}, "
               f"Deleted: {scan['sessions_deleted']}")
         if scan.get("git_commit"):
@@ -1796,18 +1812,19 @@ def cmd_status(args) -> int:
         status = git_status(claude_dir)
         changed = len([l for l in status.split("\n") if l.strip()])
         if changed:
-            print(f"  Uncommitted changes: {changed} files")
+            _sline("Uncommitted", f"{changed} files", "yellow")
         else:
-            print(f"  Working tree: clean")
+            _sline("Working tree", "clean", "green")
 
         # Per-session backup freshness. Counts the live session honestly (its
         # transcript is mid-write) -> goes to 0 once all sessions close.
         if not unbacked:
-            print(f"  Un-backed-up:   none")
+            _sline("Un-backed-up", "none", "green")
         else:
             n = len(unbacked)
-            print(f"  Un-backed-up:   {n} session"
-                  f"{'s' if n != 1 else ''} (changed since last index -- run `csb backup`)")
+            _sline("Un-backed-up",
+                   f"{n} session{'s' if n != 1 else ''} (changed since "
+                   "last index -- run `csb backup`)", "yellow")
             try:
                 limit = int(config.get("status_unbacked_limit", 20))
             except (TypeError, ValueError):
@@ -1823,7 +1840,10 @@ def cmd_status(args) -> int:
                     except Exception:
                         name = ""
                 label = f"{name}  " if name else ""
-                print(f"    {sf.session_id[:8]}  {label}({why})")
+                _style_print([
+                    (f"    {sf.session_id[:8]}  ", "dim"),
+                    (label, None), (f"({why})", "dim"),
+                ])
             if n > limit:
                 print(f"    + {n - limit} more not shown")
 
@@ -1834,7 +1854,7 @@ def cmd_status(args) -> int:
         verdict = evaluate_schedule_evidence(
             _safe_backend_status(choose_backend()), interval,
             ClaudePaths.from_dir(claude_dir).schedule_log)
-        print(f"  Scheduled:      {verdict.detail}")
+        _sline("Scheduled", verdict.detail)
     except Exception:  # noqa: BLE001 -- ambient line is best-effort
         pass
 
@@ -3693,6 +3713,80 @@ def _resolve_sessions_for_set(conn, queries, claude_dir):
     return uuids, 0
 
 
+def _resolve_membership_args(config, conn, queries):
+    """Membership tokens: the view-index pre-pass, then the ordinary
+    vocabulary (#76 -- the ONE seam `set new`/`add`/`rm` share).
+
+    ``<view-or-set>:<N>`` grabs row N of that roster -- the number the
+    user just read. Grammar (V1): split on the LAST colon; the suffix
+    must be a bare integer AND the prefix must resolve as a view
+    (current/boot/last/last~K/date) or an existing named set; anything
+    else falls through UNCHANGED, so a session literally named
+    ``notes:1`` keeps resolving by name. Each distinct prefix
+    materializes ONCE through the shared materializer (V3), so epoch
+    tokens inherit the empty-epoch fallthrough -- ``last~1:1`` grabs
+    exactly what ``show last~1`` displayed -- and boot's registry
+    appendix rows are addressable.
+
+    Every grab is ECHOED (V5): live-view numbers shift as sessions open
+    and close, so the race is disclosed, never prevented -- a mis-grab
+    is visible immediately and ``set rm`` undoes it. Any miss aborts
+    the WHOLE command (V4, the half-built-set rule). Tokens process in
+    CLI order, so stored member order matches what was typed.
+    Returns ``(uuids, exit_code)``.
+    """
+    resolved: list = []
+    rosters: dict = {}
+    for token in queries:
+        prefix, sep, suffix = token.rpartition(":")
+        is_view_index = bool(sep) and suffix.isdigit()
+        if is_view_index and prefix not in rosters:
+            if (prefix in ("current", "boot")
+                    or classify_epoch_token(prefix) is not None
+                    or session_sets.resolve_set_name(
+                        config["claude_dir"], prefix) is not None):
+                roster, code = _materialize_set_roster(config, prefix)
+                if roster is None:
+                    print(f"  (while resolving '{token}')",
+                          file=sys.stderr)
+                    return None, code
+                rosters[prefix] = roster
+            else:
+                rosters[prefix] = None  # not a view -> ordinary query
+        if is_view_index and rosters[prefix] is not None:
+            roster = rosters[prefix]
+            index = int(suffix)
+            member = next((m for m in roster["members"]
+                           if m["index"] == index), None)
+            if member is None:
+                size = len(roster["members"])
+                noun = "row" if size == 1 else "rows"
+                print(
+                    f"'{token}': roster '{roster['name']}' has no row "
+                    f"{index} ({size} {noun}). Nothing was changed.",
+                    file=sys.stderr,
+                )
+                return None, 2
+            sid = member["session_id"]
+            from .ids import format_short_uuid
+
+            name = member.get("session_name")
+            label = (f"{name} ({format_short_uuid(sid)})" if name
+                     else format_short_uuid(sid))
+            print(f"  {token} -> {label}")
+            if sid not in resolved:
+                resolved.append(sid)
+            continue
+        single, code = _resolve_sessions_for_set(
+            conn, [token], config["claude_dir"])
+        if single is None:
+            return None, code
+        for sid in single:
+            if sid not in resolved:
+                resolved.append(sid)
+    return resolved, 0
+
+
 def _named_set_roster(conn, entry):
     """Materialize a named set's members into roster dicts.
 
@@ -4276,8 +4370,8 @@ def cmd_set_new(args) -> int:
         conn = open_db(config["index_path"])
         init_schema(conn)
         try:
-            resolved, code = _resolve_sessions_for_set(
-                conn, sessions_args, config["claude_dir"])
+            resolved, code = _resolve_membership_args(
+                config, conn, sessions_args)
         finally:
             conn.close()
         if resolved is None:
@@ -4307,15 +4401,32 @@ def cmd_set_add(args) -> int:
     stored = session_sets.resolve_set_name(config["claude_dir"], name,
                                            warn=_set_warn)
     if stored is None:
-        print(f"No set named '{name}' -- create it with `csb set new {name} "
-              "<session>`.", file=sys.stderr)
+        # The intent is unambiguous -- the user typed real member tokens
+        # at a name that doesn't exist yet. On a TTY, offer the create
+        # (delegating to `set new`, which brings validation, resolution
+        # echoes, and the summary). Scripts keep the deterministic
+        # error + exact-retry hint -- never create implicitly there.
+        if sys.stdin is not None and sys.stdin.isatty():
+            try:
+                answer = input(f"No set named '{name}'. Create it with "
+                               "these members? [Y/n] ")
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 1
+            if answer.strip().lower() in ("", "y", "yes"):
+                return cmd_set_new(args)
+            return 1
+        retry = " ".join([name] + list(args.sessions or []))
+        print(f"No set named '{name}'. Create it with the same members:",
+              file=sys.stderr)
+        print(f"  csb set new {retry}", file=sys.stderr)
         return 1
 
     conn = open_db(config["index_path"])
     init_schema(conn)
     try:
-        uuids, code = _resolve_sessions_for_set(
-            conn, args.sessions, config["claude_dir"])
+        uuids, code = _resolve_membership_args(
+            config, conn, args.sessions)
     finally:
         conn.close()
     if uuids is None:
@@ -4357,8 +4468,8 @@ def cmd_set_rm(args) -> int:
     conn = open_db(config["index_path"])
     init_schema(conn)
     try:
-        uuids, code = _resolve_sessions_for_set(
-            conn, args.sessions, config["claude_dir"])
+        uuids, code = _resolve_membership_args(
+            config, conn, args.sessions)
     finally:
         conn.close()
     if uuids is None:

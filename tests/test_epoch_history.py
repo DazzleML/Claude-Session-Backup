@@ -215,6 +215,10 @@ class TestHistoryThroughCli:
         import subprocess as subprocess_module
         run_mock = MagicMock(return_value=SimpleNamespace(returncode=0))
         monkeypatch.setattr(subprocess_module, "run", run_mock)
+        # CI runners have no claude on PATH; the launcher checks BEFORE
+        # the (mocked) spawn -- caught by the v0.9.3 CI run.
+        monkeypatch.setattr(commands_module.shutil, "which",
+                            lambda name: "C:\\bin\\claude.exe")
         assert _run(env, "resume", "--set", "last~1", "1") == 0
         launched = " ".join(str(a) for a in run_mock.call_args[0][0])
         assert UUID_A in launched
@@ -348,6 +352,8 @@ class TestEmptyEpochFallthrough:
         import subprocess as subprocess_module
         run_mock = MagicMock(return_value=SimpleNamespace(returncode=0))
         monkeypatch.setattr(subprocess_module, "run", run_mock)
+        monkeypatch.setattr(commands_module.shutil, "which",
+                            lambda name: "C:\\bin\\claude.exe")
         assert _run(gap_env, "resume", "--set", "last~1", "1") == 0
         launched = " ".join(str(a) for a in run_mock.call_args[0][0])
         assert UUID_DEEP in launched

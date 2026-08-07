@@ -305,6 +305,32 @@ class TestCliCrud:
         assert _run(env, "set", "add", "NOPE", "ALPHA__session") == 1
         assert _run(env, "set", "rm", "NOPE") == 1
 
+    def test_add_missing_set_hints_exact_retry_when_scripted(self, env,
+                                                             capsys):
+        """Non-TTY keeps the deterministic error, now with a paste-able
+        retry carrying the user's own tokens."""
+        assert _run(env, "set", "add", "NOPE", "ALPHA__session") == 1
+        err = capsys.readouterr().err
+        assert "csb set new NOPE ALPHA__session" in err
+
+    def test_add_missing_set_offers_create_on_tty(self, env, capsys,
+                                                  monkeypatch):
+        """Interactive intent is unambiguous: Y creates via the full
+        `set new` path (validation, echoes, summary); n declines."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        assert _run(env, "set", "add", "FRESH-SET", "ALPHA__session") == 0
+        assert "Created set 'FRESH-SET' with 1 session" in \
+            capsys.readouterr().out
+        assert get_set(env.claude_dir, "FRESH-SET") is not None
+
+    def test_add_missing_set_decline_creates_nothing(self, env, capsys,
+                                                     monkeypatch):
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("builtins.input", lambda prompt: "n")
+        assert _run(env, "set", "add", "NOPE-SET", "ALPHA__session") == 1
+        assert get_set(env.claude_dir, "NOPE-SET") is None
+
     def test_list_shows_sets_and_epoch_section(self, env, capsys):
         _run(env, "set", "new", "CSB-STACK", "ALPHA__session")
         capsys.readouterr()
