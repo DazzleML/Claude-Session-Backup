@@ -107,3 +107,30 @@ def test_pythonw_without_log_file_does_not_crash(mock_claude_dir, monkeypatch):
     monkeypatch.setattr(sys, "stderr", None)
     rc = cmd_backup(_args(mock_claude_dir, None))
     assert rc == 0
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows console semantics")
+def test_git_spawns_suppress_child_console_windows(mock_claude_dir, monkeypatch):
+    # Field-caught during the P1 probe (2026-08-06): under pythonw (no
+    # parent console) every git child got its OWN conhost window -- a
+    # visible flash per git call, several per backup. Every run_git spawn
+    # must pass CREATE_NO_WINDOW so scheduled runs are truly windowless.
+    import subprocess as sp
+    from claude_session_backup import git_ops
+
+    seen = []
+    real_run = sp.run
+
+    def spy(cmd, **kw):
+        if cmd and cmd[0] == "git":
+            seen.append(kw.get("creationflags", 0))
+        return real_run(cmd, **kw)
+
+    monkeypatch.setattr(sp, "run", spy)
+    rc = cmd_backup(_args(mock_claude_dir, None, no_commit=False))
+    assert rc == 0
+    assert seen, "backup made no git calls?"
+    assert all(f & sp.CREATE_NO_WINDOW for f in seen), (
+        "a git spawn is missing CREATE_NO_WINDOW -- scheduled runs "
+        "will flash conhost windows"
+    )

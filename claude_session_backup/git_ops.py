@@ -23,6 +23,7 @@ The restore path is byte-pure end to end:
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Union
 
@@ -83,6 +84,17 @@ USER_COMMIT_MSG = "~/.claude user: sync configs, skills, session logs, and plugi
 
 # ── Core git helpers ────────────────────────────────────────────────
 
+# On Windows, a console-subsystem child spawned from a CONSOLE-LESS parent
+# (pythonw -- the #69 scheduled-backup entry) gets its own brand-new conhost
+# window: one flash PER git call, several per backup. Observed live during
+# the P1 probe (2026-08-06); the user saw the flurry. CREATE_NO_WINDOW
+# suppresses the child console entirely -- harmless here because every git
+# call captures its output and never talks to a console.
+_NO_WINDOW = (
+    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+)
+
+
 def run_git(claude_dir: str, *args, check: bool = True) -> subprocess.CompletedProcess:
     """Run a git command in the claude_dir repository."""
     cmd = ["git", "-C", claude_dir] + list(args)
@@ -91,6 +103,7 @@ def run_git(claude_dir: str, *args, check: bool = True) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         check=check,
+        creationflags=_NO_WINDOW,
     )
 
 
@@ -404,6 +417,7 @@ def git_show_file_bytes(
             "-c", "core.safecrlf=false",
             "show", f"{commit}:{norm}",
         ],
+        creationflags=_NO_WINDOW,
         capture_output=True,
         text=False,
         check=False,
