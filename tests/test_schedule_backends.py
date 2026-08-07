@@ -120,6 +120,27 @@ def test_win_install_failure_surfaces_stderr(fake, tmp_path):
     assert not r.ok and "denied" in r.detail
 
 
+def test_win_install_notes_legacy_handrolled_task(fake, tmp_path):
+    # The pre-#69 docs snippet registered "Claude Session Backup" by hand;
+    # both tasks running is lock-safe but wasteful, and the legacy entry's
+    # bare `csb` is PATH-fragile -- install points at the removal command.
+    fake.route(_is("schtasks", "/query", "/xml"), rc=1)
+    fake.route(_is("schtasks", "/create"), rc=0)
+    fake.route(lambda a: "Claude Session Backup" in a, rc=0, out="present")
+    r = sb.WindowsTaskBackend().install(spec_for(tmp_path))
+    assert r.ok
+    assert "legacy" in r.detail
+    assert '/delete /tn "Claude Session Backup"' in r.detail
+
+
+def test_win_install_without_legacy_task_stays_quiet(fake, tmp_path):
+    fake.route(_is("schtasks", "/query", "/xml"), rc=1)
+    fake.route(_is("schtasks", "/create"), rc=0)
+    fake.route(lambda a: "Claude Session Backup" in a, rc=1, err="not found")
+    r = sb.WindowsTaskBackend().install(spec_for(tmp_path))
+    assert r.ok and "legacy" not in r.detail
+
+
 def test_win_remove_nothing_is_success(fake, tmp_path):
     # AC-4 + P1: /delete of a missing task rc=1 -> clean success.
     fake.route(_is("schtasks", "/query", "/xml"), rc=1)
@@ -300,3 +321,141 @@ def test_systemd_recipe_carries_full_context(tmp_path):
     assert "enable-linger" in r          # the warning ships inline
     assert "not managed" in r            # D2 boundary: printed, never owned
     assert "14:37:00" in r               # Delta-11 fire time survives
+
+
+def test_systemd_recipe_notes_windows_rendered_paths(tmp_path):
+    # Tester finding #3: rendered on Windows, the recipe baked
+    # C:\...\pythonw.exe into ExecStart -- meaningless on the Linux
+    # target. The recipe must say it is a shape preview, not paste-ready.
+    win = ScheduleSpec(
+        interval_minutes=1440, fire_hour=14, fire_minute=37,
+        start_boundary="2026-08-06T14:37:00",
+        python_exe=r"C:\Python312\pythonw.exe",
+        claude_dir=str(tmp_path), log_file=r"C:\t\schedule.log")
+    assert "generated on Windows" in sb.render_systemd_recipe(win)
+    posix = ScheduleSpec(
+        interval_minutes=1440, fire_hour=14, fire_minute=37,
+        start_boundary="2026-08-06T14:37:00",
+        python_exe="/usr/bin/python3",
+        claude_dir=str(tmp_path), log_file="/tmp/schedule.log")
+    assert "generated on Windows" not in sb.render_systemd_recipe(posix)
+
+
+# ── Tester sweep findings (2026-08-07): busybox ps, docker WSL,
+#    remove-guard for the wrong store ─────────────────────────────────────
+
+
+def test_daemon_preflight_falls_back_to_proc_when_ps_lacks_axo(
+        fake, monkeypatch):
+    # Tester finding #2 (stock Alpine): BusyBox ps rejects -axo (rc 1,
+    # "unrecognized option: x") while crond genuinely runs. The pre-flight
+    # must fall back to /proc/<pid>/comm instead of refusing.
+    fake.route(lambda a: a[0] == "ps", rc=1, err="ps: unrecognized option: x")
+    monkeypatch.setattr(sb, "_proc_comm_names",
+                        lambda: {"sh", "crond"}, raising=False)
+    assert sb._cron_daemon_running() is True
+
+
+def test_daemon_preflight_honest_false_when_no_ps_and_no_proc(
+        fake, monkeypatch):
+    fake.route(lambda a: a[0] == "ps", rc=1, err="ps: unrecognized option: x")
+    monkeypatch.setattr(sb, "_proc_comm_names", lambda: None, raising=False)
+    assert sb._cron_daemon_running() is False
+
+
+def test_is_wsl_false_inside_docker_container(monkeypatch):
+    # Tester finding #4: on Docker-Desktop-for-Windows every container's
+    # /proc/version says "microsoft" -- a container is not a WSL user
+    # session, and the WSL caveat there is just confusing.
+    monkeypatch.setattr(sb, "_in_container", lambda: True, raising=False)
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    assert sb._is_wsl() is False
+
+
+def _fake_task_xml(claude_dir_str: str) -> str:
+    return ("<Task><Actions><Exec><Command>C:\\P\\pythonw.exe</Command>"
+            "<Arguments>-m claude_session_backup backup --quiet "
+            f"--claude-dir {claude_dir_str} --log-file "
+            f"{claude_dir_str}\\csb-logs\\schedule.log"
+            "</Arguments></Exec></Actions></Task>")
+
+
+def test_win_remove_refuses_entry_for_different_store(fake, tmp_path):
+    # Tester finding #5 -- the near-miss: cleanup's remove would have
+    # silently deleted a production entry installed for ANOTHER store.
+    fake.route(_is("schtasks", "/query", "/xml"), rc=0,
+               out=_fake_task_xml(r"C:\Other\store"))
+    r = sb.WindowsTaskBackend().remove(str(tmp_path))
+    assert not r.ok and r.was_installed
+    assert "different store" in r.detail
+    assert not any("/delete" in c for c in fake.calls)
+
+
+def test_win_remove_proceeds_when_store_matches(fake, tmp_path):
+    from claude_session_backup.pathkit import ClaudePaths
+    resolved = str(ClaudePaths.from_dir(tmp_path).root)
+    fake.route(_is("schtasks", "/query", "/xml"), rc=0,
+               out=_fake_task_xml(resolved))
+    fake.route(_is("schtasks", "/delete"), rc=0)
+    r = sb.WindowsTaskBackend().remove(str(tmp_path))
+    assert r.ok and r.was_installed
+
+
+def test_win_remove_legacy_entry_without_claude_dir_still_removes(
+        fake, tmp_path):
+    # No --claude-dir marker in the artifact -> nothing to mismatch;
+    # the snapshot is the safety net (existing behavior preserved).
+    fake.route(_is("schtasks", "/query", "/xml"), rc=0, out="<Task>old</Task>")
+    fake.route(_is("schtasks", "/delete"), rc=0)
+    r = sb.WindowsTaskBackend().remove(str(tmp_path))
+    assert r.ok and r.was_installed
+
+
+def test_cron_remove_refuses_block_for_different_store(fake, tmp_path):
+    other = ScheduleSpec(
+        interval_minutes=1440, fire_hour=14, fire_minute=37,
+        start_boundary="2026-08-06T14:37:00",
+        python_exe="/usr/bin/python3",
+        claude_dir="/other/store", log_file="/other/store/csb-logs/s.log")
+    current = sb.merge_crontab("MAILTO=me\n", render_crontab_block(other))
+    fake.route(_is("crontab", "-l"), rc=0, out=current)
+    r = sb.CrontabBackend().remove(str(tmp_path))
+    assert not r.ok and r.was_installed
+    assert "different store" in r.detail
+    assert not any(a == ["crontab", "-"] for a in fake.calls)
+
+
+def test_cron_remove_guard_scopes_to_the_block_not_user_lines(
+        fake, tmp_path):
+    # A user line mentioning the target store must not fool the guard
+    # when the BLOCK belongs to another store.
+    other = ScheduleSpec(
+        interval_minutes=1440, fire_hour=14, fire_minute=37,
+        start_boundary="2026-08-06T14:37:00",
+        python_exe="/usr/bin/python3",
+        claude_dir="/other/store", log_file="/other/store/csb-logs/s.log")
+    from claude_session_backup.pathkit import ClaudePaths
+    resolved = str(ClaudePaths.from_dir(tmp_path).root)
+    user_lines = f"# my notes about {resolved}\nMAILTO=me\n"
+    current = sb.merge_crontab(user_lines, render_crontab_block(other))
+    fake.route(_is("crontab", "-l"), rc=0, out=current)
+    r = sb.CrontabBackend().remove(str(tmp_path))
+    assert not r.ok and "different store" in r.detail
+
+
+def test_win_install_notes_replacing_other_stores_entry(fake, tmp_path):
+    fake.route(_is("schtasks", "/query", "/xml"), rc=0,
+               out=_fake_task_xml(r"C:\Other\store"))
+    fake.route(_is("schtasks", "/create"), rc=0)
+    fake.route(lambda a: "Claude Session Backup" in a, rc=1)
+    r = sb.WindowsTaskBackend().install(spec_for(tmp_path))
+    assert r.ok and r.backup_path
+    assert "DIFFERENT store" in r.detail
+
+
+def test_backends_describe_their_entry():
+    # Field-caught (taskschd.msc hunt): --status must NAME the entry so
+    # users know what to look for in their scheduler UI.
+    assert sb.WINDOWS_TASK_NAME in sb.WindowsTaskBackend().describe_entry()
+    assert "crontab" in sb.CrontabBackend().describe_entry()
+    assert sb.LAUNCHD_LABEL in sb.LaunchdBackend().describe_entry()

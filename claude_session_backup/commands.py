@@ -33,6 +33,7 @@ from .git_ops import (
     SESSION_HISTORY_SCOPES,
     categorize_path_for_uuid,
     ensure_gitattributes,
+    ensure_gitignore,
     git_repo_state,
     run_git,
     git_commit_noise,
@@ -86,6 +87,24 @@ from .metadata import (
 )
 from .pathkit import ClaudePaths
 from .scanner import count_session_jsonls, scan_projects
+from .schedule import (
+    DEFAULT_INTERVAL_MINUTES,
+    INTERVAL_PRESETS,
+    ScheduleError,
+    ScheduleSpec,
+    build_command_argv,
+    derive_fire_time,
+    validate_entry_argv,
+    validate_interval,
+)
+from .schedule_backends import (
+    REFUSAL_TEXT,
+    SCHEDULE_REFUSED_EXIT,
+    BackendStatus,
+    choose_backend,
+    evaluate_schedule_evidence,
+    render_systemd_recipe,
+)
 from .timeline import format_session_line, format_timeline, render_timeline_rich, HAS_RICH
 
 
@@ -175,6 +194,18 @@ def _append_run_log(log_path: Path, outcome: str, rc: int,
     surfaced by schedule status as missing evidence, not silently."""
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        # Dumb size-capped rotation, one generation (AC-10): at ~120
+        # bytes/line even a 15-min cadence takes years to hit 1 MB, and
+        # the .1 keeps enough history for any INSTALLED-BUT-NOT-RUNNING
+        # forensics. Never let rotation failure block the line.
+        try:
+            if log_path.exists() and log_path.stat().st_size > 1_000_000:
+                rotated = log_path.with_suffix(log_path.suffix + ".1")
+                if rotated.exists():
+                    rotated.unlink()
+                log_path.rename(rotated)
+        except OSError:
+            pass
         duration_ms = int((time.monotonic() - started_monotonic) * 1000)
         stamp = datetime.now().astimezone().isoformat(timespec="seconds")
         with open(log_path, "a", encoding="utf-8") as f:
@@ -260,6 +291,12 @@ def _cmd_backup_inner(args, config, claude_dir, quiet) -> int:
     # Idempotent -- only writes when the block is missing.
     if not repoless:
         ensure_gitattributes(claude_dir)
+        # Same idiom, opposite direction (#69 AC-21): keep csb's
+        # OPERATIONAL artifacts (run logs, index + sidecars, lock, FTS)
+        # out of a human's `git add -A` -- csb's own staging is
+        # allowlist-only and never needed this, but the store deserves
+        # protection from more than csb.
+        ensure_gitignore(claude_dir)
 
     # Open index
     conn = open_db(config["index_path"])
@@ -623,6 +660,21 @@ def _setup_checklist(config, claude_dir, repo_note):
             _checklist_cmd(f'claude plugin marketplace add "{_LOGGER_MARKETPLACE_REPO}"')
         _checklist_cmd(f"claude plugin install {_LOGGER_PLUGIN_KEY}")
 
+    # Scheduled backup (#69, AC-18): the only layer that runs when Claude
+    # Code does NOT -- the hooks above can't protect a machine that sits
+    # untouched while Claude Code's own cleanup counts down. Best-effort:
+    # a probe that can't run never breaks setup's exit.
+    try:
+        st = _safe_backend_status(choose_backend())
+        if st.installed:
+            _checklist_done("scheduled backup", "OS schedule installed")
+        else:
+            _checklist_todo("scheduled backup",
+                            "(runs backups even when Claude Code doesn't)")
+            _checklist_cmd("csb setup schedule")
+    except Exception:  # noqa: BLE001 -- checklist is best-effort reporting
+        pass
+
     print()
     _style_print([("Anytime: ", "dim"), ("csb list", "cyan"), (" (timeline), ", "dim"),
                   ("csb status", "cyan"), (" (protection + index state)", "dim")])
@@ -682,6 +734,7 @@ def _setup_refusal(args, config, claude_dir, state, detail) -> int:
                               ("git now accepts the repository -- backups are "
                                "enabled again.", "green")])
                 ensure_gitattributes(claude_dir)
+                ensure_gitignore(claude_dir)
                 _clear_index_only_ack(config, claude_dir)
                 _setup_checklist(config, claude_dir, f"repo at {claude_dir}")
                 return 0
@@ -772,6 +825,12 @@ def cmd_setup(args) -> int:
     Exit codes: 0 configured (or already protected / ack recorded),
     1 error, 2 declined / not confirmed / non-interactive without flags.
     """
+    # #69: `csb setup schedule` is its own flow. Bare `csb setup` (with or
+    # without --auto) NEVER installs OS persistence -- the schedule always
+    # takes this explicit extra word (AC-17).
+    if getattr(args, "setup_action", None) == "schedule":
+        return cmd_setup_schedule(args)
+
     config = _get_config(args)
     claude_dir = config["claude_dir"]
     auto = getattr(args, "auto", False)
@@ -806,6 +865,7 @@ def cmd_setup(args) -> int:
         _style_print([(f"Git repo: yes, {where}. Backups are enabled -- "
                        f"nothing to set up.", "green")])
         ensure_gitattributes(claude_dir)
+        ensure_gitignore(claude_dir)
         _clear_index_only_ack(config, claude_dir)
         repo_note = (f"repo at {claude_dir}" if own_root
                      else f"via ancestor repo {root}")
@@ -851,6 +911,7 @@ def cmd_setup(args) -> int:
               "this is an environment problem (usually ownership), not csb:")
         return _setup_refusal(args, config, claude_dir, post_state, post_detail)
     ensure_gitattributes(claude_dir)
+    ensure_gitignore(claude_dir)
     _style_print([("[setup] ", "bold green"),
                   ("Wrote .gitattributes (session files marked binary -- "
                    "no CRLF corruption).", None)])
@@ -881,6 +942,327 @@ def cmd_setup(args) -> int:
                       ("Repo ready; run ", None), ("csb backup", "cyan"),
                       (" when you want the first snapshot.", None)])
     _setup_checklist(config, claude_dir, f"repo at {claude_dir}")
+    return 0
+
+
+# ── csb setup schedule (#69): OS-scheduled backup ───────────────────────
+
+
+def _resolve_scheduled_python() -> str:
+    """The absolute interpreter a scheduled entry runs (AC-3/D4).
+
+    On Windows the ``pythonw.exe`` sibling of the current interpreter --
+    a console interpreter flashes a conhost window per run and gets the
+    feature uninstalled. Everywhere else, ``sys.executable`` itself.
+    """
+    exe = Path(sys.executable)
+    if sys.platform == "win32":
+        w = exe.with_name("pythonw.exe")
+        if w.exists():
+            return str(w)
+    return str(exe)
+
+
+def _build_schedule_spec(config, interval_minutes: int,
+                         now: Optional[datetime] = None) -> ScheduleSpec:
+    """Freeze ALL runtime context into the spec at install time (D4:
+    schedulers do not source shell profiles). ``--db`` is baked only when
+    the resolved index path differs from the store default, so a default
+    setup stays portable across csb upgrades."""
+    now = now or datetime.now()
+    cp = ClaudePaths.from_dir(config["claude_dir"])
+    fire_hour, fire_minute = derive_fire_time(now, interval_minutes)
+    db_path = None
+    try:
+        if Path(config["index_path"]).resolve() != cp.default_db.resolve():
+            db_path = str(config["index_path"])
+    except (OSError, KeyError):
+        pass
+    spec = ScheduleSpec(
+        interval_minutes=interval_minutes,
+        fire_hour=fire_hour,
+        fire_minute=fire_minute,
+        start_boundary=now.strftime("%Y-%m-%dT%H:%M:%S"),
+        python_exe=_resolve_scheduled_python(),
+        claude_dir=str(cp.root),
+        log_file=str(cp.schedule_log),
+        db_path=db_path,
+    )
+    # Install-time self-check (AC-3): the same tripwire the golden tests
+    # run -- a bare `csb`, a relative interpreter, or missing baked flags
+    # must die HERE, not silently at hour 24.
+    validate_entry_argv(build_command_argv(spec))
+    return spec
+
+
+def _human_minutes(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes} minutes"
+    if minutes < 1440:
+        return f"{minutes // 60} hours"
+    return "24 hours" if minutes == 1440 else f"{minutes // 1440} days"
+
+
+def _choose_interval(args) -> Optional[int]:
+    """The guided interval question (Delta-10). Returns minutes, or None
+    for abort/usage-error (caller exits 2; a message was printed).
+
+    --interval wins everywhere. --auto (or a non-TTY WITH --auto) takes
+    the 24h default. Non-interactive without either is refused with
+    guidance -- never a silent default, never a hang.
+    """
+    raw = getattr(args, "interval", None)
+    if raw is not None:
+        try:
+            validate_interval(raw)
+        except ScheduleError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return None
+        return raw
+    if getattr(args, "auto", False):
+        return DEFAULT_INTERVAL_MINUTES
+    if not _interactive():
+        print("Non-interactive input and no interval. Use one of:",
+              file=sys.stderr)
+        print("  csb setup schedule --auto            # 24h default, no prompts",
+              file=sys.stderr)
+        print("  csb setup schedule --interval 720    # explicit cadence (minutes)",
+              file=sys.stderr)
+        return None
+
+    m15, m12h, m24h = INTERVAL_PRESETS
+    print("How often should the scheduled backup run?")
+    print(f"  [1] every {m15} minutes   (near-continuous protection)")
+    print(f"  [2] every {m12h // 60} hours")
+    print(f"  [3] every {m24h // 60} hours      (default -- one snapshot a day)")
+    print("  [4] custom")
+    while True:
+        answer = _ask("Choose [1-4, Enter=3]: ")
+        if answer is None:
+            print("Aborted -- nothing installed.")
+            return None
+        if answer in ("", "3"):
+            return m24h
+        if answer == "1":
+            return m15
+        if answer == "2":
+            return m12h
+        if answer == "4":
+            custom = _ask("Interval in minutes (divisor of 60, or whole "
+                          "hours dividing 24): ")
+            if custom is None:
+                print("Aborted -- nothing installed.")
+                return None
+            try:
+                minutes = int(custom)
+                validate_interval(minutes)
+            except (ValueError, ScheduleError) as e:
+                print(f"  Not a valid interval: {e}")
+                continue
+            return minutes
+        print("  Please answer 1, 2, 3, or 4.")
+
+
+def _safe_backend_status(backend) -> BackendStatus:
+    """status() without letting a missing binary / odd environment throw
+    (CrontabBackend.status spawns `crontab`, which may not exist)."""
+    try:
+        return backend.status()
+    except Exception as e:  # noqa: BLE001 -- degrade to honest unknown
+        return BackendStatus(installed=False, readback_available=False,
+                             detail=f"status unavailable: {e}")
+
+
+def _schedule_interval_from_config(config) -> tuple[int, bool]:
+    """(interval, recorded) -- the installed cadence from the config file,
+    or the default with recorded=False when nothing was recorded (e.g. an
+    entry installed against another store)."""
+    try:
+        val = config.get("schedule_interval_minutes")
+        if val:
+            return int(val), True
+    except (TypeError, ValueError):
+        pass
+    return DEFAULT_INTERVAL_MINUTES, False
+
+
+def _schedule_status_report(backend, config) -> int:
+    """--status: all three evidence layers, one honest verdict (AC-14)."""
+    cp = ClaudePaths.from_dir(config["claude_dir"])
+    interval, recorded = _schedule_interval_from_config(config)
+    st = _safe_backend_status(backend)
+    verdict = evaluate_schedule_evidence(st, interval, cp.schedule_log)
+
+    print(f"Scheduled backup ({backend.name})")
+    print(f"  Entry installed: {'yes' if st.installed else 'no'}")
+    if st.installed:
+        # Field-caught: name WHAT to look for in the OS UI (taskschd.msc
+        # hunt) -- the backend knows its entry's identity.
+        entry_desc = getattr(backend, "describe_entry", lambda: "")()
+        if entry_desc:
+            print(f"  Entry:           {entry_desc}")
+        note = "" if recorded else " (not recorded in config; assumed)"
+        print(f"  Expected cadence: every {_human_minutes(interval)}{note}")
+        if st.readback_available and (st.last_run or st.last_result is not None):
+            print(f"  OS readback:     last run {st.last_run or '(none)'}"
+                  + (f", result {st.last_result}" if st.last_result is not None
+                     else ""))
+        elif st.detail:
+            print(f"  OS readback:     {st.detail}")
+        print(f"  Run log:         {cp.schedule_log}")
+    state_style = {"ok": "green", "pending": "yellow",
+                   "installed-not-running": "bold red",
+                   "not-installed": "yellow"}.get(verdict.state)
+    _style_print([("  Verdict:         ", None), (verdict.detail, state_style)])
+    return 0
+
+
+def cmd_setup_schedule(args) -> int:
+    """`csb setup schedule` (#69): the backup layer for machines you are
+    NOT using. Hooks fire on Claude Code activity; Claude Code's startup
+    cleanup purges old transcripts either way -- an untouched machine
+    needs the OS scheduler to run `csb backup` on its own.
+
+    Exit codes: 0 done (install/remove/status/dry-run/print), 1 error,
+    2 usage/declined, 11 refused (no usable scheduler -- SCHEDULE_REFUSED_EXIT).
+    """
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    backend = choose_backend()
+
+    if getattr(args, "status_only", False):
+        return _schedule_status_report(backend, config)
+
+    if getattr(args, "print_systemd", False):
+        interval = getattr(args, "interval", None) or DEFAULT_INTERVAL_MINUTES
+        try:
+            validate_interval(interval)
+            spec = _build_schedule_spec(config, interval)
+        except ScheduleError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 2
+        print(render_systemd_recipe(spec))
+        return 0
+
+    if getattr(args, "remove", False):
+        try:
+            result = backend.remove(claude_dir)
+        except Exception as e:  # noqa: BLE001 -- surface, don't traceback
+            print(f"Error: schedule removal failed: {e}", file=sys.stderr)
+            return 1
+        if not result.ok:
+            print(f"Error: schedule removal failed: {result.detail}",
+                  file=sys.stderr)
+            return 1
+        if result.was_installed:
+            _style_print([("[schedule] ", "bold green"),
+                          (f"Removed ({result.detail}).", "green")])
+            if result.backup_path:
+                _style_print([("  Pre-removal snapshot: ", "dim"),
+                              (result.backup_path, "dim")])
+        else:
+            print(f"Nothing to remove -- {result.detail}.")
+        _write_config_file_keys(claude_dir, schedule_interval_minutes=None)
+        return 0
+
+    # ── Install path (and --dry-run, which stops at the rendering) ──
+    try:
+        detect = backend.detect()
+    except Exception as e:  # noqa: BLE001
+        detect = None
+        detect_err = str(e)
+    if detect is None or not detect.available:
+        reason = detect.reason if detect is not None else detect_err
+        if backend.name == "crontab":
+            # AC-7: the full refusal -- what was checked, how to fix it,
+            # and the systemd escape hatch. Verbatim, golden-tested text.
+            print(REFUSAL_TEXT, file=sys.stderr)
+        else:
+            print(f"csb: cannot install a scheduled backup on this machine: "
+                  f"{reason}.\nNothing was installed or modified.",
+                  file=sys.stderr)
+        return SCHEDULE_REFUSED_EXIT
+
+    if detect.is_wsl:
+        _style_print([("Note (WSL): ", "bold yellow"),
+                      ("cron only runs while this WSL distro is running -- "
+                       "a closed WSL means no scheduled backups. For "
+                       "always-on protection of a Windows-side Claude dir, "
+                       "run `csb setup schedule` from Windows instead.",
+                       "yellow")])
+
+    interval = _choose_interval(args)
+    if interval is None:
+        return 2
+
+    try:
+        spec = _build_schedule_spec(config, interval)
+    except ScheduleError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    when = (f"every {_human_minutes(interval)}"
+            + (f" at {spec.fire_hour:02d}:{spec.fire_minute:02d}"
+               if interval >= 1440 else ""))
+
+    if getattr(args, "dry_run", False):
+        print(f"Would install via {backend.name}: {when}")
+        print(f"  Command: {' '.join(build_command_argv(spec))}")
+        print(f"  Run log: {spec.log_file}")
+        print()
+        print(backend.render(spec))
+        print("Nothing was installed (--dry-run).")
+        return 0
+
+    try:
+        result = backend.install(spec)
+    except Exception as e:  # noqa: BLE001
+        print(f"Error: schedule install failed: {e}", file=sys.stderr)
+        return 1
+    if not result.ok:
+        print(f"Error: schedule install failed: {result.detail}",
+              file=sys.stderr)
+        return 1
+
+    _style_print([("[schedule] ", "bold green"),
+                  (f"Installed via {backend.name}: {when} ({result.detail}).",
+                   "green")])
+    if result.backup_path:
+        _style_print([("  Pre-install snapshot: ", "dim"),
+                      (result.backup_path, "dim")])
+    _write_config_file_keys(claude_dir,
+                            schedule_interval_minutes=interval,
+                            schedule_installed_at=_now_iso())
+    # The run log (and the index the runs touch) must never dirty the
+    # user's own commits -- same guard the backup path applies (AC-21).
+    ensure_gitignore(claude_dir)
+
+    if result.deferred:
+        # AC-6 honesty (launchd over SSH): the plist is written but not
+        # loaded; a prime kickstart would fail against nothing.
+        _style_print([("  Note: ", "bold yellow"),
+                      ("the agent loads at next login; skipping the prime "
+                       "run until then.", "yellow")])
+        print(f"  Verify later with: csb setup schedule --status")
+        return 0
+
+    # Delta-14: prime run through the scheduler's own launcher, so a
+    # broken entry fails NOW with the install output on screen -- not
+    # silently at the first real fire.
+    print("Dispatching prime run (proves the entry in the scheduler's own "
+          "environment; a first backup can take a minute)...")
+    try:
+        ok, detail = backend.prime(spec)
+    except Exception as e:  # noqa: BLE001
+        ok, detail = False, str(e)
+    if ok:
+        _style_print([("  Prime: ", None), (detail, "green")])
+    else:
+        _style_print([("  WARNING: ", "bold red"),
+                      (f"prime run failed: {detail}", "red")])
+        print("  The schedule IS installed, but its first run could not be "
+              "proven. Investigate now rather than at the next fire:")
+    print(f"  Verify anytime with: csb setup schedule --status")
     return 0
 
 
@@ -1441,6 +1823,17 @@ def cmd_status(args) -> int:
                 print(f"    {sf.session_id[:8]}  {label}({why})")
             if n > limit:
                 print(f"    + {n - limit} more not shown")
+
+    # Scheduled backup (#69 AC-15): one ambient line, the three-layer
+    # verdict behind it. A probe failure never breaks `csb status`.
+    try:
+        interval, _recorded = _schedule_interval_from_config(config)
+        verdict = evaluate_schedule_evidence(
+            _safe_backend_status(choose_backend()), interval,
+            ClaudePaths.from_dir(claude_dir).schedule_log)
+        print(f"  Scheduled:      {verdict.detail}")
+    except Exception:  # noqa: BLE001 -- ambient line is best-effort
+        pass
 
     return 0
 

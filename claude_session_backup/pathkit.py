@@ -121,6 +121,7 @@ class ClaudePaths:
     LOCK_FILE: ClassVar[str] = ".csb-backup.lock"
     CONFIG_FILE: ClassVar[str] = "session-backup-config.json"
     GITATTRIBUTES: ClassVar[str] = ".gitattributes"  # csb-managed block within
+    GITIGNORE: ClassVar[str] = ".gitignore"  # csb-managed ignore block (#69 AC-21)
     GIT_DIR: ClassVar[str] = ".git"       # the backup store csb creates/probes
     CSB_LOGS: ClassVar[str] = "csb-logs"  # hook logs; backup-hook.py mirrors
     #                                       this name (it can't import csb)
@@ -132,6 +133,10 @@ class ClaudePaths:
     #                                       pre-mutate snapshots (crontab,
     #                                       task XML, plists) live here so
     #                                       they ride the USER commit
+    SCHEDULE_LOG: ClassVar[str] = "schedule.log"  # #69 AC-10: scheduled-run
+    #                                       evidence; lives under CSB_LOGS.
+    #                                       The filename IS the source marker
+    #                                       (scheduled vs hook runs)
 
     # Provenance sets for programmatic "is this optional for this user?"
     # reasoning (diagnostics, future doctor command). Must partition the
@@ -190,8 +195,22 @@ class ClaudePaths:
         return self.root / self.BACKUPS / self.SCHEDULE_BACKUPS_SUB
 
     @property
+    def csb_logs(self) -> Path:
+        return self.root / self.CSB_LOGS
+
+    @property
+    def schedule_log(self) -> Path:
+        """``<root>/csb-logs/schedule.log`` -- the #69 run-log; one owner
+        for the path every ScheduleSpec bakes in and every status reads."""
+        return self.root / self.CSB_LOGS / self.SCHEDULE_LOG
+
+    @property
     def gitattributes(self) -> Path:
         return self.root / self.GITATTRIBUTES
+
+    @property
+    def gitignore(self) -> Path:
+        return self.root / self.GITIGNORE
 
     @property
     def default_db(self) -> Path:

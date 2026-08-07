@@ -247,7 +247,9 @@ def build_parser():
             "provisioning). `--index-only` is the EXPLICIT exception path: it "
             "records your sign-off that sessions are indexed but NOT backed "
             "up, which is the only way to silence the no-protection banner "
-            "without a repo."
+            "without a repo. `csb setup schedule` additionally registers a "
+            "recurring backup with the OS scheduler -- the layer that "
+            "protects machines you are not actively using."
         ),
     )
     _add_common_flags(p_setup)
@@ -262,6 +264,73 @@ def build_parser():
         action="store_true",
         help="Explicitly opt out of backup protection: record a sign-off that "
              "csb runs index-only (list/scan/search work; nothing is preserved)",
+    )
+
+    # csb setup schedule (#69): the only backup layer that runs when Claude
+    # Code does NOT -- hooks fire on user action; an untouched machine gets
+    # zero backups while the startup purge counts down. Optional subaction
+    # (bare `csb setup` keeps its exact behavior; installing OS persistence
+    # always takes this explicit extra word -- AC-17).
+    setup_sub = p_setup.add_subparsers(dest="setup_action", metavar="<action>")
+    p_setup_schedule = setup_sub.add_parser(
+        "schedule",
+        help="Install a scheduled `csb backup` in the OS scheduler "
+             "(Task Scheduler / cron / launchd)",
+        description=(
+            "Register a recurring `csb backup` with the operating system's "
+            "scheduler -- Windows Task Scheduler, cron (Linux/BSD/WSL), or "
+            "launchd (macOS). This is the layer that protects a machine you "
+            "are NOT using: csb's hooks only fire on Claude Code activity, "
+            "while Claude Code's own cleanup deletes old transcripts on a "
+            "timer regardless. The entry carries fully-baked context "
+            "(absolute interpreter, --claude-dir, --db when non-default, "
+            "--log-file) because scheduler environments do not source your "
+            "shell profile. Install runs an immediate prime backup through "
+            "the scheduler's own launcher so environment problems surface "
+            "now, not at hour 24."
+        ),
+    )
+    # Common flags on the LEAF only (same clobber rationale as `csb set`,
+    # see the note there).
+    _add_common_flags(p_setup_schedule)
+    p_setup_schedule.add_argument(
+        "--interval", type=int, default=None, metavar="MINUTES",
+        help="Backup cadence in minutes. Presets: 15 (near-continuous), "
+             "720 (12h), 1440 (24h -- the default). Custom values must be "
+             "a divisor of 60, or whole hours dividing 24. Intervals of an "
+             "hour or more fire anchored at the install-time clock (a "
+             "machine in use NOW is likely in use at this hour on other "
+             "days; a hardcoded midnight job on a 9-to-5 desktop never runs).",
+    )
+    p_setup_schedule.add_argument(
+        "--auto", action="store_true",
+        help="Non-interactive install: no prompts, 24h interval unless "
+             "--interval is given",
+    )
+    g_sched_action = p_setup_schedule.add_mutually_exclusive_group()
+    g_sched_action.add_argument(
+        "--dry-run", action="store_true",
+        help="Print exactly what would be installed (the rendered task "
+             "XML / crontab block / plist and the scheduled command); "
+             "change nothing",
+    )
+    g_sched_action.add_argument(
+        "--remove", action="store_true",
+        help="Remove the csb schedule entry (only the csb-managed entry; "
+             "the rest of your crontab/tasks is untouched). Removing when "
+             "nothing is installed succeeds quietly.",
+    )
+    g_sched_action.add_argument(
+        "--status", dest="status_only", action="store_true",
+        help="Report schedule health: OS registration, last-run readback "
+             "where the scheduler provides it, and csb's own run-log "
+             "evidence (the layer that can say INSTALLED BUT NOT RUNNING)",
+    )
+    g_sched_action.add_argument(
+        "--print-systemd", action="store_true",
+        help="Print a ready-to-paste systemd user timer recipe instead of "
+             "installing anything (for cron-less Linux; csb does not manage "
+             "systemd units)",
     )
 
     # backup

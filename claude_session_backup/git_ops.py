@@ -889,6 +889,64 @@ GITATTRIBUTES_RULES = [
 ]
 
 
+# ── .gitignore self-maintenance (#69 AC-21, Delta-4) ─────────────────
+#
+# csb's own staging is allowlist-only, so operational artifacts are never
+# staged BY CSB -- but nothing protected the store from a human running
+# `git add -A` in ~/.claude, which would sweep in run logs, the SQLite
+# index and sidecars, the lock file, and the FTS databases. Placement
+# line (decided in the #69 consultation): DATA gets committed
+# (transcripts, csb-live/, distilled/, csb-sets.json, backups/);
+# OPERATIONAL/rebuildable evidence does not -- that is this block.
+
+GITIGNORE_MARKER_BEGIN = "# >>> csb-managed ignore block (do not edit between markers)"
+GITIGNORE_MARKER_END = "# <<< end csb-managed ignore block"
+
+
+def _gitignore_rules() -> list[str]:
+    """AC-21 rule list, built from ClaudePaths names (never literals)."""
+    p = ClaudePaths
+    return [
+        "# csb operational artifacts -- rebuildable, never committed.",
+        "# Deliberately NOT ignored: " + p.LIVE_DIR + "/, " + p.DISTILLED
+        + "/ (those are data).",
+        p.CSB_LOGS + "/",
+        p.DEFAULT_DB,
+        p.DEFAULT_DB + "-wal",
+        p.DEFAULT_DB + "-shm",
+        p.DEFAULT_DB + "-journal",
+        p.LOCK_FILE,
+        p.FTS_DIR + "/",
+    ]
+
+
+def ensure_gitignore(claude_dir: str) -> bool:
+    """Idempotently maintain the csb-managed block in ``<claude_dir>/.gitignore``.
+
+    Same contract as :func:`ensure_gitattributes`: create-if-missing,
+    append-if-absent, no-op-if-present, user content preserved verbatim.
+    Red-green pinned: a store with this block survives ``git add -A``
+    with zero csb-operational files staged (AC-21).
+    """
+    path = ClaudePaths.from_dir(claude_dir).gitignore
+
+    block_lines = [GITIGNORE_MARKER_BEGIN, *_gitignore_rules(),
+                   GITIGNORE_MARKER_END]
+    block = "\n".join(block_lines) + "\n"
+
+    if not path.exists():
+        path.write_text(block, encoding="utf-8", newline="\n")
+        return True
+
+    existing = path.read_text(encoding="utf-8")
+    if GITIGNORE_MARKER_BEGIN in existing and GITIGNORE_MARKER_END in existing:
+        return False
+
+    sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+    path.write_text(existing + sep + block, encoding="utf-8", newline="\n")
+    return True
+
+
 def ensure_gitattributes(claude_dir: str) -> bool:
     """
     Idempotently maintain a csb-managed block in ``<claude_dir>/.gitattributes``.

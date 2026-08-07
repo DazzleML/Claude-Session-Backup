@@ -4,12 +4,12 @@
 
 ## Verification matrix
 
-| Platform | CLI | Git backup | Plugin / hooks | Notes |
-|----------|-----|------------|----------------|-------|
-| **Windows 11** | ✅ verified | ✅ verified | ✅ verified | Primary dev platform. Tested under `cmd.exe`, PowerShell, and Git Bash. |
-| **Linux** | ✅ designed for | ✅ designed for | ✅ designed for | Node.js bootstrapper handles `python` vs `python3` differences. Not yet end-to-end verified by the maintainer. |
-| **macOS (Intel + Apple Silicon)** | ✅ designed for | ✅ designed for | ✅ designed for | Same bootstrapper pattern as Linux. Not yet end-to-end verified by the maintainer. |
-| **BSD (FreeBSD / OpenBSD)** | ⚠️ likely works | ⚠️ likely works | ⚠️ untested | Python 3.10+ and Git are the only hard requirements. Plugin bootstrapper assumes Node.js is installed (same as Claude Code). |
+| Platform | CLI | Git backup | Plugin / hooks | Scheduled backup | Notes |
+|----------|-----|------------|----------------|------------------|-------|
+| **Windows 11** | ✅ verified | ✅ verified | ✅ verified | ✅ verified | Primary dev platform. Tested under `cmd.exe`, PowerShell, and Git Bash. Task registration + prime run proven live (non-elevated `schtasks /create /xml`). |
+| **Linux** | ✅ designed for | ✅ designed for | ✅ designed for | ✅ designed for | Node.js bootstrapper handles `python` vs `python3` differences. cron backend's daemon detection verified against real minimal-image census (most ship no cron; csb refuses honestly). Not yet end-to-end verified by the maintainer on native hardware. |
+| **macOS (Intel + Apple Silicon)** | ✅ designed for | ✅ designed for | ✅ designed for | ⚠️ unverified on hardware | Same bootstrapper pattern as Linux. The launchd backend (LaunchAgent, `StartCalendarInterval`) is built from documented behavior and a field specimen, but the maintainer has no Mac -- verification reports welcome. |
+| **BSD (FreeBSD / OpenBSD)** | ⚠️ likely works | ⚠️ likely works | ⚠️ untested | ⚠️ unverified on hardware | Python 3.10+ and Git are the only hard requirements. The cron backend deliberately uses `ps -axo` (BSD-safe; `-e` means *environment* there) and cron ships in the BSD base systems, but no BSD hardware run has happened yet. |
 
 "Designed for" means the code paths exist and have been reviewed for cross-platform safety (path handling, subprocess invocation, hook bootstrapper), but the maintainer hasn't yet run the full flow on that OS. Community verification and issue reports are welcome.
 
@@ -27,6 +27,7 @@
 - The plugin bootstrapper (`run-hook.mjs`) auto-detects `py`, `python`, and `python3` on the PATH and uses whichever is present.
 - File paths are handled via `pathlib.Path` throughout — Windows backslashes and UNC paths should work; if you find a path that doesn't, please file an issue.
 - PowerShell 5.1 vs PowerShell 7: both work. Git Bash and MSYS2 also work.
+- `csb setup schedule` registers a non-elevated per-user task via `schtasks /create /xml` running `pythonw` (no console window). The task starts on battery and uses `StartWhenAvailable`, so a fire missed while asleep runs at wake. Git subprocesses spawned by the scheduled run are console-window-suppressed too.
 - `dz safedel` integration (when available) is respected for file deletions.
 - **Boot epochs (`csb set show last`) are Windows-only for now** — the shutdown fence is read from the Windows System event log (IDs 6005/6006/6008/1074) via PowerShell. POSIX fence reading (`journalctl` / `last`) is planned under the session-sets epic; until then the command reports the limitation cleanly off-Windows. Everything else about session sets is platform-independent.
 
@@ -34,18 +35,20 @@
 
 - The Node.js bootstrapper is specifically designed to handle distros where `python` is not on the PATH (Ubuntu 20.04+, most modern Debian derivatives).
 - Tested on WSL2 (Ubuntu) as part of cross-platform development; full native-Linux verification is pending.
-- Cron is a supported automation path alongside the plugin — see the [README's Automation section](../README.md#automation).
+- `csb setup schedule` installs a marker-fenced block in your user crontab and refuses (exit 11, with per-distro fix instructions) when no cron daemon is running — a spool entry nothing reads would look installed and never fire. Minimal container images frequently ship no cron at all. `--print-systemd` prints a user-timer recipe for cron-less systems (mind the `enable-linger` caveat). See [automation.md](automation.md).
+- **WSL**: cron only runs while the distro is running; for an always-on schedule protecting a Windows-side Claude dir, run `csb setup schedule` from Windows. Setup detects WSL and says so.
 
 ### macOS
 
 - Not yet verified end-to-end but no known blockers.
-- `launchd` can be used for periodic backup as an alternative to the plugin.
+- `csb setup schedule` writes a LaunchAgent plist (`~/Library/LaunchAgents/com.dazzleml.csb-backup.plist`) using `StartCalendarInterval`, so a fire missed during sleep runs at the next matching time. Over SSH with no GUI session, `launchctl bootstrap` can fail — install reports "plist written; loads at next login" rather than claiming success.
 - `dirs.user_data_dir` resolution via the `dirs` crate uses `~/Library/Application Support/...` conventions; `csb` does not depend on Mac-specific paths.
 
 ### BSD
 
 - Python 3.10+ and Git are widely available on FreeBSD and OpenBSD via `pkg` / `ports`.
 - Plugin installation requires Node.js (`npm` + `node`), which is available in both ecosystems.
+- `csb setup schedule` uses the same crontab backend as Linux; cron ships in the BSD base systems (if the daemon isn't running it was disabled — re-enable via `rc.conf` on FreeBSD/NetBSD or `rcctl` on OpenBSD). The daemon pre-flight deliberately uses `ps -axo` because BSD `ps -e` means *show the environment*, not *every process*.
 - Not tested; bug reports welcome.
 
 ## Reporting platform issues

@@ -41,14 +41,16 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Protocol
 
 from .pathkit import ClaudePaths
 from .schedule import (
     CRON_BLOCK_BEGIN,
+    CRON_BLOCK_END,
     LAUNCHD_LABEL,
+    WINDOWS_LEGACY_TASK_NAME,
     WINDOWS_TASK_NAME,
     ScheduleSpec,
     build_command_argv,
@@ -127,6 +129,36 @@ def _snapshot(claude_dir: str, name: str, content: str) -> Optional[str]:
         return None
 
 
+def _entry_targets_other_store(entry_text: str, claude_dir: str) -> bool:
+    """True when the installed entry's baked ``--claude-dir`` is NOT the
+    store this command was pointed at (tester finding #5 -- the remove
+    near-miss: one fixed entry name per user means a remove aimed at
+    store A can land on an entry protecting store B; deleting it would
+    silently kill B's backups).
+
+    Substring check on the resolved root, deliberately: both install and
+    remove normalize through ``ClaudePaths.from_dir`` so same-store
+    spellings converge, and the baked ``--log-file`` path shares the root
+    prefix, so a same-store entry always contains it. Entries carrying no
+    ``--claude-dir`` marker can't mismatch (pre-marker/legacy artifacts;
+    the pre-mutate snapshot remains the net there).
+    """
+    if "--claude-dir" not in entry_text:
+        return False
+    try:
+        resolved = str(ClaudePaths.from_dir(claude_dir).root)
+    except OSError:
+        return False
+    return resolved not in entry_text
+
+
+_OTHER_STORE_REFUSAL = (
+    "the installed entry backs up a different store (its baked --claude-dir "
+    "is not {target}); refusing to remove it -- re-run with --claude-dir "
+    "pointing at the store that entry protects"
+)
+
+
 # ── The protocol ────────────────────────────────────────────────────────
 
 
@@ -134,6 +166,8 @@ class SchedulerBackend(Protocol):
     name: str
 
     def detect(self) -> DetectResult: ...
+    def render(self, spec: ScheduleSpec) -> str: ...   # --dry-run artifact
+    def describe_entry(self) -> str: ...               # what to look for in the OS UI
     def install(self, spec: ScheduleSpec) -> InstallResult: ...
     def remove(self, claude_dir: str) -> RemoveResult: ...
     def status(self, spec: Optional[ScheduleSpec] = None) -> BackendStatus: ...
@@ -149,6 +183,14 @@ class WindowsTaskBackend:
     def detect(self) -> DetectResult:
         # schtasks.exe ships in System32 on every supported Windows.
         return DetectResult(available=True)
+
+    def render(self, spec: ScheduleSpec) -> str:
+        return render_task_xml(spec)
+
+    def describe_entry(self) -> str:
+        # Field-caught: a user in taskschd.msc has no way to know the name.
+        return (f'task "{WINDOWS_TASK_NAME}" at the root of the '
+                f'Task Scheduler Library (taskschd.msc)')
 
     def _query_xml(self) -> Optional[str]:
         r = _run(["schtasks", "/query", "/tn", WINDOWS_TASK_NAME, "/xml"])
@@ -178,12 +220,34 @@ class WindowsTaskBackend:
         if r.returncode != 0:
             return InstallResult(False, (r.stderr or r.stdout).strip(),
                                  backup_path=backup)
-        return InstallResult(True, f"task {WINDOWS_TASK_NAME} registered",
-                             backup_path=backup)
+        detail = f"task {WINDOWS_TASK_NAME} registered"
+        if existing is not None and _entry_targets_other_store(
+                existing, spec.claude_dir):
+            # The overwrite was legal (one entry name per user), but the
+            # user should know they just repointed the machine's ONLY
+            # scheduled backup at a different store.
+            detail += ("; note: the replaced entry backed up a DIFFERENT "
+                       "store (its snapshot was saved)")
+        # Legacy hand-rolled task from the pre-#69 docs snippet: harmless
+        # (the backup lock serializes), but it double-runs backups and its
+        # bare `csb` breaks silently on PATH changes -- tell the user.
+        legacy = _run(["schtasks", "/query", "/tn", WINDOWS_LEGACY_TASK_NAME])
+        if legacy.returncode == 0:
+            detail += (
+                f"; note: a legacy '{WINDOWS_LEGACY_TASK_NAME}' task from the "
+                f"old hand-rolled setup also exists -- remove it with: "
+                f'schtasks /delete /tn "{WINDOWS_LEGACY_TASK_NAME}" /f'
+            )
+        return InstallResult(True, detail, backup_path=backup)
 
     def remove(self, claude_dir: str) -> RemoveResult:
-        backup = None
         existing = self._query_xml()
+        if existing is not None and _entry_targets_other_store(
+                existing, claude_dir):
+            return RemoveResult(
+                False, was_installed=True,
+                detail=_OTHER_STORE_REFUSAL.format(target=claude_dir))
+        backup = None
         if existing is not None:
             backup = _snapshot(claude_dir, "task.xml", existing)
         r = _run(["schtasks", "/delete", "/tn", WINDOWS_TASK_NAME, "/f"])
@@ -233,6 +297,24 @@ class WindowsTaskBackend:
 # ── POSIX: crontab (Linux / BSD / WSL -- AC-4/AC-7, P4-informed) ───────
 
 
+def _extract_cron_block(text: str) -> str:
+    """Just the lines INSIDE csb's marker fence (guard scope for the
+    other-store check -- user lines outside the fence are not evidence
+    of what the block targets)."""
+    inside, out = False, []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped == CRON_BLOCK_BEGIN:
+            inside = True
+            continue
+        if stripped == CRON_BLOCK_END:
+            inside = False
+            continue
+        if inside:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _read_crontab() -> tuple[str, Optional[str]]:
     """(current crontab text, error) -- empty-spool rc=1 is NOT an error."""
     r = _run(["crontab", "-l"])
@@ -261,6 +343,13 @@ class CrontabBackend:
                                 is_wsl=_is_wsl())
         return DetectResult(True, is_wsl=_is_wsl())
 
+    def render(self, spec: ScheduleSpec) -> str:
+        return render_crontab_block(spec)
+
+    def describe_entry(self) -> str:
+        return ('fenced "csb scheduled backup" block in your user crontab '
+                '(crontab -l)')
+
     def install(self, spec: ScheduleSpec) -> InstallResult:
         current, err = _read_crontab()
         if err:
@@ -273,8 +362,13 @@ class CrontabBackend:
             return InstallResult(False,
                                  (r.stderr or r.stdout).strip(),
                                  backup_path=backup)
-        return InstallResult(True, "crontab block installed",
-                             backup_path=backup)
+        detail = "crontab block installed"
+        old_block = _extract_cron_block(current)
+        if old_block and _entry_targets_other_store(old_block,
+                                                    spec.claude_dir):
+            detail += ("; note: the replaced block backed up a DIFFERENT "
+                       "store (your previous crontab was snapshotted)")
+        return InstallResult(True, detail, backup_path=backup)
 
     def remove(self, claude_dir: str) -> RemoveResult:
         current, err = _read_crontab()
@@ -284,6 +378,13 @@ class CrontabBackend:
         if CRON_BLOCK_BEGIN not in current:
             return RemoveResult(True, was_installed=False,
                                 detail="no csb block in crontab")
+        # Guard scope is the BLOCK alone -- a user line that merely
+        # mentions the target path must not defeat the mismatch check.
+        if _entry_targets_other_store(_extract_cron_block(current),
+                                      claude_dir):
+            return RemoveResult(
+                False, was_installed=True,
+                detail=_OTHER_STORE_REFUSAL.format(target=claude_dir))
         backup = _snapshot(claude_dir, "crontab.txt", current)
         r = _run(["crontab", "-"], stdin_text=remove_from_crontab(current))
         if r.returncode != 0:
@@ -316,7 +417,21 @@ class CrontabBackend:
                      "proven at first real fire)"
 
 
+def _in_container() -> bool:
+    """Docker/podman detection. Needed because Docker Desktop's WSL2
+    backend stamps "microsoft" into EVERY container's /proc/version
+    (tester finding #4) -- a container is not a WSL user session, and
+    the WSL caveat inside one is just noise."""
+    try:
+        return (Path("/.dockerenv").exists()
+                or Path("/run/.containerenv").exists())
+    except OSError:
+        return False
+
+
 def _is_wsl() -> bool:
+    if _in_container():
+        return False
     if os.environ.get("WSL_DISTRO_NAME"):
         return True
     try:
@@ -326,22 +441,54 @@ def _is_wsl() -> bool:
         return False
 
 
+def _proc_comm_names() -> Optional[set]:
+    """Process names via /proc/<pid>/comm -- the fallback for Linuxes
+    whose ``ps`` can't do ``-axo`` (stock Alpine BusyBox, tester finding
+    #2) or that ship no ``ps`` at all. None when /proc isn't available
+    (non-Linux), so the caller can tell "no processes" from "no view"."""
+    proc = Path("/proc")
+    try:
+        if not proc.is_dir():
+            return None
+        names = set()
+        for entry in proc.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                names.add((entry / "comm").read_text(
+                    encoding="utf-8", errors="replace").strip())
+            except OSError:
+                continue  # process exited mid-scan
+        return names or None
+    except OSError:
+        return None
+
+
 def _cron_daemon_running() -> bool:
     """Process-table pre-flight (AC-7). `-axo`, never `-eo` (FreeBSD:
-    `-e` means environment -- the liveness.py lesson)."""
-    r = _run(["ps", "-axo", "comm="])
-    if r.returncode != 0:
+    `-e` means environment -- the liveness.py lesson). When ps itself
+    is missing or rejects -axo (BusyBox), fall back to /proc scanning
+    rather than refusing a genuinely-running daemon."""
+    try:
+        r = _run(["ps", "-axo", "comm="])
+    except OSError:
+        r = None
+    if r is not None and r.returncode == 0:
+        names = {line.strip().rsplit("/", 1)[-1]
+                 for line in r.stdout.splitlines() if line.strip()}
+        if names & set(CRON_DAEMONS):
+            return True
+        # busybox crond shows as "crond" (covered) or "busybox" -- check
+        # argv (safe here: -axo just worked once).
+        if "busybox" in names:
+            r2 = _run(["ps", "-axo", "args="])
+            return any("crond" in ln for ln in r2.stdout.splitlines()
+                       if "busybox" in ln)
         return False
-    names = {line.strip().rsplit("/", 1)[-1]
-             for line in r.stdout.splitlines() if line.strip()}
-    if names & set(CRON_DAEMONS):
-        return True
-    # busybox crond shows as "crond" (covered) or "busybox" -- check argv.
-    if "busybox" in names:
-        r2 = _run(["ps", "-axo", "args="])
-        return any("crond" in ln for ln in r2.stdout.splitlines()
-                   if "busybox" in ln)
-    return False
+    names = _proc_comm_names()
+    if names is None:
+        return False  # no ps AND no /proc: honestly unknowable -> refuse
+    return bool(names & set(CRON_DAEMONS))
 
 
 # ── macOS: launchd LaunchAgent (AC-6; UNVERIFIED-ON-HARDWARE) ──────────
@@ -359,6 +506,12 @@ class LaunchdBackend:
         if shutil.which("launchctl") is None:
             return DetectResult(False, reason="no launchctl")
         return DetectResult(True)
+
+    def render(self, spec: ScheduleSpec) -> str:
+        return render_plist(spec)
+
+    def describe_entry(self) -> str:
+        return f"LaunchAgent plist at {self._plist_path()}"
 
     def install(self, spec: ScheduleSpec) -> InstallResult:
         plist = self._plist_path()
@@ -384,8 +537,12 @@ class LaunchdBackend:
         if not plist.exists():
             return RemoveResult(True, was_installed=False,
                                 detail="no agent was installed")
-        backup = _snapshot(claude_dir, "agent.plist",
-                           plist.read_text(encoding="utf-8"))
+        plist_text = plist.read_text(encoding="utf-8")
+        if _entry_targets_other_store(plist_text, claude_dir):
+            return RemoveResult(
+                False, was_installed=True,
+                detail=_OTHER_STORE_REFUSAL.format(target=claude_dir))
+        backup = _snapshot(claude_dir, "agent.plist", plist_text)
         uid = os.getuid()
         _run(["launchctl", "bootout", f"gui/{uid}/{LAUNCHD_LABEL}"])
         try:
@@ -470,6 +627,129 @@ Nothing was installed or modified.
 SCHEDULE_REFUSED_EXIT = 11
 
 
+# ── The three-layer evidence verdict (AC-14, D3) ────────────────────────
+
+import re as _re
+
+_RUNLOG_TS_RE = _re.compile(
+    r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}) outcome=([\w-]+)")
+
+
+@dataclass(frozen=True)
+class EvidenceVerdict:
+    """What `csb status` renders. States:
+
+    ``not-installed``          no entry registered (+ hint)
+    ``ok``                     evidence of a run within 2x interval
+    ``pending``                installed, no evidence yet -- the Delta-14
+                               prime run should have produced some, so
+                               this is itself a soft warning
+    ``installed-not-running``  entry present, newest evidence older than
+                               2x interval -- THE verdict this feature
+                               exists to be able to say (prior art's
+                               field detection latency was indefinite)
+    """
+    state: str
+    detail: str
+    newest_evidence: Optional[datetime] = None
+
+
+def _newest_runlog_entry(log_path: Path) -> Optional[tuple[datetime, str]]:
+    """Newest (timestamp, outcome) across schedule.log and its .1 rotation."""
+    newest: Optional[tuple[datetime, str]] = None
+    for p in (log_path, log_path.with_suffix(log_path.suffix + ".1")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in reversed(text.splitlines()):
+            m = _RUNLOG_TS_RE.match(line)
+            if m:
+                try:
+                    ts = datetime.fromisoformat(m.group(1))
+                except ValueError:
+                    continue
+                if newest is None or ts > newest[0]:
+                    newest = (ts, m.group(2))
+                break
+    return newest
+
+
+def evaluate_schedule_evidence(
+    backend_status: BackendStatus,
+    interval_minutes: int,
+    log_path: Path,
+    now: Optional[datetime] = None,
+) -> EvidenceVerdict:
+    """Pure aggregation of the evidence layers into one honest verdict.
+
+    Layer 1 (OS readback) is corroboration only -- cron has none, and
+    Windows labels are locale-fragile. Layer 2, csb's OWN run log, is
+    the portable execution evidence and decides the verdict. (Layer 3,
+    last-backup-from-index/git, arrives with the `csb status` wiring --
+    it cannot distinguish scheduled from hook runs, so it can only ever
+    soften, not decide.) The 2x-interval threshold ships annotated as
+    uncalibrated-but-strictly-better-than-prior-art (Delta-6).
+    """
+    if not backend_status.installed:
+        return EvidenceVerdict(
+            "not-installed",
+            "no scheduled backup entry -- install with: csb setup schedule")
+    entry = _newest_runlog_entry(log_path)
+    if entry is None:
+        if backend_status.running_now:
+            # Field-caught: --status during the install-time prime read
+            # as an alarm ("re-run setup") while everything was working.
+            # When the OS says a run is executing, say THAT.
+            return EvidenceVerdict(
+                "pending",
+                "installed; a run is executing right now -- check again "
+                "in a minute")
+        return EvidenceVerdict(
+            "pending",
+            "installed, but no run evidence yet -- the install-time prime "
+            "run should have written a log line; re-run `csb setup "
+            "schedule` if this persists")
+    newest, outcome = entry
+    now = now or datetime.now().astimezone()
+    age = now - newest
+    threshold = timedelta(minutes=2 * interval_minutes)
+    if age <= threshold:
+        detail = (f"last scheduled run {_human_age(age)} ago (expected "
+                  f"every {_human_interval(interval_minutes)})")
+        if outcome == "error":
+            # The schedule fires; the BACKUP fails (e.g. repo-less
+            # store). Execution evidence alone must not read as
+            # all-clear.
+            detail += (" -- the last run reported an ERROR; see the run "
+                       "log")
+        return EvidenceVerdict("ok", detail, newest_evidence=newest)
+    detail = (f"INSTALLED BUT NOT RUNNING -- last evidence "
+              f"{_human_age(age)} ago, expected every "
+              f"{_human_interval(interval_minutes)}")
+    if backend_status.running_now:
+        detail += " (a run is executing right now)"
+    return EvidenceVerdict("installed-not-running", detail,
+                           newest_evidence=newest)
+
+
+def _human_age(delta: "timedelta") -> str:
+    s = int(delta.total_seconds())
+    if s < 90 * 60:
+        return f"{max(s // 60, 0)}m"
+    if s < 48 * 3600:
+        return f"{s // 3600}h"
+    return f"{s // 86400}d"
+
+
+def _human_interval(minutes: int) -> str:
+    if minutes < 60:
+        return f"{minutes}m"
+    if minutes < 1440:
+        return f"{minutes // 60}h"
+    return f"{minutes // 1440}d"
+
+
 def render_systemd_recipe(spec: ScheduleSpec) -> str:
     """`--print-systemd` (Delta-5): a pure-text recipe, never owned.
 
@@ -484,7 +764,17 @@ def render_systemd_recipe(spec: ScheduleSpec) -> str:
             if n == 1440 else f"*-*-* 00/{n // 60}:{spec.fire_minute:02d}:00"
     else:
         cal = f"*-*-* *:00/{n}:00"
-    return f"""\
+    note = ""
+    if ":" in spec.python_exe[:3] or "\\" in spec.python_exe:
+        # Tester finding #3: rendered on Windows, ExecStart would carry
+        # C:\...\pythonw.exe -- meaningless on the Linux target. Say so.
+        note = (
+            "# NOTE: this recipe was generated on Windows -- the absolute\n"
+            "# paths below are THIS machine's and will not exist on the\n"
+            "# Linux target. Run `csb setup schedule --print-systemd` on\n"
+            "# the target machine itself for correct paths; treat this\n"
+            "# output as a shape preview only.\n\n")
+    return note + f"""\
 # csb scheduled backup via systemd user timer (printed by csb, not managed)
 # 1. Save as ~/.config/systemd/user/csb-backup.service
 [Unit]
