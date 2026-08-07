@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.dazzleml.csb-backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/python3</string>
+		<string>-m</string>
+		<string>claude_session_backup</string>
+		<string>backup</string>
+		<string>--quiet</string>
+		<string>--claude-dir</string>
+		<string>/Users/extreme/.claude</string>
+		<string>--log-file</string>
+		<string>/Users/extreme/.claude/csb-logs/schedule.log</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/Users/extreme/.claude/csb-logs/schedule.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/extreme/.claude/csb-logs/schedule.log</string>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Hour</key>
+			<integer>14</integer>
+			<key>Minute</key>
+			<integer>37</integer>
+		</dict>
+	</array>
+</dict>
+</plist>

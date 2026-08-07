@@ -1,0 +1,3 @@
+# >>> csb scheduled backup -- managed by `csb setup schedule`; do not hand-edit this block >>>
+37 14 * * * /usr/bin/python3 -m claude_session_backup backup --quiet --claude-dir /home/extreme/.claude --log-file /home/extreme/.claude/csb-logs/schedule.log >> /home/extreme/.claude/csb-logs/schedule.log 2>&1
+# <<< csb scheduled backup <<<

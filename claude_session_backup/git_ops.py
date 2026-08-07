@@ -23,6 +23,7 @@ The restore path is byte-pure end to end:
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, Union
 
@@ -83,6 +84,17 @@ USER_COMMIT_MSG = "~/.claude user: sync configs, skills, session logs, and plugi
 
 # ── Core git helpers ────────────────────────────────────────────────
 
+# On Windows, a console-subsystem child spawned from a CONSOLE-LESS parent
+# (pythonw -- the #69 scheduled-backup entry) gets its own brand-new conhost
+# window: one flash PER git call, several per backup. Observed live during
+# the P1 probe (2026-08-06); the user saw the flurry. CREATE_NO_WINDOW
+# suppresses the child console entirely -- harmless here because every git
+# call captures its output and never talks to a console.
+_NO_WINDOW = (
+    subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+)
+
+
 def run_git(claude_dir: str, *args, check: bool = True) -> subprocess.CompletedProcess:
     """Run a git command in the claude_dir repository."""
     cmd = ["git", "-C", claude_dir] + list(args)
@@ -91,6 +103,7 @@ def run_git(claude_dir: str, *args, check: bool = True) -> subprocess.CompletedP
         capture_output=True,
         text=True,
         check=check,
+        creationflags=_NO_WINDOW,
     )
 
 
@@ -404,6 +417,7 @@ def git_show_file_bytes(
             "-c", "core.safecrlf=false",
             "show", f"{commit}:{norm}",
         ],
+        creationflags=_NO_WINDOW,
         capture_output=True,
         text=False,
         check=False,
@@ -873,6 +887,64 @@ GITATTRIBUTES_RULES = [
     "*.json -text",
     "*.name-cache -text",
 ]
+
+
+# ── .gitignore self-maintenance (#69 AC-21, Delta-4) ─────────────────
+#
+# csb's own staging is allowlist-only, so operational artifacts are never
+# staged BY CSB -- but nothing protected the store from a human running
+# `git add -A` in ~/.claude, which would sweep in run logs, the SQLite
+# index and sidecars, the lock file, and the FTS databases. Placement
+# line (decided in the #69 consultation): DATA gets committed
+# (transcripts, csb-live/, distilled/, csb-sets.json, backups/);
+# OPERATIONAL/rebuildable evidence does not -- that is this block.
+
+GITIGNORE_MARKER_BEGIN = "# >>> csb-managed ignore block (do not edit between markers)"
+GITIGNORE_MARKER_END = "# <<< end csb-managed ignore block"
+
+
+def _gitignore_rules() -> list[str]:
+    """AC-21 rule list, built from ClaudePaths names (never literals)."""
+    p = ClaudePaths
+    return [
+        "# csb operational artifacts -- rebuildable, never committed.",
+        "# Deliberately NOT ignored: " + p.LIVE_DIR + "/, " + p.DISTILLED
+        + "/ (those are data).",
+        p.CSB_LOGS + "/",
+        p.DEFAULT_DB,
+        p.DEFAULT_DB + "-wal",
+        p.DEFAULT_DB + "-shm",
+        p.DEFAULT_DB + "-journal",
+        p.LOCK_FILE,
+        p.FTS_DIR + "/",
+    ]
+
+
+def ensure_gitignore(claude_dir: str) -> bool:
+    """Idempotently maintain the csb-managed block in ``<claude_dir>/.gitignore``.
+
+    Same contract as :func:`ensure_gitattributes`: create-if-missing,
+    append-if-absent, no-op-if-present, user content preserved verbatim.
+    Red-green pinned: a store with this block survives ``git add -A``
+    with zero csb-operational files staged (AC-21).
+    """
+    path = ClaudePaths.from_dir(claude_dir).gitignore
+
+    block_lines = [GITIGNORE_MARKER_BEGIN, *_gitignore_rules(),
+                   GITIGNORE_MARKER_END]
+    block = "\n".join(block_lines) + "\n"
+
+    if not path.exists():
+        path.write_text(block, encoding="utf-8", newline="\n")
+        return True
+
+    existing = path.read_text(encoding="utf-8")
+    if GITIGNORE_MARKER_BEGIN in existing and GITIGNORE_MARKER_END in existing:
+        return False
+
+    sep = "" if existing.endswith("\n\n") else ("\n" if existing.endswith("\n") else "\n\n")
+    path.write_text(existing + sep + block, encoding="utf-8", newline="\n")
+    return True
 
 
 def ensure_gitattributes(claude_dir: str) -> bool:

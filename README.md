@@ -72,7 +72,8 @@ csb backup
 - **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special, answered from the event log and the index, with a paste-able resume command per row
 - **Live session tracking**: `csb set show current` knows what is open *right now* -- csb's hooks register every session on start and erase the record on clean close, so leftovers are crash evidence, `csb set new NAME --from current` freezes the group, and `csb resume --set NAME` lists what's left to reclaim
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
-- **Unattended operation**: `--no-gpg-sign`, `--quiet`, lock file -- designed for cron and Task Scheduler
+- **Scheduled backup**: `csb setup schedule` registers a recurring backup with the OS scheduler (Task Scheduler / cron / launchd) -- hooks only fire when you use Claude Code, and the purge countdown runs whether you do or not
+- **Unattended operation**: `--no-gpg-sign`, `--quiet`, lock file -- designed for scheduler and hook contexts
 - **Cross-platform**: Works on Windows, Linux, macOS, BSD
 
 ## Commands
@@ -81,6 +82,7 @@ The daily drivers:
 
 ```bash
 csb setup                       # Guided onboarding (git store, first backup, checklist)
+csb setup schedule              # OS-scheduled backup -- protects machines you are NOT using
 csb backup                      # Scan, index, git commit
 csb list                        # Timeline of sessions (filter, sort, --deleted)
 csb scan -d <path> --deleted    # Find (and bulk-restore) what was purged in a folder
@@ -228,7 +230,7 @@ flowchart LR
 
 ## Automation
 
-The Claude Code plugin (from Quick Start above) covers most users: PreCompact fires before `/compact`, SessionEnd on exit. For manual hooks, cron, Task Scheduler, and distill-on-backup, see **[docs/automation.md](docs/automation.md)**.
+Two layers, protecting different things. The Claude Code plugin (from Quick Start above) backs up the machine you are *using*: PreCompact fires before `/compact`, SessionEnd on exit. `csb setup schedule` backs up the machine you are *not* using -- hooks never fire on an untouched machine, while Claude Code's own cleanup deletes old transcripts on a timer regardless. The guided install picks an interval (24h default), verifies the scheduler actually works (prime run at install; a cron entry with no running daemon is refused, not faked), and `csb setup schedule --status` can tell you "INSTALLED BUT NOT RUNNING" instead of leaving a dead entry looking healthy. Details, interval guidance, and platform notes: **[docs/automation.md](docs/automation.md)**.
 
 ## Requirements
 

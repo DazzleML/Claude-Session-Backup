@@ -9,6 +9,32 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.0] -- 2026-08-07 (beta)
+
+**Scheduled backup: `csb setup schedule` (#69).** Every csb hook fires on user action -- an untouched machine fires none of them, while Claude Code's own startup cleanup deletes old transcripts on a timer regardless. A never-backed-up transcript on an idle machine could be purged with csb installed and "working". This release closes that gap: the OS scheduler runs `csb backup` on its own, no Claude Code required. The version is a new minor for the new surface, but substantively this is a fix -- the scheduler half of csb's automation was designed alongside the hooks and never shipped, and its absence was a hole in the core promise.
+
+### Added
+- **`csb setup schedule`** -- register a recurring backup with the operating system's scheduler: Windows Task Scheduler (task XML via `schtasks`, non-elevated, per-user), cron (Linux / BSD / WSL, marker-fenced crontab block), or launchd (macOS LaunchAgent). Guided interval question with presets (15 minutes, 12 hours, 24 hours default) and validated custom values; `--auto` for scripts; `--interval <minutes>` for an explicit cadence.
+- **Install-time context freezing.** Scheduler environments do not source your shell profile, so the entry never relies on PATH or environment: absolute interpreter (`pythonw` on Windows -- no console flash), `-m claude_session_backup`, baked `--claude-dir`, `--db` only when non-default, and `--log-file`. An entry that would depend on a bare `csb` is refused at install time.
+- **Prime run at install.** The freshly installed entry is fired once through the scheduler's own launcher (`schtasks /run`, `launchctl kickstart`, direct execution on cron), so a broken entry fails on your screen now instead of silently at the first scheduled fire.
+- **Execution evidence and the verdict that names the failure.** Every scheduled run appends one structured line (outcome, exit code, duration, store) to `csb-logs/schedule.log` (size-capped, one rotation). `csb setup schedule --status` combines OS readback, the run log, and the index into one verdict -- including **INSTALLED BUT NOT RUNNING** when the entry exists but nothing has fired within twice the interval. `csb status` carries the same verdict as an ambient one-liner, and the setup checklist gained a scheduled-backup row.
+- **Honest refusal over fake success.** On systems with no running cron daemon (most minimal container images ship none), csb refuses to write a crontab entry nothing would ever read -- distinct exit code 11, per-distro install instructions, and `--print-systemd` as the escape hatch: a ready-to-paste systemd user timer recipe (csb does not manage systemd units; the recipe states the `enable-linger` caveat).
+- **`--dry-run`** prints the exact task XML / crontab block / plist and the scheduled command without changing anything; **`--remove`** deletes only the csb-managed entry (the rest of your crontab/tasks is never touched) and succeeds quietly when nothing is installed.
+- **Backup-before-mutate.** Install and remove snapshot whatever they are about to replace (existing crontab, task XML, plist) under `backups/csb-schedule/` in the store, where snapshots ride the user commit.
+- **Fire times derive from the install moment.** Intervals of an hour or more anchor at the time of day you ran setup -- a machine in use now is likely in use at this hour on other days. Never a hardcoded midnight, which on a machine that is off overnight would simply never run (cron has no catch-up). Windows uses `StartWhenAvailable` and runs on battery; macOS uses `StartCalendarInterval` so missed fires catch up after sleep.
+- **A managed `.gitignore` block in the backup store** keeps operational artifacts (run logs, the SQLite index and its sidecars, the lock file, FTS indexes) out of a hand-run `git add -A`, while session data (`csb-live/`, `distilled/`, `backups/`) stays committed. User content in an existing `.gitignore` is preserved verbatim.
+- **Legacy hand-rolled task detection (Windows).** If the old documented "Claude Session Backup" task exists, install says so and prints the removal command -- the old entry double-runs backups and breaks silently on PATH changes.
+- **Remove refuses to delete another store's entry.** One entry name per user means a remove aimed at store A can land on the entry protecting store B; remove now reads the installed entry's baked `--claude-dir` and refuses on mismatch (caught live in testing, where a cleanup step nearly deleted a just-installed production schedule). Install replacing another store's entry says so explicitly. Entries without the marker still remove normally.
+- **cron daemon detection works on BusyBox/Alpine.** Stock Alpine's `ps` rejects the portable flags; detection now falls back to scanning `/proc/<pid>/comm`, covering BusyBox images and systems with no `ps` at all -- a genuinely running `crond` is never refused.
+- **`--status` names the entry to look for** (task name and Task Scheduler location, crontab block, or plist path) -- found by watching a user hunt through `taskschd.msc` for an unnamed task.
+- The status verdict tells the truth in two more corners: while a run is executing, "pending" says a run is executing right now (instead of advising a re-install); and when the newest run logged an error, the "ok" verdict carries an explicit ERROR warning instead of reading as all-clear.
+- `--print-systemd` rendered on Windows now labels its output as a shape preview -- the baked absolute paths are the rendering machine's, and the recipe says to regenerate on the Linux target.
+
+### Changed
+- **WSL installs get a caveat, not a refusal**: cron inside WSL only runs while the distro is running; setup detects WSL, says so, and points at running `csb setup schedule` from Windows for a Windows-side store.
+- `csb backup` gained `--log-file <path>`: append one structured line per run, and under a console-less interpreter (`pythonw`) rebind stdout/stderr there so failures stay diagnosable. Logging failure never fails the backup. Git subprocesses in scheduled runs suppress child console windows.
+- `docs/automation.md` reframed around the two layers (hooks protect the machine you are using; the schedule protects the one you are not), with interval guidance including how backup cost scales with store size. The old hand-rolled `crontab`/`schtasks` one-liners are replaced by a migration section -- their bare `csb` silently stops working when PATH changes, which is the exact failure mode this feature exists to detect.
+
 ## [0.8.5] -- 2026-08-06 (beta)
 
 **The `boot` view, the full tier ladder, and `--set` (#68 R1).** The missing middle view: `current` shows what is open, `last` shows the previous epoch, and now **`csb set show boot`** shows everything active since startup -- the epoch in progress, cross-platform from day one. With it comes the third evidence tier and a cleaner resume grammar.
@@ -1234,7 +1260,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.0...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

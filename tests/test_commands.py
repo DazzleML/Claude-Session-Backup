@@ -1279,17 +1279,26 @@ def _write_plugin_registries(claude_dir, marketplace=True, plugin=True,
 
 
 def test_setup_checklist_all_done_shows_no_commands(monkeypatch, mock_claude_dir_repoless, tmp_path, capsys):
-    """Everything configured -> three [x] rows and NO `claude plugin` /
+    """Everything configured -> all [x] rows and NO `claude plugin` /
     `csb backup` instructions (the user's complaint: don't tell people to
     run what's already done)."""
+    from claude_session_backup import commands as _commands
+    from claude_session_backup.schedule_backends import BackendStatus
+
     _patch_dotgit_check(monkeypatch)
     _write_plugin_registries(mock_claude_dir_repoless,
                              logger_marketplace=True, logger_plugin=True)
+    # The schedule row (#69) probes the real OS scheduler; "all done" here
+    # means an installed schedule too.
+    class _Installed:
+        def status(self, spec=None):
+            return BackendStatus(installed=True)
+    monkeypatch.setattr(_commands, "choose_backend", lambda: _Installed())
     db = tmp_path / "s.db"
     rc = cmd_setup(_setup_args(mock_claude_dir_repoless, db, auto=True))
     out = capsys.readouterr().out
     assert rc == 0
-    assert out.count("[x]") == 4      # git store, backup, plugin, logger
+    assert out.count("[x]") == 5      # git store, backup, plugin, logger, schedule
     assert "[ ]" not in out
     assert "[~]" not in out
     assert "claude plugin marketplace add" not in out
