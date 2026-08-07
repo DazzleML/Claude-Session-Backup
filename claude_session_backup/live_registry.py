@@ -50,6 +50,15 @@ LIVE_DIRNAME = ClaudePaths.LIVE_DIR
 SNAPSHOT_FILENAME = "last-shutdown.json"
 SNAPSHOT_VERSION = 1
 
+# R3 (H3): boundary snapshots accumulate under a SUBDIRECTORY -- that is
+# load-bearing, not cosmetic. Flat files would be read back as ghost
+# sessions by read_entries' *.json glob, including by OLDER csb versions
+# reading a git-synced store. last-shutdown.json stays the newest-alias
+# so v0.8.x readers keep working.
+BOUNDARY_DIRNAME = "boundaries"
+BOUNDARY_RETENTION = 5
+_SNAPSHOT_TOLERANCE_S = 600  # tick-counter vs event-log skew (~40s real)
+
 
 def live_dir(claude_dir) -> Path:
     """The registry directory for a claude dir (not auto-created)."""
@@ -62,6 +71,10 @@ def entry_path(claude_dir, session_id: str) -> Path:
 
 def snapshot_path(claude_dir) -> Path:
     return live_dir(claude_dir) / SNAPSHOT_FILENAME
+
+
+def boundary_dir(claude_dir) -> Path:
+    return live_dir(claude_dir) / BOUNDARY_DIRNAME
 
 
 def _utc_now() -> datetime:
@@ -323,11 +336,31 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
             "captured_at": _iso(_utc_now()),
             "open_at_shutdown": pre_boot,
         }
+        payload = json.dumps(snapshot, indent=2) + "\n"
         path = snapshot_path(claude_dir)
         tmp = path.with_suffix(f".tmp-{os.getpid()}")
-        tmp.write_text(json.dumps(snapshot, indent=2) + "\n",
-                       encoding="utf-8")
+        tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, path)
+        # R3 (H3): the same snapshot also lands in boundaries/, keyed by
+        # the boot instant, pruned to the newest BOUNDARY_RETENTION --
+        # this is what lets `last~N --open` badge exactly within K.
+        try:
+            bdir = boundary_dir(claude_dir)
+            bdir.mkdir(parents=True, exist_ok=True)
+            stamp = boot_utc.astimezone(timezone.utc).strftime(
+                "%Y%m%dT%H%M%SZ")
+            bpath = bdir / f"boundary-{stamp}.json"
+            btmp = bdir / f"boundary-{stamp}.tmp-{os.getpid()}"
+            btmp.write_text(payload, encoding="utf-8")
+            os.replace(btmp, bpath)
+            kept = sorted(bdir.glob("boundary-*.json"))
+            for stale in kept[:-BOUNDARY_RETENTION]:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass  # boundary history is an extra; the alias already wrote
         for entry in pre_boot:
             try:
                 entry_path(claude_dir, entry["session_id"]).unlink()
@@ -338,16 +371,65 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
         return 0
 
 
-def read_snapshot(claude_dir) -> Optional[dict]:
-    """The last-shutdown snapshot, or None. Corrupt -> None (advisory data)."""
-    path = snapshot_path(claude_dir)
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(raw, dict) or not isinstance(
-            raw.get("open_at_shutdown"), list):
-        return None
-    return raw
+def read_snapshot(claude_dir, boot_utc: Optional[datetime] = None,
+                  shutdown_utc: Optional[datetime] = None,
+                  tolerance_s: int = _SNAPSHOT_TOLERANCE_S
+                  ) -> Optional[dict]:
+    """A boundary snapshot, or None. Corrupt -> None (advisory data).
+
+    Without arguments: the newest snapshot (the legacy alias file) --
+    v0.8.x behavior, unchanged. With ``boot_utc`` (R3): the snapshot
+    whose ``boot_at`` sits within ``tolerance_s`` of that instant,
+    searched across the alias AND the retained ``boundaries/`` history.
+
+    With ``shutdown_utc``, a second pass covers CLAUDE-LESS REBOOT RUNS
+    (H9): the sweep fires at the first hook AFTER a boot, so N Claude-
+    less boots leave the testimony keyed to boot N+1 instead of the
+    epoch that earned it. Read-time re-keying is sound: take the OLDEST
+    snapshot newer than the epoch's shutdown whose entries ALL started
+    before that shutdown -- had Claude run in any intermediate epoch,
+    its hooks would have swept earlier (making THAT the oldest-newer
+    snapshot) or contributed a younger entry (breaking the condition).
+    Unparseable entry timestamps fail the condition -- honest absence
+    over a guessed badge.
+    """
+    candidates: list = []
+    for path in [snapshot_path(claude_dir)] + (
+            sorted(boundary_dir(claude_dir).glob("boundary-*.json"),
+                   reverse=True)
+            if (boot_utc is not None or shutdown_utc is not None)
+            else []):
+        if not path.exists():
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict) or not isinstance(
+                raw.get("open_at_shutdown"), list):
+            continue
+        if boot_utc is None and shutdown_utc is None:
+            return raw
+        candidates.append(raw)
+
+    if boot_utc is not None:
+        for raw in candidates:
+            snap_boot = parse_entry_ts(raw.get("boot_at"))
+            if snap_boot is not None and abs(
+                    (snap_boot - boot_utc).total_seconds()) <= tolerance_s:
+                return raw
+
+    if shutdown_utc is not None:
+        newer = []
+        for raw in candidates:
+            snap_boot = parse_entry_ts(raw.get("boot_at"))
+            if snap_boot is not None and snap_boot > shutdown_utc:
+                newer.append((snap_boot, raw))
+        if newer:
+            _boot, oldest_newer = min(newer, key=lambda t: t[0])
+            starts = [parse_entry_ts(e.get("started_at"))
+                      for e in oldest_newer["open_at_shutdown"]]
+            if starts and all(s is not None and s <= shutdown_utc
+                              for s in starts):
+                return oldest_newer
+    return None

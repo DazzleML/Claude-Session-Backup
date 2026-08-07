@@ -111,9 +111,17 @@ class TestParseFenceLines:
 # ── read_fences: platform gate + seam ────────────────────────────────────
 
 class TestReadFences:
-    def test_posix_raises_fence_unavailable(self, monkeypatch):
+    def test_posix_dispatches_to_the_chain(self, monkeypatch):
+        """R2 replaced the Windows-only refusal with the POSIX chain --
+        deep coverage lives in test_epochs_posix.py; this pins the
+        dispatch and the terminal error's helpfulness."""
         monkeypatch.setattr(epochs.sys, "platform", "linux")
-        with pytest.raises(FenceUnavailableError, match="Windows-only"):
+
+        def nothing_runnable(argv, timeout=15.0):
+            raise FileNotFoundError(argv[0])
+
+        monkeypatch.setattr(epochs, "_run_command", nothing_runnable)
+        with pytest.raises(FenceUnavailableError, match="still work"):
             read_fences()
 
     def test_seam_is_used_no_real_subprocess(self, monkeypatch):

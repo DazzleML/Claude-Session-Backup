@@ -246,9 +246,17 @@ A Windows Update restart destroys the one thing `csb backup` cannot preserve on 
 
 ```bash
 csb set show last                     # the boot epoch: what was active before the last shutdown
+csb set show last~1                   # ...the epoch before that (any depth the OS log still holds;
+                                      #  `csb set list` displays the 5 most recent)
+csb set show 2026-7-15                # ...or address an epoch by date
 csb set show last --window 24        # fixed window instead of the default
 csb set show last --json             # machine-readable envelope
+csb set boot                          # `show` is implicit for any view or set name
 ```
+
+When a date matches two restarts, csb lists both with their exact `last~N` tokens and exits 2 -- a date is a human address, and picking silently would be a guess.
+
+Relative addresses seek the last **working** set: if `last~1` turns out empty (deep epochs thin out as their sessions get resumed later), the view shows its empty header and continues to the nearest deeper epoch that has members -- disclosed, never silently redirected -- and `csb resume --set last~1 <N>` addresses the roster you were actually shown. Dates stay exact: an empty answer to "what was I running that day" *is* the answer. When nothing deeper has members either, csb says so and names how far back the index's activity reaches.
 
 ```
 Epoch 'last' -- shutdown 2026-07-25 16:16 UTC  [restart initiated by a process (update/restart)]  boot +45s
@@ -263,7 +271,7 @@ Epoch 'last' -- shutdown 2026-07-25 16:16 UTC  [restart initiated by a process (
 
 Open your preferred terminal, position the tab, paste the row's `csb resume` command; repeat. csb never spawns windows -- which terminal, which tab, and where they go is yours.
 
-**How it works.** The shutdown *fence* is read live from the Windows System event log (boot 6005 / clean shutdown 6006 / unexpected 6008 / restart-initiated 1074 -- the Windows Update signature), and membership comes from the activity timestamps already in the index. Read-only: nothing is stored, no hooks fire, and an update restart's double shutdown/boot cycle is collapsed into one fence.
+**How it works.** The shutdown *fence* is read live from the OS -- the Windows System event log (boot 6005 / clean shutdown 6006 / unexpected 6008 / restart-initiated 1074 -- the Windows Update signature), or the journalctl/wtmp chain on Linux/macOS/BSD (with an honest `unknown` cause where the sources cannot testify; see [platforms.md](platforms.md)) -- and membership comes from the activity timestamps already in the index. Read-only: nothing is stored, no hooks fire, and an update restart's double shutdown/boot cycle is collapsed into one fence.
 
 **The default window is the whole prior epoch** (everything since the previous fence), on purpose: sessions routinely sit open-but-idle for days, and a tight window would silently miss exactly the windows you most want back. `--window <hours>` overrides it when you want just the recent tail.
 
@@ -299,14 +307,17 @@ An epoch is observed; a **named set** is curated. It answers the other question 
 
 ```bash
 csb set new CSB-STACK <session> <session>   # create from any session queries
+csb set new TUESDAY --from last~1           # freeze a historical epoch (or --from 2026-7-15)
 csb set show CSB-STACK                      # same numbered roster as an epoch
 csb set add CSB-STACK <session>             # extend
 csb set rm  CSB-STACK <session>             # remove a member
 csb set rm  CSB-STACK                       # delete the whole set
-csb set list                                # every named set, plus the 'last' epoch
+csb set list                                # named sets + the live row + the epoch table
 ```
 
-Members resolve with csb's usual vocabulary (UUID or prefix, session name, path, keyword) and are **stored as full UUIDs**, so renaming a session later never breaks a set. Naming conventions and the three reserved names live in [naming.md](naming.md#naming-sets).
+A set promoted from an epoch remembers where it froze from -- `promoted from 'last~1' (shutdown ...)` -- which stays true as that epoch's address drifts deeper into history.
+
+Members resolve with csb's usual vocabulary (UUID or prefix, session name, path, keyword) and are **stored as full UUIDs**, so renaming a session later never breaks a set. Naming conventions and the reserved names live in [naming.md](naming.md#naming-sets).
 
 **Where they live, and why it matters.** Sets are stored in `csb-sets.json` in your backup store and committed in the *user* class alongside settings and skills. That is deliberate: set membership is not derivable from transcripts, so an index table would be silently erased by `csb update rebuild-index` — a command csb actively recommends. As user data in git, sets survive rebuilds by construction, ride existing backups, and a bad edit is one `git checkout` away. A corrupt sets file is therefore reported rather than silently reset.
 
@@ -327,6 +338,7 @@ csb resume --set 3
 | Form | Means |
 |---|---|
 | `csb resume --set <N>` | member N of the most recent boot epoch |
+| `csb resume --set last~1 <N>` | member N of a historical epoch (dates work too) |
 | `csb resume --set <name> <N>` | member N of a named set |
 | `csb resume --set <name>` | the reclaim menu: members not currently open |
 

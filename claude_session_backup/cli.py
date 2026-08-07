@@ -1055,10 +1055,14 @@ def build_parser():
             "csb set <action> works with session sets -- groups of sessions "
             "that belong together. Two kinds share the verb: EPOCH sets are "
             "observed automatically ('current' = open right now, from the "
-            "live registry; 'last' = active before the machine's last "
-            "shutdown, from the boot fences and the index), and NAMED sets "
-            "are curated by you (create one from any view with "
-            "`csb set new <name> --from current`)."
+            "live registry; 'boot' = everything active since startup; "
+            "'last', 'last~2', or a date = active before a restart, from "
+            "the boot fences and the index), and NAMED sets are curated by "
+            "you (create one from any view with `csb set new <name> --from "
+            "current`). The `show` action is implicit: `csb set last`, "
+            "`csb set boot`, and `csb set MY-GROUP` all work bare. Only "
+            "Claude Code sessions are tracked -- other terminal windows "
+            "and programs are invisible to csb."
         ),
     )
     set_sub = p_set.add_subparsers(dest="set_action", metavar="<action>")
@@ -1066,16 +1070,20 @@ def build_parser():
     # csb set show
     p_set_show = set_sub.add_parser(
         "show",
-        help="Numbered roster of a set ('last' = the most recent boot epoch)",
+        help="Numbered roster of a set -- `show` is implicit, so "
+             "`csb set last` works bare",
         description=(
             "Show a set's numbered roster. `csb set show last` answers "
             "'what was I running before the restart?': every session with "
             "activity in the window before the most recent shutdown fence, "
             "in activity order, each with a paste-able `csb resume` "
-            "command. `csb set show current` shows what is open right now, "
+            "command; `last~2` or a bare date addresses earlier epochs. "
+            "`csb set show current` shows what is open right now, "
             "tiered by evidence ([running] only with process proof); named "
-            "sets render with the same numbered roster. Honest by design: "
-            "'active within the window' is not proof a session was open."
+            "sets render with the same numbered roster. The `show` word is "
+            "optional: `csb set last`, `csb set boot`, `csb set MY-GROUP`. "
+            "Honest by design: 'active within the window' is not proof a "
+            "session was open."
         ),
     )
     # Common flags on the LEAF only (mirrors `csb update`): argparse
@@ -1130,13 +1138,15 @@ def build_parser():
              "Optional when --from is given.",
     )
     p_set_new.add_argument(
-        "--from", dest="from_view", choices=["current", "boot", "last"],
-        default=None, metavar="{current,boot,last}",
+        "--from", dest="from_view", default=None,
+        metavar="{current,boot,last,last~N,YYYY-M-D}",
         help="Promote a whole view into the set: `current` freezes what is "
-             "open right now (the live registry), `last` the previous boot "
-             "epoch's roster. Curate afterwards by subtraction "
-             "(`csb set rm <name> <session>`). Combinable with explicit "
-             "sessions (union).",
+             "open right now (the live registry), `boot` everything active "
+             "since startup, `last` the previous boot epoch's roster, and "
+             "`last~N` or a bare date any epoch in recorded history "
+             "(promoted sets remember their source epoch). Curate "
+             "afterwards by subtraction (`csb set rm <name> <session>`). "
+             "Combinable with explicit sessions (union).",
     )
 
     p_set_list = set_sub.add_parser(
@@ -1462,6 +1472,16 @@ def main(argv=None):
         argv = argv[1:2] + ["--help"] if len(argv) > 1 else ["--help"]
 
     argv = _hoist_common_flags(argv)
+
+    # Implicit show (R3): `csb set <view-or-name> ...` where the token
+    # after `set` is no set subcommand reads as `csb set show ...` --
+    # `csb set boot`, `csb set last~2`, `csb set MY-GROUP` all just
+    # work. The reserved-name grammar keeps this token space safe; a
+    # typo'd subcommand degrades to show's clear "no set named X" error.
+    if (len(argv) >= 2 and argv[0] == "set"
+            and argv[1] not in ("show", "new", "list", "add", "rm")
+            and not argv[1].startswith("-")):
+        argv = [argv[0], "show"] + argv[1:]
 
     parser = build_parser()
     args = parser.parse_args(argv)

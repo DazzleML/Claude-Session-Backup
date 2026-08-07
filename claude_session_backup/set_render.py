@@ -28,9 +28,13 @@ from typing import Optional
 from .epochs import Epoch, format_gap, parse_index_ts
 from .timeline import HAS_RICH, _resolve_start_at
 
-# Marker for sessions Claude Code has purged (30-day TTL). The resume hint
-# stays a plain `csb resume` -- the v0.3.14 pruned path offers the restore.
-_MARK_PURGED = "[purged -- resume will offer restore-from-git]"
+# Marker for sessions Claude Code has purged (30-day TTL). The tag stays
+# short -- the restore-from-git explanation renders ONCE as a roster
+# footer (a 10-purged-row epoch made the long per-row form an eyesore);
+# the v0.3.14 pruned path still offers the restore on resume.
+_MARK_PURGED = "[purged]"
+_PURGED_FOOTNOTE = ("purged by Claude Code's cleanup -- `csb resume` "
+                    "offers restore-from-git on the way")
 
 Segments = list[tuple[str, Optional[str]]]
 
@@ -66,18 +70,40 @@ def _cause_label(cause: str) -> str:
         "clean": "clean shutdown",
         "unexpected": "UNEXPECTED shutdown",
         "initiated-by-process": "restart initiated by a process (update/restart)",
+        "unknown": "shutdown observed (cause unknown)",
     }.get(cause, cause)
 
 
+def format_local(dt) -> str:
+    """Aware datetime -> local wall time with a COLON offset.
+
+    ``%z`` emits ``-0400``; the colon splice makes it read as an offset
+    instead of a number, without ``:=`` in %z (3.11+ only -- csb
+    supports 3.10).
+    """
+    s = dt.astimezone().strftime("%Y-%m-%d %H:%M %z")
+    if len(s) >= 5 and s[-5] in "+-":
+        return s[:-2] + ":" + s[-2:]
+    return s
+
+
 def epoch_header_segments(
-    epoch: Epoch, member_count: int, window_hours: float, window_source: str
+    epoch: Epoch, member_count: int, window_hours: float, window_source: str,
+    token: str = "last",
 ) -> list[Segments]:
-    """Header lines for an epoch roster, as segment lists."""
+    """Header lines for an epoch roster, as segment lists.
+
+    ``token`` is the canonical address (``last``, ``last~2``) so a
+    history view names itself -- the reader must always know WHICH
+    epoch they are looking at.
+    """
     cause_style = "red" if epoch.cause == "unexpected" else "yellow"
     line1: Segments = [
-        ("Epoch 'last'", "bold"),
+        (f"Epoch '{token}'", "bold"),
         (" -- shutdown ", "dim"),
-        (_fmt_utc(epoch.shutdown_utc), None),
+        # Local wall time (R3): "when did I restart" is a human question
+        # answered on a human clock; --json keeps Z-ISO for search.
+        (format_local(epoch.shutdown_utc), None),
         ("  [", "dim"),
         (_cause_label(epoch.cause), cause_style),
         ("]", "dim"),
@@ -142,6 +168,14 @@ def member_row_segments(member: dict, shutdown_utc=None,
     if la is not None and shutdown_utc is not None:
         gap = format_gap(shutdown_utc - la)
         line1.append((f"  {gap} {gap_label}", "yellow"))
+    # Substance at a glance: a poorly-named session's message count is
+    # the fastest "was this worth anything?" signal -- especially for
+    # purged rows, whose count survives in the index after the JSONL
+    # is gone (user request, the c--code triage case).
+    messages = member.get("messages")
+    if messages is not None:
+        noun = "msg" if messages == 1 else "msgs"
+        line1.append((f"  {messages} {noun}", "dim"))
     # Live tiers (#64). "running" only ever appears process-verified;
     # a registry-only row says what is actually known.
     live_status = member.get("live_status")
@@ -217,6 +251,11 @@ def render_roster(
         for segs in member_row_segments(member, shutdown_utc, ambiguous,
                                         gap_label=gap_label):
             _emit(segs, stream=stream, use_color=use_color)
+    purged_count = sum(1 for m in members if m.get("purged"))
+    if purged_count:
+        noun = "session" if purged_count == 1 else "sessions"
+        footer_notes = (f"{purged_count} {noun} {_PURGED_FOOTNOTE}",
+                        ) + tuple(footer_notes)
     for note in footer_notes:
         _emit([("", None)], stream=stream, use_color=use_color)
         _emit([(note, "dim")], stream=stream, use_color=use_color)

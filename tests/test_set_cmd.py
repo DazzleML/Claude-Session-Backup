@@ -106,10 +106,17 @@ class TestSetShowLast:
 
     def test_purged_member_marked_with_resume_hint(self, fences, db_path,
                                                    tmp_path, capsys):
+        """Short per-row tag; the restore explanation renders ONCE as a
+        footer (a 10-purged-row epoch made the per-row form an eyesore
+        -- user report)."""
         _run(["set", "show", "last"], tmp_path, db_path)
         out = capsys.readouterr().out
         assert "PURGED__session" in out
-        assert "[purged -- resume will offer restore-from-git]" in out
+        assert "[purged]" in out
+        assert "restore-from-git" not in out.split("\n\n")[1].split(
+            "start at")[0]  # not on the row itself
+        assert "1 session purged by Claude Code's cleanup" in out
+        assert "restore-from-git on the way" in out
         assert "csb resume PURGED__session" in out  # plain hint; v0.3.14 path restores
 
     def test_stable_full_roster_numbering(self, fences, db_path, tmp_path,
@@ -275,13 +282,22 @@ class TestEmptyAndErrorStates:
         assert rc == 0
         assert "No shutdown fence found" in out
 
-    def test_posix_clear_error(self, monkeypatch, db_path, tmp_path, capsys):
+    def test_posix_sourceless_error_stays_helpful(self, monkeypatch,
+                                                  db_path, tmp_path,
+                                                  capsys):
+        """POSIX now HAS a fence chain (R2); a box where no source runs
+        still errors clearly and points at the views that work."""
         monkeypatch.setattr(epochs.sys, "platform", "linux")
+
+        def nothing_runnable(argv, timeout=15.0):
+            raise FileNotFoundError(argv[0])
+
+        monkeypatch.setattr(epochs, "_run_command", nothing_runnable)
         rc = _run(["set", "show", "last"], tmp_path, db_path)
         captured = capsys.readouterr()
         assert rc == 1
-        assert "Windows-only" in captured.err
-        assert "#60" in captured.err
+        assert "journalctl" in captured.err
+        assert "still work" in captured.err
 
     def test_unknown_set_name_names_both_routes(self, fences, db_path,
                                                 tmp_path, capsys):

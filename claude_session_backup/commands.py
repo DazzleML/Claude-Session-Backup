@@ -51,10 +51,13 @@ from .lockfile import backup_lock
 from .epochs import (
     FenceUnavailableError,
     build_roster,
+    classify_epoch_token,
+    enumerate_epochs,
     epoch_window,
     latest_epoch,
     parse_index_ts,
     read_fences,
+    resolve_epoch_token,
 )
 from . import session_sets
 from .set_render import epoch_header_segments, render_roster
@@ -3717,6 +3720,7 @@ def _named_set_roster(conn, entry):
                 "purged": False,
                 "is_fork": False,
                 "in_index": False,
+                "messages": None,
             })
             continue
         members.append({
@@ -3732,6 +3736,7 @@ def _named_set_roster(conn, entry):
             "purged": bool(session.get("deleted_at")),
             "is_fork": bool(session.get("is_fork")),
             "in_index": True,
+            "messages": session.get("message_count"),
         })
     return members
 
@@ -3767,37 +3772,139 @@ def _materialize_set_roster(config, name):
         return _materialize_current_roster(config), 0
     if name == "boot":
         return _materialize_boot_roster(config)
-    if name == "last":
+    token_kind = classify_epoch_token(name)
+    if token_kind is not None:
         try:
             fences = read_fences()
         except FenceUnavailableError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return None, 1
-        epoch = latest_epoch(fences)
-        if epoch is None:
+        history = enumerate_epochs(fences)
+        matches = resolve_epoch_token(name, history)
+        if token_kind == "last" and not matches:
             return {
                 "kind": "epoch", "name": "last", "epoch": None,
                 "members": [], "missing_timestamps": 0,
                 "window_hours": None, "window_source": None,
                 "last_scan_at": None,
             }, 0
+        if not matches:
+            if token_kind == "tilde":
+                depth = len(history)
+                noun = "epoch" if depth == 1 else "epochs"
+                print(
+                    f"'{name}' is beyond recorded history -- {depth} "
+                    f"completed {noun} known. `csb set list` shows the "
+                    "addressable range.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"No completed epoch spans {name}. `csb set list` "
+                    "shows recent epochs and their dates.",
+                    file=sys.stderr,
+                )
+            return None, 1
+        if len(matches) > 1:
+            # Date ambiguity: list-and-ask, never newest-wins-silently
+            # (R3 DWP) -- each row carries its exact token, so the
+            # retry is one paste.
+            print(f"'{name}' matches {len(matches)} epochs -- address "
+                  "one exactly:", file=sys.stderr)
+            for idx, ep in matches:
+                token = "last" if idx == 0 else f"last~{idx}"
+                print(f"  csb set show {token:8}  shutdown "
+                      f"{_iso_z(ep.shutdown_utc)}  ({ep.cause})",
+                      file=sys.stderr)
+            return None, 2
+        history_index, epoch = matches[0]
+        requested = "last" if history_index == 0 else f"last~{history_index}"
 
-        lo, hi, window_source = epoch_window(epoch, window_hours)
         conn = open_db(config["index_path"])
         init_schema(conn)
         rows = conn.execute(
             "SELECT session_id, session_name, project, start_folder,"
             "       started_at, last_active_at, jsonl_path, jsonl_mtime,"
-            "       deleted_at, is_fork"
+            "       deleted_at, is_fork, message_count"
             "  FROM sessions"
         ).fetchall()
         last_scan_row = conn.execute(
             "SELECT scanned_at FROM scan_history ORDER BY scan_id DESC LIMIT 1"
         ).fetchone()
         conn.close()
-        members, missing = build_roster(rows, lo, hi)
+
+        # Disclosed fallthrough (H8, user review): a RELATIVE address
+        # usually means "the last WORKING set", and deep epochs thin out
+        # as their sessions get resumed later (activity drift). Walk
+        # deeper past empty epochs -- each skipped epoch is DISCLOSED in
+        # the output, so nothing is silently redirected. Dates stay
+        # exact: an absolute address is a question about that date.
+        # Lives HERE in the shared materializer so `resume --set` and
+        # `--from` land on the same roster the show displayed.
+        candidates = [(history_index, epoch)]
+        if token_kind in ("last", "tilde"):
+            candidates += [(i, history[i])
+                           for i in range(history_index + 1, len(history))]
+        skipped_empty = []
+        settled = None
+        for idx, ep in candidates:
+            lo_i, hi_i, ws_i = epoch_window(ep, window_hours)
+            members_i, missing_i = build_roster(rows, lo_i, hi_i)
+            if members_i:
+                settled = (idx, ep, lo_i, hi_i, ws_i, members_i, missing_i)
+                break
+            skipped_empty.append({
+                "token": "last" if idx == 0 else f"last~{idx}",
+                "epoch": ep,
+                "window_hours": (hi_i - lo_i).total_seconds() / 3600.0,
+                "window_source": ws_i,
+            })
+        exhausted = 0
+        activity_floor = None
+        fallthrough_failed = False
+        nearest_working = None
+        if settled is None:
+            # Nothing at-or-deeper has members: settle back on the
+            # REQUESTED epoch (today's honest empty answer) rather than
+            # landing arbitrarily deep. For relative tokens, explain
+            # WHY it can never succeed (the index's activity floor) and
+            # POINT at the nearest epoch that would work -- a hint,
+            # never a jump: the user asked a deep question, and
+            # silently answering a shallow one would be its own lie.
+            if token_kind in ("last", "tilde"):
+                fallthrough_failed = True
+                exhausted = max(0, len(skipped_empty) - 1)
+                floors = [parse_index_ts(r["last_active_at"]) for r in rows]
+                floors = [f for f in floors if f is not None]
+                activity_floor = min(floors) if floors else None
+                for j in range(history_index - 1, -1, -1):
+                    lo_j, hi_j, _ws_j = epoch_window(history[j],
+                                                     window_hours)
+                    members_j, _missing_j = build_roster(rows, lo_j, hi_j)
+                    if members_j:
+                        nearest_working = {
+                            "token": "last" if j == 0 else f"last~{j}",
+                            "count": len(members_j),
+                            "shutdown_at": history[j].shutdown_utc,
+                        }
+                        break
+            lo, hi, window_source = epoch_window(epoch, window_hours)
+            members, missing = build_roster(rows, lo, hi)
+            skipped_empty = []
+        else:
+            history_index, epoch, lo, hi, window_source, members, missing \
+                = settled
+
+        canonical = "last" if history_index == 0 else f"last~{history_index}"
         return {
-            "kind": "epoch", "name": "last", "epoch": epoch,
+            "kind": "epoch", "name": canonical, "epoch": epoch,
+            "history_index": history_index,
+            "requested": requested,
+            "skipped_empty": skipped_empty,
+            "fallthrough_failed": fallthrough_failed,
+            "fallthrough_exhausted": exhausted,
+            "activity_floor": activity_floor,
+            "nearest_working": nearest_working,
             "members": members, "missing_timestamps": missing,
             "window_lo": lo, "window_hi": hi,
             "window_hours": (hi - lo).total_seconds() / 3600.0,
@@ -3830,6 +3937,7 @@ def _materialize_set_roster(config, name):
         "members": members, "missing_timestamps": 0,
         "created_at": entry.get("created_at"),
         "updated_at": entry.get("updated_at"),
+        "promoted_from": entry.get("promoted_from"),
         "window_hours": None, "window_source": None, "last_scan_at": None,
     }, 0
 
@@ -3868,7 +3976,8 @@ def _cmd_set_show_boot(args, json_mode) -> int:
                 {k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
-                    "purged", "is_fork", "in_index", "live_status", "pid",
+                    "purged", "is_fork", "in_index", "messages",
+                    "live_status", "pid",
                 )}
                 for m in members
             ],
@@ -3888,7 +3997,7 @@ def _cmd_set_show_boot(args, json_mode) -> int:
 
     header = [[
         ("Active this boot", "bold"),
-        (f" -- booted {relative_date(_iso_z(boot_utc))}", "dim"),
+        (f" -- {_booted_label(boot_utc)}", "dim"),
         (" -- as of this invocation", "dim"),
     ]]
     noun = "session" if len(all_members) == 1 else "sessions"
@@ -3967,7 +4076,8 @@ def _cmd_set_show_current(args, json_mode) -> int:
                 {k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
-                    "purged", "is_fork", "in_index", "source",
+                    "purged", "is_fork", "in_index", "messages",
+                    "source",
                     "live_status", "pid",
                 )}
                 for m in members
@@ -3998,8 +4108,7 @@ def _cmd_set_show_current(args, json_mode) -> int:
         (" -- this boot", "dim"),
     ]]
     if boot_utc is not None:
-        header[0].append((f" (booted {relative_date(_iso_z(boot_utc))})",
-                          "dim"))
+        header[0].append((f" ({_booted_label(boot_utc)})", "dim"))
     tier_line = [
         (f"{len(members)} session{'s' if len(members) != 1 else ''}: ", None),
         (f"{running} running", "green" if running else None),
@@ -4060,11 +4169,12 @@ def _cmd_set_show_named(args, name, json_mode) -> int:
             "epoch": None,
             "created_at": roster.get("created_at"),
             "updated_at": roster.get("updated_at"),
+            "promoted_from": roster.get("promoted_from"),
             "members": [
                 {k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
-                    "purged", "is_fork", "in_index",
+                    "purged", "is_fork", "in_index", "messages",
                 )}
                 for m in members
             ],
@@ -4078,6 +4188,15 @@ def _cmd_set_show_named(args, name, json_mode) -> int:
         (f"Set '{stored}'", "bold"),
         (f" -- {count} {noun}", "dim"),
     ]]
+    promoted = roster.get("promoted_from")
+    if promoted:
+        # Provenance (R3 H5): where the freeze came from -- the token at
+        # freeze time plus the shutdown it named, which stays true as
+        # that epoch's address drifts deeper into history.
+        header.append([
+            (f"promoted from '{promoted.get('token')}' "
+             f"(shutdown {promoted.get('shutdown_at')})", "dim"),
+        ])
     if not members:
         for segs in header:
             _style_print(segs)
@@ -4126,7 +4245,16 @@ def cmd_set_new(args) -> int:
         return 2
 
     uuids: list = []
+    promoted_from = None
     if from_view:
+        if (from_view not in ("current", "boot")
+                and classify_epoch_token(from_view) is None):
+            print(
+                f"`--from` takes a view: current, boot, last, last~N, or "
+                f"a date -- not '{from_view}'.",
+                file=sys.stderr,
+            )
+            return 2
         roster, code = _materialize_set_roster(config, from_view)
         if roster is None:
             return code
@@ -4135,6 +4263,14 @@ def cmd_set_new(args) -> int:
                   file=sys.stderr)
             return 1
         uuids.extend(m["session_id"] for m in roster["members"])
+        if roster.get("kind") == "epoch" and roster.get("epoch") is not None:
+            # Provenance (R3 H5): the CANONICAL token at freeze time plus
+            # the shutdown instant -- stable even as `last~2` drifts to
+            # `last~5` under new restarts.
+            promoted_from = {
+                "token": roster["name"],
+                "shutdown_at": _iso_z(roster["epoch"].shutdown_utc),
+            }
 
     if sessions_args:
         conn = open_db(config["index_path"])
@@ -4151,7 +4287,8 @@ def cmd_set_new(args) -> int:
                 uuids.append(sid)
 
     try:
-        session_sets.create_set(config["claude_dir"], name, uuids)
+        session_sets.create_set(config["claude_dir"], name, uuids,
+                                promoted_from=promoted_from)
     except session_sets.SetError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -4255,10 +4392,13 @@ def cmd_set_list(args) -> int:
     # The epoch section is best-effort: named sets are platform-independent
     # and must list even where fence reading cannot work (POSIX, no
     # PowerShell). Degrade to a note, never fail the whole command.
+    # Fences are read ONCE and shared (R3 H4).
+    history: list = []
     epoch = None
     epoch_note = None
     try:
-        epoch = latest_epoch(read_fences())
+        history = enumerate_epochs(read_fences())
+        epoch = history[0] if history else None
         if epoch is None:
             epoch_note = "no shutdown fence found in the event log"
     except FenceUnavailableError as exc:
@@ -4270,24 +4410,49 @@ def cmd_set_list(args) -> int:
 
     boot_utc = live_registry.current_boot_utc()
 
+    # Live overlap: which of a set's members are open RIGHT NOW -- the
+    # honest observable for "am I using this set" (csb cannot know
+    # intent, only intersection). User question, 2026-08-07.
+    try:
+        live_ids = _live_session_ids(config)
+    except Exception:  # noqa: BLE001 -- listing never fails on extras
+        live_ids = set()
+
     if json_mode:
         payload = {
             "sets": [
                 {
                     "name": name,
                     "members": len(entry.get("members", [])),
+                    "open_members": len(
+                        {m.get("session_id")
+                         for m in entry.get("members", [])} & live_ids),
                     "created_at": entry.get("created_at"),
                     "updated_at": entry.get("updated_at"),
                 }
                 for name, entry in sets
             ],
             # Additive alongside the legacy "epoch" key (kept byte-stable
-            # for existing consumers; the epochs array arrives with
-            # history addressing).
+            # for existing consumers).
             "boot": (
                 {"name": "boot", "boot_at": _iso_z(boot_utc)}
                 if boot_utc is not None else None
             ),
+            # R3: the addressable history, newest first. `exact` = a
+            # retained boundary snapshot covers that epoch's boot, so
+            # `--open` can badge it.
+            "epochs": [
+                {
+                    "token": "last" if i == 0 else f"last~{i}",
+                    "shutdown_at": _iso_z(ep.shutdown_utc),
+                    "boot_at": _iso_z(ep.boot_utc) if ep.boot_utc else None,
+                    "cause": ep.cause,
+                    "exact": bool(live_registry.read_snapshot(
+                        config["claude_dir"], boot_utc=ep.boot_utc,
+                        shutdown_utc=ep.shutdown_utc)),
+                }
+                for i, ep in enumerate(history[:5])
+            ],
             "epoch": (
                 {
                     "name": "last",
@@ -4305,13 +4470,19 @@ def cmd_set_list(args) -> int:
     if sets:
         print("Named sets:")
         for name, entry in sets:
-            count = len(entry.get("members", []))
+            member_ids = {m.get("session_id")
+                          for m in entry.get("members", [])}
+            count = len(member_ids)
+            open_count = len(member_ids & live_ids)
             noun = "member" if count == 1 else "members"
+            open_note = f" ({open_count} open now)" if open_count else ""
             updated = entry.get("updated_at")
             when = f"  updated {relative_date(updated)}" if updated else ""
             _style_print([
                 ("  ", None), (name, "bold cyan"),
-                (f"  {count} {noun}", None), (when, "dim"),
+                (f"  {count} {noun}", None),
+                (open_note, "green" if open_count else None),
+                (when, "dim"),
             ])
     else:
         print("No named sets yet.")
@@ -4336,19 +4507,43 @@ def cmd_set_list(args) -> int:
 
     print()
     print("Boot epochs:")
+    # Rows collect first so the trailing command column can align: the
+    # middles vary ("in progress ..." vs "shutdown ... (cause)"), and a
+    # ragged command column reads as noise (user request).
+    table_rows = []
     if boot_utc is not None:
+        table_rows.append(("boot", [
+            (f" in progress ({_booted_label(boot_utc)})", None),
+        ], "csb set show boot"))
+    if history:
+        from .set_render import format_local
+        for i, ep in enumerate(history[:5]):
+            token = "last" if i == 0 else f"last~{i}"
+            table_rows.append((token, [
+                (f" shutdown {format_local(ep.shutdown_utc)}", None),
+                (f"  ({ep.cause})", "dim"),
+            ], f"csb set show {token}"))
+    if table_rows:
+        mid_width = max(sum(len(text) for text, _style in mid)
+                        for _token, mid, _cmd in table_rows)
+        for token, mid, cmd in table_rows:
+            pad = mid_width - sum(len(text) for text, _style in mid)
+            _style_print(
+                [("  ", None), (f"{token:7}", "bold cyan")] + mid
+                + [(" " * pad + "   " + cmd, "dim")])
+    if history:
+        if len(history) > 5:
+            # No silent caps: the table shows the 5 newest, but every
+            # epoch the OS log still holds is addressable.
+            deepest = len(history) - 1
+            _style_print([
+                (f"  ... {len(history) - 5} more addressable, through "
+                 f"last~{deepest}", "dim"),
+            ])
         _style_print([
-            ("  ", None), ("boot", "bold cyan"),
-            (f"  in progress (booted {relative_date(_iso_z(boot_utc))})",
-             None),
-            ("   csb set show boot", "dim"),
-        ])
-    if epoch is not None:
-        _style_print([
-            ("  ", None), ("last", "bold cyan"),
-            (f"  shutdown {_iso_z(epoch.shutdown_utc)}", None),
-            (f"  ({epoch.cause})", "dim"),
-            ("   csb set show last", "dim"),
+            ("  epochs are also addressable by date, e.g. "
+             f"`csb set show {history[0].shutdown_utc.astimezone().strftime('%Y-%m-%d')}`",
+             "dim"),
         ])
     elif boot_utc is None:
         print(f"  (unavailable -- {epoch_note})")
@@ -4360,6 +4555,20 @@ def cmd_set_list(args) -> int:
 def _iso_z(dt) -> str:
     """Aware datetime -> the index's Z-suffixed ISO convention."""
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _booted_label(boot_utc) -> str:
+    """Precise boot age: 'booted 12d19h ago', never a rounded phrase.
+
+    relative_date's coarse buckets rendered a 12.8-day boot as
+    "1 week ago" while roster rows said "12d17h ago" -- the mismatch
+    made the window look wrong when it wasn't. Same format_gap
+    vocabulary as the rows, so containment is visible at a glance.
+    """
+    from datetime import datetime as _dt
+
+    from .epochs import format_gap
+    return f"booted {format_gap(_dt.now(timezone.utc) - boot_utc)} ago"
 
 
 def cmd_set_show(args) -> int:
@@ -4402,11 +4611,11 @@ def cmd_set_show(args) -> int:
             )
             return 2
         return _cmd_set_show_boot(args, json_mode)
-    if name != "last":
+    if name != "last" and classify_epoch_token(name) is None:
         return _cmd_set_show_named(args, name, json_mode)
 
     config = _get_config(args)
-    roster, code = _materialize_set_roster(config, "last")
+    roster, code = _materialize_set_roster(config, name)
     if roster is None:
         return code
 
@@ -4425,21 +4634,21 @@ def cmd_set_show(args) -> int:
               file=sys.stderr)
         return 0
 
-    # Open-at-shutdown badges (#64/P4b): when the boundary snapshot covers
+    # Open-at-shutdown badges (#64/P4b): when a boundary snapshot covers
     # THIS epoch's boot, the sessions frozen into it were provably open
     # when the machine went down -- exactness as annotation, not as a
-    # competing set kind. Tolerance covers tick-counter vs event-log
-    # skew (measured ~40s on this machine).
+    # competing set kind. R3: read_snapshot searches retained boundary
+    # snapshots by boot instant, so `last~N` badges exact within K.
     from . import live_registry as _lr2
-    snapshot = _lr2.read_snapshot(config["claude_dir"])
+    snapshot = _lr2.read_snapshot(
+        config["claude_dir"], boot_utc=epoch.boot_utc,
+        shutdown_utc=epoch.shutdown_utc,
+    )
     snapshot_ids: set = set()
-    if snapshot and epoch.boot_utc is not None:
-        snap_boot = _lr2.parse_entry_ts(snapshot.get("boot_at"))
-        if snap_boot is not None and abs(
-                (snap_boot - epoch.boot_utc).total_seconds()) < 600:
-            snapshot_ids = {
-                e.get("session_id") for e in snapshot["open_at_shutdown"]
-            }
+    if snapshot:
+        snapshot_ids = {
+            e.get("session_id") for e in snapshot["open_at_shutdown"]
+        }
     for m in roster["members"]:
         if m["session_id"] in snapshot_ids:
             m["open_at_shutdown"] = True
@@ -4485,7 +4694,30 @@ def cmd_set_show(args) -> int:
     if json_mode:
         payload = {
             "kind": "epoch",
-            "name": "last",
+            "name": roster["name"],
+            "history_index": roster.get("history_index", 0),
+            # H8 disclosure: what was asked vs where the fallthrough
+            # settled, and every empty epoch passed on the way.
+            "requested_token": roster.get("requested", roster["name"]),
+            "skipped_empty": [
+                {"token": sk["token"],
+                 "shutdown_at": _iso_z(sk["epoch"].shutdown_utc),
+                 "cause": sk["epoch"].cause}
+                for sk in roster.get("skipped_empty", [])
+            ],
+            "fallthrough_failed": roster.get("fallthrough_failed", False),
+            "fallthrough_exhausted": roster.get("fallthrough_exhausted", 0),
+            "activity_floor": (
+                _iso_z(roster["activity_floor"])
+                if roster.get("activity_floor") is not None else None
+            ),
+            "nearest_working": (
+                {"token": roster["nearest_working"]["token"],
+                 "count": roster["nearest_working"]["count"],
+                 "shutdown_at": _iso_z(
+                     roster["nearest_working"]["shutdown_at"])}
+                if roster.get("nearest_working") else None
+            ),
             "epoch": {
                 "shutdown_at": _iso_z(epoch.shutdown_utc),
                 "boot_at": _iso_z(epoch.boot_utc) if epoch.boot_utc else None,
@@ -4505,7 +4737,7 @@ def cmd_set_show(args) -> int:
                 {**{k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
-                    "purged", "is_fork", "in_index",
+                    "purged", "is_fork", "in_index", "messages",
                 )}, "open_at_shutdown": bool(m.get("open_at_shutdown"))}
                 for m in members
             ],
@@ -4525,8 +4757,43 @@ def cmd_set_show(args) -> int:
                   "--no-commit` to index without git.")
         return 0
 
-    header = epoch_header_segments(epoch, len(all_members), window_hours,
-                                   window_source)
+    # H8 disclosure: every empty epoch the relative address walked past
+    # renders its own header (count 0), so the user sees BOTH facts --
+    # that period was empty, and here is the nearest working set.
+    skipped = roster.get("skipped_empty", [])
+    header = []
+    for sk in skipped[:3]:
+        header += epoch_header_segments(sk["epoch"], 0, sk["window_hours"],
+                                        sk["window_source"],
+                                        token=sk["token"])
+    if skipped:
+        more = f" (+{len(skipped) - 3} more empty)" if len(skipped) > 3 \
+            else ""
+        header.append([
+            (f"-- empty{more}; showing the nearest epoch with members --",
+             "dim"),
+        ])
+    header += epoch_header_segments(epoch, len(all_members), window_hours,
+                                    window_source, token=roster["name"])
+    if roster.get("fallthrough_failed"):
+        n_deeper = roster.get("fallthrough_exhausted", 0)
+        lead = (f"no members in any of the {n_deeper} deeper epochs either"
+                if n_deeper else "nothing deeper exists")
+        floor = roster.get("activity_floor")
+        floor_note = (
+            f" -- the index's activity reaches back to "
+            f"{floor.strftime('%Y-%m-%d')}; older epochs have nothing "
+            "to draw on" if floor is not None else ""
+        )
+        header.append([(f"({lead}{floor_note})", "dim")])
+        nw = roster.get("nearest_working")
+        if nw:
+            noun = "session" if nw["count"] == 1 else "sessions"
+            header.append([
+                (f"(nearest epoch with members: {nw['token']} -- "
+                 f"{nw['count']} {noun} -- csb set show {nw['token']})",
+                 "dim"),
+            ])
     if hidden:
         narrow_desc = (f"narrowed to {display_window:g}h before shutdown"
                        if display_window is not None else
@@ -5969,6 +6236,7 @@ def _materialize_current_roster(config) -> dict:
             "is_fork": bool(session.get("is_fork")),
             "in_index": bool(session),
             "source": entry.get("source") or "",
+            "messages": session.get("message_count"),
             "live_status": "running" if pid is not None else "unverified",
             "pid": pid,
         })
@@ -6037,7 +6305,7 @@ def _materialize_boot_roster(config):
     rows = conn.execute(
         "SELECT session_id, session_name, project, start_folder,"
         "       started_at, last_active_at, jsonl_path, jsonl_mtime,"
-        "       deleted_at, is_fork"
+        "       deleted_at, is_fork, message_count"
         "  FROM sessions"
     ).fetchall()
     members, missing = build_roster(rows, boot_utc, now_utc)
@@ -6083,6 +6351,7 @@ def _materialize_boot_roster(config):
             "purged": bool(session.get("deleted_at")),
             "is_fork": bool(session.get("is_fork")),
             "in_index": bool(session),
+            "messages": session.get("message_count"),
             "live_status": "running" if pid is not None else "unverified",
             "pid": pid,
         })

@@ -38,6 +38,8 @@ index data before the feature was built.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -45,9 +47,26 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# Event IDs read from the System log. 1074 is not itself a fence -- it
+# Named event ids (Windows System-log values ARE the wire format; POSIX
+# sources map into them -- R2 DWP E1). 1074 is not itself a fence -- it
 # labels a nearby 6006 as "initiated by a process" (update/restart).
-FENCE_EVENT_IDS = (6005, 6006, 6008, 1074)
+EVENT_BOOT = 6005
+EVENT_SHUTDOWN_CLEAN = 6006
+EVENT_SHUTDOWN_UNEXPECTED = 6008
+EVENT_RESTART_INITIATED = 1074
+# Synthetic (never emitted by Windows): a shutdown was observed but no
+# source can say HOW it ended -- the honest floor on journal-only boxes
+# whose wtmp is rotated or absent.
+EVENT_SHUTDOWN_UNKNOWN = 9006
+
+SHUTDOWN_EVENT_IDS = frozenset(
+    {EVENT_SHUTDOWN_CLEAN, EVENT_SHUTDOWN_UNEXPECTED, EVENT_SHUTDOWN_UNKNOWN}
+)
+
+FENCE_EVENT_IDS = (
+    EVENT_BOOT, EVENT_SHUTDOWN_CLEAN, EVENT_SHUTDOWN_UNEXPECTED,
+    EVENT_RESTART_INITIATED, EVENT_SHUTDOWN_UNKNOWN,
+)
 
 # Update restarts often double-cycle (shutdown/boot/shutdown/boot within
 # minutes). Shutdown fences closer together than this collapse into one.
@@ -160,17 +179,20 @@ def _run_powershell(script: str, timeout: float = 30.0) -> str:
 def read_fences(max_events: int = MAX_EVENTS, timeout: float = 30.0) -> list[Fence]:
     """Read boot/shutdown fences from the OS, newest-first.
 
-    Raises :class:`FenceUnavailableError` off-Windows or when PowerShell
-    is missing, hangs, or yields nothing usable. An empty *event* result
-    (no fences in the log) returns ``[]`` -- that is a valid answer, not
-    an error.
+    Dispatches to the Windows event-log reader or the POSIX chain
+    (journalctl -> wtmp -- R2 DWP E2/E3). Raises
+    :class:`FenceUnavailableError` when no source can answer. An empty
+    *event* result (no fences in the log) returns ``[]`` -- that is a
+    valid answer, not an error.
     """
-    if sys.platform != "win32":
-        raise FenceUnavailableError(
-            "Boot-fence detection reads the Windows event log and is "
-            "Windows-only in this version. POSIX support (journalctl/`last`) "
-            "is planned -- see epic #60."
-        )
+    if sys.platform == "win32":
+        return _read_fences_windows(max_events=max_events, timeout=timeout)
+    return _read_fences_posix(timeout=timeout)
+
+
+def _read_fences_windows(max_events: int = MAX_EVENTS,
+                         timeout: float = 30.0) -> list[Fence]:
+    """Windows: the System event log via PowerShell (the original path)."""
     script = _POWERSHELL_SCRIPT.format(max_events=max_events)
     try:
         out = _run_powershell(script, timeout=timeout)
@@ -185,13 +207,344 @@ def read_fences(max_events: int = MAX_EVENTS, timeout: float = 30.0) -> list[Fen
     return _parse_fence_lines(out)
 
 
-def latest_epoch(fences: list[Fence]) -> Optional[Epoch]:
-    """The most recent completed epoch, or None when no shutdown fence exists.
+# ── POSIX fence reading (R2: journalctl -> wtmp, evidence-first) ─────────
+
+# How close (seconds) a wtmp shutdown record must sit to a journal boot's
+# last entry to corroborate a CLEAN shutdown. Mirrors the cluster scale.
+_CORROBORATION_SECONDS = 600
+
+
+def _run_command(argv: list, timeout: float = 15.0) -> tuple[int, str]:
+    """(rc, stdout) for a POSIX source command. THE mock seam for tests.
+
+    LC_ALL=C is forced: ``last`` prints locale month names otherwise and
+    strptime's %a/%b only speak C-locale English.
+    """
+    env = dict(os.environ, LC_ALL="C")
+    result = subprocess.run(
+        argv, capture_output=True, text=True, timeout=timeout,
+        check=False, env=env,
+    )
+    return result.returncode, result.stdout or ""
+
+
+def _usec_to_utc(value) -> Optional[datetime]:
+    """journalctl JSON microsecond epoch (int or str) -> aware UTC."""
+    try:
+        return datetime.fromtimestamp(int(value) / 1_000_000,
+                                      tz=timezone.utc)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _parse_journalctl_json(out: str) -> Optional[list[tuple]]:
+    """``--list-boots -o json`` -> [(index, first_utc, last_utc)] or None.
+
+    None means "this is not JSON" -- which systemd < 254 produces with
+    rc 0 by silently IGNORING ``-o json`` for --list-boots (capture
+    finding F1). Callers must then hand THE SAME OUTPUT to the text
+    parser, never re-invoke. Spec-frozen (systemd 254+ shape: objects
+    with index/boot_id/first_entry/last_entry, usec ints -- tolerate
+    strings); flagged for live validation on a 24.04-era box.
+    """
+    try:
+        data = json.loads(out)
+    except ValueError:
+        return None
+    if not isinstance(data, list):
+        return None
+    boots = []
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        first = _usec_to_utc(row.get("first_entry"))
+        last = _usec_to_utc(row.get("last_entry"))
+        try:
+            index = int(row.get("index"))
+        except (TypeError, ValueError):
+            continue
+        if first is None or last is None:
+            continue
+        boots.append((index, first, last))
+    return boots
+
+
+_JOURNAL_IDX_RE = re.compile(r"^\s*(-?\d+)\s+[0-9a-fA-F]{32}\s")
+_JOURNAL_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC")
+
+
+def _parse_journalctl_text(out: str) -> list[tuple]:
+    """``--utc --list-boots`` text -> [(index, first_utc, last_utc)].
+
+    Capture-frozen against real systemd 249 output (finding F2):
+    headerless ``IDX BOOTID  <first>—<last>`` with an em-dash joining
+    the timestamps. The parser anchors on the index+bootid prefix and
+    the ``YYYY-MM-DD HH:MM:SS UTC`` shape ONLY -- never day names, TZ
+    abbreviations, or the dash (a headered variant's header line simply
+    fails the prefix match). Only --utc output parses, by design.
+    """
+    boots = []
+    for line in out.splitlines():
+        m = _JOURNAL_IDX_RE.match(line)
+        if not m:
+            continue
+        stamps = _JOURNAL_TS_RE.findall(line)
+        if len(stamps) < 2:
+            continue
+        first = datetime.strptime(
+            stamps[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        last = datetime.strptime(
+            stamps[-1], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        boots.append((int(m.group(1)), first, last))
+    return boots
+
+
+def _local_naive_to_utc(dt: datetime) -> datetime:
+    """Naive LOCAL time -> aware UTC. THE tz seam for tests.
+
+    ``last`` prints local times; a naive datetime's ``astimezone``
+    interprets it in the system zone, which is correct here and
+    monkeypatchable for deterministic tests.
+    """
+    return dt.astimezone(timezone.utc)
+
+
+_LAST_FULL_YEAR_RE = re.compile(
+    r"[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]?\d \d{2}:\d{2}:\d{2} \d{4}"
+)
+_LAST_NO_YEAR_RE = re.compile(
+    r"[A-Z][a-z]{2} [A-Z][a-z]{2} [ \d]?\d \d{2}:\d{2}"
+)
+
+
+def _parse_last_records(out: str) -> tuple[list[tuple], Optional[datetime]]:
+    """``last -xF reboot shutdown`` -> ([(kind, utc)], wtmp_begins_utc).
+
+    Full-year timestamps (-F) parsed under LC_ALL=C, local -> UTC via
+    the tz seam. Rows take the line's FIRST timestamp (a record's begin
+    instant); "still running" contributes no second stamp and no
+    meaning beyond the boot itself (WSL keeps EVERY historical boot
+    "still running" -- capture finding F3). The ``wtmp begins`` trailer
+    is the rotation-coverage bound; unparseable -> None (callers then
+    take the honest-unknown floor, never the crash label).
+    """
+    records = []
+    begins = None
+    for line in out.splitlines():
+        stripped = line.strip()
+        m = _LAST_FULL_YEAR_RE.search(stripped)
+        if m is None:
+            continue
+        try:
+            dt = datetime.strptime(re.sub(r"\s+", " ", m.group(0)),
+                                   "%a %b %d %H:%M:%S %Y")
+        except ValueError:
+            continue
+        utc = _local_naive_to_utc(dt)
+        if stripped.startswith("wtmp begins"):
+            begins = utc
+        elif stripped.startswith("reboot"):
+            records.append(("reboot", utc))
+        elif stripped.startswith("shutdown"):
+            records.append(("shutdown", utc))
+    return records, begins
+
+
+def _parse_last_no_year(out: str, now_local: datetime
+                        ) -> tuple[list[tuple], Optional[datetime]]:
+    """BSD/macOS ``last`` (no -F, no year) -> ([(kind, utc)], begins).
+
+    Current-year walk, newest-first: a stamp that would land in the
+    future (beyond a day of skew) belongs to the previous year, and any
+    stamp NEWER than the one above it crossed a Dec->Jan boundary --
+    decrement and re-place. Spec-frozen; rollover is red-green tested.
+    """
+    raw = []
+    begins_raw = None
+    for line in out.splitlines():
+        stripped = line.strip()
+        m = _LAST_NO_YEAR_RE.search(stripped)
+        if m is None:
+            continue
+        try:
+            dt = datetime.strptime(re.sub(r"\s+", " ", m.group(0)),
+                                   "%a %b %d %H:%M")
+        except ValueError:
+            continue
+        if stripped.startswith("wtmp begins"):
+            begins_raw = dt
+        elif stripped.startswith("reboot"):
+            raw.append(("reboot", dt))
+        elif stripped.startswith("shutdown"):
+            raw.append(("shutdown", dt))
+
+    def _walk(items):
+        year = now_local.year
+        prev = None
+        placed = []
+        for kind, naive in items:
+            for _attempt in range(3):
+                try:
+                    dt = naive.replace(year=year)
+                except ValueError:  # Feb 29 into a non-leap year
+                    dt = None
+                if dt is not None and dt <= now_local + timedelta(days=1) \
+                        and (prev is None or dt <= prev):
+                    break
+                year -= 1
+            if dt is None:
+                continue
+            prev = dt
+            placed.append((kind, _local_naive_to_utc(dt)))
+        return placed
+
+    placed = _walk(raw)
+    begins = None
+    if begins_raw is not None:
+        oldest = placed[-1][1] if placed else None
+        year = (oldest.year if oldest is not None else now_local.year)
+        for _attempt in range(2):
+            try:
+                candidate = _local_naive_to_utc(begins_raw.replace(year=year))
+            except ValueError:
+                candidate = None
+            if candidate is not None and (
+                    oldest is None or candidate <= oldest):
+                begins = candidate
+                break
+            year -= 1
+    return placed, begins
+
+
+def _corroborate_shutdown(instant: datetime, wtmp_shutdowns: list,
+                          wtmp_begins: Optional[datetime]) -> int:
+    """The POSIX cause ladder for one journal-observed shutdown (E4).
+
+    A matching wtmp shutdown record -> clean. wtmp COVERED the instant
+    and stayed silent -> unexpected (crash-by-absence). wtmp rotated
+    past it or absent -> unknown, the honest floor. The coverage guard
+    is mandatory: stock logrotate keeps ONE wtmp file, and without the
+    guard every pre-rotation shutdown would read as a crash.
+    """
+    if any(abs((s - instant).total_seconds()) <= _CORROBORATION_SECONDS
+           for s in wtmp_shutdowns):
+        return EVENT_SHUTDOWN_CLEAN
+    if wtmp_begins is not None and wtmp_begins <= instant:
+        return EVENT_SHUTDOWN_UNEXPECTED
+    return EVENT_SHUTDOWN_UNKNOWN
+
+
+def _read_fences_posix(timeout: float = 15.0) -> list[Fence]:
+    """The POSIX chain: journalctl (JSON-sniffed) -> wtmp (E3).
+
+    journalctl is the boot-count authority when it can answer with
+    history (its spans define boot AND shutdown instants); wtmp
+    corroborates causes. A volatile 1-boot journal falls through so
+    wtmp gets its chance. Terminal failure names every rung tried.
+    """
+    tried = []
+
+    journal_boots = None
+    try:
+        rc, out = _run_command(
+            ["journalctl", "--utc", "--list-boots", "-o", "json"],
+            timeout=timeout)
+        if rc == 0 and out.strip():
+            journal_boots = _parse_journalctl_json(out)
+            if journal_boots is None:
+                # F1: systemd < 254 ignores -o json -- same output, text.
+                journal_boots = _parse_journalctl_text(out) or None
+            tried.append("journalctl (answered)")
+        else:
+            tried.append(f"journalctl (rc={rc})")
+    except FileNotFoundError:
+        tried.append("journalctl (not found)")
+    except subprocess.TimeoutExpired:
+        tried.append("journalctl (timed out)")
+
+    wtmp_records: list = []
+    wtmp_begins = None
+    try:
+        rc, out = _run_command(["last", "-xF", "reboot", "shutdown"],
+                               timeout=timeout)
+        if rc == 0 and out.strip():
+            wtmp_records, wtmp_begins = _parse_last_records(out)
+            if not wtmp_records and wtmp_begins is None:
+                # BSD/macOS: no -F support prints usage or no-year rows.
+                rc2, out2 = _run_command(["last", "reboot", "shutdown"],
+                                         timeout=timeout)
+                if rc2 == 0 and out2.strip():
+                    wtmp_records, wtmp_begins = _parse_last_no_year(
+                        out2, datetime.now())
+            tried.append("last/wtmp (answered)")
+        else:
+            rc2, out2 = _run_command(["last", "reboot", "shutdown"],
+                                     timeout=timeout)
+            if rc2 == 0 and out2.strip():
+                wtmp_records, wtmp_begins = _parse_last_no_year(
+                    out2, datetime.now())
+                tried.append("last/wtmp (no-year form)")
+            else:
+                tried.append(f"last/wtmp (rc={rc})")
+    except FileNotFoundError:
+        tried.append("last (not found)")
+    except subprocess.TimeoutExpired:
+        tried.append("last (timed out)")
+
+    wtmp_shutdowns = [at for kind, at in wtmp_records if kind == "shutdown"]
+
+    if journal_boots and len(journal_boots) > 1:
+        fences: list[Fence] = []
+        for index, first, last in journal_boots:
+            fences.append(Fence(at_utc=first, event_id=EVENT_BOOT))
+            if index != 0:  # a completed boot's span END is its shutdown
+                fences.append(Fence(
+                    at_utc=last,
+                    event_id=_corroborate_shutdown(
+                        last, wtmp_shutdowns, wtmp_begins),
+                ))
+        fences.sort(key=lambda f: f.at_utc, reverse=True)
+        return fences
+
+    if wtmp_records:
+        fences = []
+        reboots = sorted((at for kind, at in wtmp_records
+                          if kind == "reboot"))
+        for at in wtmp_shutdowns:
+            fences.append(Fence(at_utc=at, event_id=EVENT_SHUTDOWN_CLEAN))
+        for i, boot_at in enumerate(reboots):
+            fences.append(Fence(at_utc=boot_at, event_id=EVENT_BOOT))
+            window_lo = reboots[i - 1] if i > 0 else wtmp_begins
+            if window_lo is None:
+                continue  # cannot bound the gap -- no synthesis
+            if any(window_lo <= s < boot_at for s in wtmp_shutdowns):
+                continue  # observed shutdown already fences this gap
+            # Covered silence before this boot = crash-by-absence.
+            fences.append(Fence(at_utc=boot_at - timedelta(seconds=1),
+                                event_id=EVENT_SHUTDOWN_UNEXPECTED))
+        fences.sort(key=lambda f: f.at_utc, reverse=True)
+        return fences
+
+    if journal_boots:  # exactly one boot, no wtmp: valid, shutdown-less
+        return [Fence(at_utc=journal_boots[0][1], event_id=EVENT_BOOT)]
+
+    raise FenceUnavailableError(
+        "No POSIX fence source could answer -- tried: "
+        + "; ".join(tried or ["nothing runnable"])
+        + ". (`csb set show current` and `boot` do not need fences and "
+        "still work.)"
+    )
+
+
+def enumerate_epochs(fences: list[Fence]) -> list[Epoch]:
+    """Every completed epoch, newest first (R3 H1).
 
     Update restarts DOUBLE-CYCLE: shutdown / boot / shutdown / boot within
     minutes (the real 2026-07-15 log: 6006 at 4:16:21, 6005 at 4:17:09,
     6006 at 4:17:38, 6005 at 4:18:17). All fences chained closer together
-    than :data:`SHUTDOWN_COLLAPSE_SECONDS` form ONE restart *cluster*:
+    than :data:`SHUTDOWN_COLLAPSE_SECONDS` form ONE restart *cluster*, so
+    that log is ONE epoch boundary -- naive per-shutdown enumeration
+    would mint two epochs 77 seconds apart. Per cluster:
 
     * ``shutdown_utc`` is the newest shutdown fence in the cluster.
     * ``prev_fence_utc`` -- the boot that STARTED the ended epoch -- must
@@ -202,53 +555,143 @@ def latest_epoch(fences: list[Fence]) -> Optional[Epoch]:
       exists for.
     * The cause is ``unexpected`` when the cluster holds a 6008, else
       ``initiated-by-process`` when it holds a 1074 (or one sits within
-      :data:`_INITIATED_PROXIMITY_SECONDS` of the shutdown), else clean.
+      :data:`_INITIATED_PROXIMITY_SECONDS` of the shutdown), else
+      ``clean`` on a 6006, else the POSIX honest floor ``unknown``.
+
+    Enumeration repeats the collapse walking newest -> oldest: each
+    round's shutdown must be OLDER than the previous cluster's start, so
+    clusters never overlap and ``last~N`` addresses are stable within
+    one fence read.
     """
     ordered = sorted(fences, key=lambda f: f.at_utc, reverse=True)
-    shutdowns = [f for f in ordered if f.event_id in (6006, 6008)]
-    if not shutdowns:
-        return None
-    shut = shutdowns[0]
+    result: list[Epoch] = []
+    bound: Optional[datetime] = None  # next shutdown must be older
+    while True:
+        shutdowns = [
+            f for f in ordered if f.event_id in SHUTDOWN_EVENT_IDS
+            and (bound is None or f.at_utc < bound)
+        ]
+        if not shutdowns:
+            return result
+        shut = shutdowns[0]
 
-    # Walk older fences (any event id), extending the cluster while the
-    # chain gap stays inside the collapse threshold. cluster_start ends
-    # at the oldest member's timestamp.
-    cluster_start = shut.at_utc
-    cluster_ids = {shut.event_id}
-    for f in ordered:
-        if f.at_utc >= shut.at_utc:
-            continue
-        if (cluster_start - f.at_utc).total_seconds() <= SHUTDOWN_COLLAPSE_SECONDS:
-            cluster_start = f.at_utc
-            cluster_ids.add(f.event_id)
+        # Walk older fences (any event id), extending the cluster while
+        # the chain gap stays inside the collapse threshold.
+        cluster_start = shut.at_utc
+        cluster_ids = {shut.event_id}
+        for f in ordered:
+            if f.at_utc >= shut.at_utc:
+                continue
+            if (cluster_start - f.at_utc).total_seconds() \
+                    <= SHUTDOWN_COLLAPSE_SECONDS:
+                cluster_start = f.at_utc
+                cluster_ids.add(f.event_id)
 
-    if 6008 in cluster_ids:
-        cause = "unexpected"
-    elif 1074 in cluster_ids or any(
-        f.event_id == 1074
-        and abs((f.at_utc - shut.at_utc).total_seconds())
-        < _INITIATED_PROXIMITY_SECONDS
-        for f in ordered
-    ):
-        cause = "initiated-by-process"
-    else:
-        cause = "clean"
+        if EVENT_SHUTDOWN_UNEXPECTED in cluster_ids:
+            cause = "unexpected"
+        elif EVENT_RESTART_INITIATED in cluster_ids or any(
+            f.event_id == EVENT_RESTART_INITIATED
+            and abs((f.at_utc - shut.at_utc).total_seconds())
+            < _INITIATED_PROXIMITY_SECONDS
+            for f in ordered
+        ):
+            cause = "initiated-by-process"
+        elif EVENT_SHUTDOWN_CLEAN in cluster_ids:
+            cause = "clean"
+        elif EVENT_SHUTDOWN_UNKNOWN in cluster_ids:
+            # POSIX honest floor: a shutdown was observed (journal span
+            # ended) but no source can say HOW -- never guessed clean.
+            cause = "unknown"
+        else:
+            cause = "clean"
 
-    boots_after = [
-        f.at_utc for f in ordered if f.event_id == 6005 and f.at_utc > shut.at_utc
-    ]
-    boots_before_cluster = [
-        f.at_utc for f in ordered
-        if f.event_id == 6005 and f.at_utc < cluster_start
-    ]
-    return Epoch(
-        shutdown_utc=shut.at_utc,
-        cause=cause,
-        boot_utc=min(boots_after) if boots_after else None,
-        prev_fence_utc=(
-            max(boots_before_cluster) if boots_before_cluster else None
-        ),
-    )
+        boots_after = [
+            f.at_utc for f in ordered
+            if f.event_id == EVENT_BOOT and f.at_utc > shut.at_utc
+        ]
+        boots_before_cluster = [
+            f.at_utc for f in ordered
+            if f.event_id == EVENT_BOOT and f.at_utc < cluster_start
+        ]
+        result.append(Epoch(
+            shutdown_utc=shut.at_utc,
+            cause=cause,
+            boot_utc=min(boots_after) if boots_after else None,
+            prev_fence_utc=(
+                max(boots_before_cluster) if boots_before_cluster else None
+            ),
+        ))
+        bound = cluster_start
+
+
+def latest_epoch(fences: list[Fence]) -> Optional[Epoch]:
+    """The most recent completed epoch, or None when no shutdown exists.
+
+    A thin wrapper over :func:`enumerate_epochs` -- pinned equal to its
+    first element by tests, so `last` and `last~0` can never drift.
+    """
+    epochs_list = enumerate_epochs(fences)
+    return epochs_list[0] if epochs_list else None
+
+
+# ── epoch-token addressing (R3 H2: last / last~N / bare dates) ───────────
+
+_TILDE_TOKEN_RE = re.compile(r"^last~(\d+)$", re.IGNORECASE)
+_DATE_TOKEN_RE = re.compile(r"^(\d{4})-(\d{1,2})-(\d{1,2})$")
+
+
+def classify_epoch_token(name: str) -> Optional[str]:
+    """'last' | 'tilde' | 'date' | None -- pure shape classification.
+
+    Mirrors (a subset of) session_sets.is_reserved_name: everything this
+    recognizes was already reserved as a set name in R1, so wiring the
+    behavior orphans nobody.
+    """
+    if name.lower() == "last":
+        return "last"
+    if _TILDE_TOKEN_RE.match(name):
+        return "tilde"
+    if _DATE_TOKEN_RE.match(name):
+        return "date"
+    return None
+
+
+def resolve_epoch_token(token: str, epochs_list: list[Epoch],
+                        tzinfo=None) -> list[tuple[int, Epoch]]:
+    """Token -> [(history_index, Epoch)] matches, newest first.
+
+    ``last`` == ``last~0``; ``last~N`` beyond recorded history returns
+    [] (callers say how deep history goes); a bare date matches every
+    epoch whose LOCAL-date span [epoch start, shutdown] intersects it --
+    zero, one, or many (ambiguity is the CALLER'S to surface, never
+    resolved silently here). ``tzinfo`` defaults to the system zone;
+    tests pass fixed offsets.
+    """
+    kind = classify_epoch_token(token)
+    if kind is None or not epochs_list:
+        return []
+    if kind == "last":
+        return [(0, epochs_list[0])]
+    if kind == "tilde":
+        n = int(_TILDE_TOKEN_RE.match(token).group(1))
+        return [(n, epochs_list[n])] if n < len(epochs_list) else []
+    y, mo, d = map(int, _DATE_TOKEN_RE.match(token).groups())
+    try:
+        from datetime import date as _date
+
+        target = _date(y, mo, d)
+    except ValueError:
+        return []
+    tz = tzinfo or datetime.now().astimezone().tzinfo
+    matches = []
+    for i, ep in enumerate(epochs_list):
+        hi_local = ep.shutdown_utc.astimezone(tz).date()
+        lo = ep.prev_fence_utc or (
+            ep.shutdown_utc - timedelta(hours=FALLBACK_WINDOW_HOURS))
+        lo_local = lo.astimezone(tz).date()
+        if lo_local <= target <= hi_local:
+            matches.append((i, ep))
+    return matches
 
 
 def epoch_window(
@@ -293,6 +736,12 @@ def build_roster(
         if not (lo <= la <= hi):
             continue
         sid = row["session_id"]
+        try:
+            # Substance stat; tolerated absent so callers with narrower
+            # row shapes (tests, older SELECTs) keep working.
+            messages = row["message_count"]
+        except (KeyError, IndexError):
+            messages = None
         candidates.append(
             (
                 la,
@@ -309,6 +758,7 @@ def build_roster(
                     "purged": bool(row["deleted_at"]),
                     "is_fork": bool(row["is_fork"]),
                     "in_index": True,
+                    "messages": messages,
                 },
             )
         )

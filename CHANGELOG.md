@@ -9,6 +9,25 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.3] -- 2026-08-07 (beta)
+
+**The session-sets epic completes: `last` everywhere, history addressable, promotion with provenance.** `csb set show last` was the one Windows-only surface; only one epoch had a name; a frozen set forgot where it came from. This release closes all three -- and it was built capture-first: the parsers were frozen against real command output (WSL2/systemd 249), which caught a silent systemd behavior that would have shipped broken.
+
+### Added
+- **`csb set show last` works on Linux, macOS, and BSD.** The POSIX fence chain reads journalctl first (boot spans define boot AND shutdown instants) and the wtmp record stream (`last -xF`, or the no-year BSD form with a year-rollover walk) as corroboration and fallback. Live-verified inside WSL on first run: the previous VM boot rendered with an honest `unexpected` cause, because WSL never writes shutdown records -- exactly what the evidence ladder is for.
+- **The shutdown-cause ladder gained an honest floor: `unknown`.** A wtmp shutdown record within 10 minutes of a journal span's end -> `clean`; wtmp covered the instant and stayed silent -> `unexpected` (crash-by-absence); wtmp rotated past it or absent -> `unknown`, never a guessed crash. The rotation guard matters: stock logrotate keeps ONE wtmp file, and without the coverage check every pre-rotation shutdown would read as a crash.
+- **Epoch history is addressable: `last~1`, `last~2`, and bare dates.** `csb set show last~1` is the epoch before last; `csb set show 2026-7-15` addresses by date, and when two restarts share a date csb lists both with their exact tokens and asks (exit 2) -- never newest-wins-silently. `csb resume --set last~1 <N>` reclaims from history through the same roster numbers the show printed. Reserved since the grammar landed, so no existing set name breaks.
+- **Relative addresses seek the last *working* set.** Deep epochs thin out (a session resumed later carries its activity forward), so an empty `last~1` walks to the nearest deeper epoch with members -- *disclosed*: the empty epoch's header still renders above the settled roster, resume numbers address exactly what was shown, and promotion stamps the epoch that actually froze. Dates stay exact (an empty answer is the answer), and when nothing deeper has members either, the note names how far back the index's activity reaches.
+- **`csb set list` grew an epoch table**: up to five addressable epochs with local wall-clock times (`2026-07-25 12:16 -04:00`), causes, and per-token commands, plus the date-addressing hint. Epoch roster headers switched to local time too -- "when did I restart" is a human question; `--json` keeps Z-ISO for search.
+- **Promotion remembers its source.** `csb set new NAME --from last~2` (or `--from <date>`) freezes any historical epoch into a named set and stamps `promoted from 'last~2' (shutdown ...)` -- provenance that stays true as that epoch's address drifts deeper into history. `--from current`/`boot`/`last` unchanged.
+- **Boundary snapshots now keep history** (newest 5, under `csb-live/boundaries/`; the legacy `last-shutdown.json` alias is untouched, so older csb versions reading a synced store stay correct). `csb set show last~1 --open` badges `[open at shutdown]` exactly when a retained snapshot covers that epoch, and says so honestly when none does.
+- **Snapshot testimony survives Claude-less reboot runs.** The boundary sweep fires at the first hook after a boot, so five reboots without opening Claude Code left the open-at-shutdown record keyed to the wrong epoch. Read-time re-keying reattaches it soundly: the oldest snapshot newer than an epoch's shutdown, all of whose entries started before that shutdown, can only testify for that epoch -- had Claude run in between, its hooks would have swept earlier or contributed a younger entry. Unparseable timestamps fail toward honest absence, never a guessed badge.
+- **`show` is now implicit**: `csb set boot`, `csb set last~2`, `csb set MY-GROUP` all work bare -- any first token that isn't a `set` subcommand reads as `show`.
+
+### Fixed
+- **Boot age is precise everywhere**: headers and the `set list` row say `booted 12d19h ago` in the same vocabulary as roster rows' age column, replacing rounded phrases like "1 week ago" that made a 12.8-day boot window look wrong when it wasn't.
+- **csb imports cleanly on boxes without `rich`.** A def-time type annotation crashed `csb` at import when the optional dependency was absent -- found live on a bare WSL python, the kind of bug only a real POSIX box exposes.
+
 ## [0.9.2] -- 2026-08-07 (beta)
 
 ### Fixed
@@ -1278,7 +1297,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.3...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

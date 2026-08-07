@@ -13,7 +13,7 @@
 
 ## The Problem
 
-Claude Code stores session data in `~/.claude/projects/` as JSONL files. These can be silently deleted during upgrades, [lossy](https://github.com/jhlee0409/claude-code-history-viewer/issues/238#issuecomment-4199548325)-[compacted](https://platform.claude.com/docs/en/build-with-claude/compaction) via [/compact](https://code.claude.com/docs/en/commands#:~:text=/compact%20%5Binstructions%5D,and%20memory%20files), or lost when session compatibility breaks between versions. Once gone, your conversation history -- including debugging sessions, architectural decisions, and code review context -- is unrecoverable.
+Claude Code stores session data in `~/.claude/projects/` as JSONL files. These can be silently deleted during upgrades, [lossy](https://github.com/jhlee0409/claude-code-history-viewer/issues/238#issuecomment-4199548325)-[compacted](https://platform.claude.com/docs/en/build-with-claude/compaction) via [/compact](https://code.claude.com/docs/en/commands#:~:text=/compact%20%5Binstructions%5D,and%20memory%20files), or lost when session compatibility breaks between versions. Once gone, your conversation history (including debugging sessions, architectural decisions, and code review context) is unrecoverable.
 
 **csb** preserves every session in your existing `~/.claude` git repository, builds a searchable metadata index, detects deletions, and can restore lost sessions from git history.
 
@@ -75,7 +75,7 @@ csb backup
 - **Session restore**: Recover deleted sessions from git history with `csb restore`
 - **Readable chat logs**: `csb distill` renders any session as an IM-style log -- the full JSONL stays preserved regardless
 - **Fork lineage**: `csb tree` shows which session spawned which as an indented tree -- including purged ancestors csb still remembers, so a chain never reads headless
-- **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special, answered from the event log and the index, with a paste-able resume command per row
+- **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special (and the `apt upgrade && reboot` special: fences read from the Windows event log or journalctl/wtmp on POSIX), with a paste-able resume command per row. History is addressable too: `csb set last~2`, or `csb set 2026-7-15` by date
 - **Live session tracking**: `csb set show current` knows what is open *right now* -- csb's hooks register every session on start and erase the record on clean close, so leftovers are crash evidence, `csb set new NAME --from current` freezes the group, and `csb resume --set NAME` lists what's left to reclaim
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
 - **Scheduled backup**: `csb setup schedule` registers a recurring backup with the OS scheduler (Task Scheduler / cron / launchd) -- hooks only fire when you use Claude Code, and the purge countdown runs whether you do or not

@@ -203,8 +203,15 @@ def list_sets(claude_dir, *, warn=None) -> list[tuple[str, dict]]:
     return sorted(doc["sets"].items(), key=lambda kv: kv[0].lower())
 
 
-def create_set(claude_dir, name: str, session_ids: list[str]) -> dict:
-    """Create a new set. Raises :class:`SetError` if the name is taken."""
+def create_set(claude_dir, name: str, session_ids: list[str],
+               promoted_from: Optional[dict] = None) -> dict:
+    """Create a new set. Raises :class:`SetError` if the name is taken.
+
+    ``promoted_from`` (R3 H5) is cheap provenance for view promotion:
+    ``{"token": "last~2", "shutdown_at": <iso>}`` -- a promoted set is a
+    FREEZE, and recording where it froze from lets it outlive its
+    epoch's address drifting as history grows (`last~2` -> `last~5`).
+    """
     validate_set_name(name)
     doc = load_sets(claude_dir)
     if resolve_set_name(claude_dir, name) is not None:
@@ -218,6 +225,8 @@ def create_set(claude_dir, name: str, session_ids: list[str]) -> dict:
         "updated_at": now,
         "members": [{"session_id": sid, "added_at": now} for sid in session_ids],
     }
+    if promoted_from:
+        entry["promoted_from"] = dict(promoted_from)
     doc["sets"][name] = entry
     save_sets(claude_dir, doc)
     return entry

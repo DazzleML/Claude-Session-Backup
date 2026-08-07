@@ -361,6 +361,26 @@ class TestCliCrud:
         assert "CSB-STACK" in out
         assert "unavailable" in out
 
+    def test_list_shows_live_overlap_of_named_sets(self, env, capsys,
+                                                   monkeypatch):
+        """'Am I using this set?' -- the honest observable is the
+        intersection of its members with the live registry."""
+        from datetime import datetime, timezone
+
+        import claude_session_backup.live_registry as lr
+        _run(env, "set", "new", "CSB-STACK", "ALPHA__session",
+             "BETA__session")
+        capsys.readouterr()
+        lr.record_session_start(env.claude_dir, UUID_A)
+        monkeypatch.setattr(lr, "current_boot_utc",
+                            lambda: datetime(2020, 1, 1,
+                                             tzinfo=timezone.utc))
+        assert _run(env, "set", "list") == 0
+        assert "(1 open now)" in capsys.readouterr().out
+        assert _run(env, "set", "list", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["sets"][0]["open_members"] == 1
+
     def test_list_advertises_the_boot_view(self, env, capsys, monkeypatch):
         """The epoch in progress must be discoverable from the overview.
         The boot VIEW shipped in v0.8.5 without a list row -- the one

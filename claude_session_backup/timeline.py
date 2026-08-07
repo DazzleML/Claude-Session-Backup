@@ -7,6 +7,8 @@ and structured session display with folder analysis.
 Uses rich for terminal formatting when available.
 """
 
+from __future__ import annotations
+
 import time
 from datetime import datetime, timezone
 from typing import Optional
