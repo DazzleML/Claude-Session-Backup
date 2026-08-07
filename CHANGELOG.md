@@ -9,6 +9,18 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.1] -- 2026-08-07 (beta)
+
+**Liveness that survives forks and session switching (#72).** `[running]` promises process-proof, but the proof was the `--resume` token in process command lines -- frozen at launch while the conversation a process hosts is not. A live machine showed the full damage in one roster: a session nothing hosted wearing `[running]` (its old process had switched to a different conversation), two provably-open sessions stuck at `[no exit observed]` (a fork child's fresh UUID appears in no command line, ever), and a parent credited its fork's pid. The fix captures identity where it cannot lie: csb's SessionStart hook runs inside the hosting process's own tree, so it records the host PID into the registry entry, and verification becomes "is that exact pid alive, a claude CLI, and older than the entry" -- which works identically for fresh, forked, and switched sessions.
+
+### Fixed
+- **Registry entries record their hosting claude PID** at SessionStart (`run-hook.mjs` passes `process.ppid`; the hook stamps it). The pid is newest-wins on every hook fire -- a post-compaction restart refreshes it -- while `started_at` keeps its write-if-missing rule (a compact never resets the open instant).
+- **Entries that carry a pid verify by that pid alone**: alive + claude CLI + a creation-time guard against pid reuse (a recycled pid younger than the entry is rejected). Command-line matching is disabled for them -- trusting a frozen command line is exactly how the ghost `[running]` happened. Entries without a pid (written before this version, or by an older plugin) keep the previous matching unchanged.
+- The fork-child/parent mis-credit is gone: each entry's pid is its own, so a `--fork-session` process can no longer be attributed to the parent its command line names.
+
+### Changed
+- Updating the plugin is what turns on pid capture (the hook scripts ship with it); until then entries stay pid-less and behave exactly as before. Process scans now also collect per-process creation times (Windows CIM `CreationDate`; POSIX `ps etimes=`, degrading gracefully where unsupported).
+
 ## [0.9.0] -- 2026-08-07 (beta)
 
 **Scheduled backup: `csb setup schedule` (#69).** Every csb hook fires on user action -- an untouched machine fires none of them, while Claude Code's own startup cleanup deletes old transcripts on a timer regardless. A never-backed-up transcript on an idle machine could be purged with csb installed and "working". This release closes that gap: the OS scheduler runs `csb backup` on its own, no Claude Code required. The version is a new minor for the new surface, but substantively this is a fix -- the scheduler half of csb's automation was designed alongside the hooks and never shipped, and its absence was a hole in the core promise.
@@ -1260,7 +1272,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.1...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

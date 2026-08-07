@@ -6,7 +6,7 @@ The [project README](../README.md) is the quick tour; these documents are the fu
 |----------|----------------|
 | [naming.md](naming.md) | **Start here.** Naming sessions so you can find them again: the `PROJECT__DATE__topic` convention, `/rename` vs `/renameAI`, the workflow that leaves a searchable trail, and naming forks so `csb tree` reads as a narrative |
 | [commands.md](commands.md) | The complete command reference: every flag, plus deep dives on searching, distilling, purge-TTL management, and recovery (single + bulk) |
-| [automation.md](automation.md) | Hands-off backups: the Claude Code plugin, manual hooks, cron, Task Scheduler, distill-on-backup |
+| [automation.md](automation.md) | Hands-off backups, both layers: the Claude Code plugin (hooks -- the machine you're using) and `csb setup schedule` (OS scheduler -- the machine you're not), plus manual hooks, interval guidance, and distill-on-backup |
 | [maintenance.md](maintenance.md) | The `csb update` family (safe rebuild-index, build-fts5, backfill-deleted), restore semantics and guarantees, FTS5 freshness, deleted-session protection |
 | [platforms.md](platforms.md) | Platform support notes (Windows / Linux / macOS / BSD) |
 

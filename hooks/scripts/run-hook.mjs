@@ -71,9 +71,15 @@ if (!existsSync(PYTHON_SCRIPT)) {
   process.exit(0);
 }
 
+// CSB_HOOK_HOST_PID (#72): this bootstrapper is a direct child of the
+// claude process, so process.ppid IS the hosting claude PID -- ground
+// truth no process-table scan can recover after launch (argv is frozen;
+// forked and switched sessions drift from it). backup-hook.py stamps it
+// into the Live Session Registry entry.
 const result = spawnSync(python, [PYTHON_SCRIPT], {
   stdio: 'inherit',
   timeout: 120000, // 2 minute timeout (backup can take a while)
+  env: { ...process.env, CSB_HOOK_HOST_PID: String(process.ppid) },
 });
 
 process.exit(result.status || 0);

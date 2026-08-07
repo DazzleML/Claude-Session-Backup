@@ -8,8 +8,8 @@ The day-to-day patterns, expanded from the README's quick list:
 
 | You're thinking... | Run | Notes |
 |---|---|---|
-| "What sessions touched THIS project?" | `cd <project>` then `csb scan .` | The `.` shortcut scopes to the cwd (folder + descendants) with no flags to remember; add a term (`csb scan . auth`) to filter within the folder, or `-s .` for "originated here" only |
 | "What was I working on before the reboot?" | `csb set show last` | The boot epoch: every session active before the machine's last shutdown, in activity order, each with a paste-able resume command. `csb list -n 5` is the manual fallback |
+| "What sessions touched THIS project?" | `cd <project>` then `csb scan .` | The `.` shortcut scopes to the cwd (folder + descendants) with no flags to remember; add a term (`csb scan . auth`) to filter within the folder, or `-s .` for "originated here" only |
 | "Which session discussed X?" | `csb search "X"` -> `csb distill <hit>` | Search finds it, distill makes it readable |
 | "Pick up where I left off" | `csb resume <name-or-prefix-or-keyword>` | Accepts everything `claude --resume` does and more |
 | "Something got purged" | `csb list --deleted` -> `csb restore <id>` | Or bulk: `csb scan -d <path> --deleted --restore` |

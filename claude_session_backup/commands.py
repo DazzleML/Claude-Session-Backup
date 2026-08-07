@@ -5929,7 +5929,7 @@ def _materialize_current_roster(config) -> dict:
         sid = entry["session_id"]
         session = get_session(conn, sid) or {}
         session_name = session.get("session_name")
-        pid = liveness.verify_member(scan, sid, session_name)
+        pid = liveness.verify_entry(scan, entry, session_name)
         members.append({
             "index": index,
             "session_id": sid,
@@ -6022,8 +6022,7 @@ def _materialize_boot_roster(config):
         indexed_ids.add(m["session_id"])
         entry = registry_ids.get(m["session_id"])
         if entry is not None:
-            pid = liveness.verify_member(scan, m["session_id"],
-                                         m["session_name"])
+            pid = liveness.verify_entry(scan, entry, m["session_name"])
             m["live_status"] = "running" if pid is not None else "unverified"
             m["pid"] = pid
         elif hooks_active:
@@ -6042,7 +6041,7 @@ def _materialize_boot_roster(config):
         if sid in indexed_ids:
             continue
         session = get_session(conn, sid) or {}
-        pid = liveness.verify_member(scan, sid, session.get("session_name"))
+        pid = liveness.verify_entry(scan, entry, session.get("session_name"))
         index += 1
         members.append({
             "index": index,
@@ -6079,12 +6078,17 @@ def _materialize_boot_roster(config):
 
 def _live_session_ids(config) -> set:
     """Session ids open THIS boot per the registry (the liveness rule)."""
+    return {e["session_id"] for e in _live_entries(config)}
+
+
+def _live_entries(config) -> list:
+    """This boot's registry entries (full dicts -- pid included, #72)."""
     from . import live_registry
 
     entries = live_registry.read_entries(config["claude_dir"])
     boot_utc = live_registry.current_boot_utc()
     this_boot, _pre = live_registry.split_by_boot(entries, boot_utc)
-    return {e["session_id"] for e in this_boot}
+    return this_boot
 
 
 def _filter_roster_for_display(members, shutdown_utc, window_hours):
@@ -6356,15 +6360,18 @@ def _live_pid_for(config, session_id: str, session_name) -> Optional[int]:
     this boot, no process proof", covering both the fresh session argv
     cannot attribute and a crash this boot (the advisory wording covers
     both; forking a crashed session is harmless). Failures degrade to
-    None -- liveness must never break a resume.
+    None -- liveness must never break a resume. Entries that recorded
+    their host pid verify by that pid alone (#72).
     """
     try:
-        if session_id not in _live_session_ids(config):
+        entry = next((e for e in _live_entries(config)
+                      if e["session_id"] == session_id), None)
+        if entry is None:
             return None
         from . import liveness
 
         scan = liveness.scan()
-        pid = liveness.verify_member(scan, session_id, session_name)
+        pid = liveness.verify_entry(scan, entry, session_name)
         return pid if pid is not None else 0
     except Exception:  # noqa: BLE001 -- advisory only
         return None

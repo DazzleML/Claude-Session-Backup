@@ -143,19 +143,38 @@ def _td_s(s: float):
 # ── hook-side operations (called by backup-hook.py; must never raise) ────
 
 def record_session_start(claude_dir, session_id: str, source: str = "",
-                         cwd: str = "") -> bool:
-    """Write the entry for a starting session. Returns True if written.
+                         cwd: str = "", pid: Optional[int] = None) -> bool:
+    """Write the entry for a starting session. Returns True if created.
 
-    Write-if-missing: a ``source=compact`` restart of the same session
-    must not reset ``started_at`` -- the session has been open the whole
-    time. Never raises (hook context): a failed write costs one
-    observation, not a session.
+    Write-if-missing for ``started_at``: a ``source=compact`` restart of
+    the same session must not reset it -- the session has been open the
+    whole time. The host ``pid`` (#72) is the opposite -- newest-wins:
+    every SessionStart knows the *current* host, so an existing entry
+    gets its pid refreshed in place (returns False; only a fresh entry
+    returns True). An unparseable existing entry is left untouched --
+    it is evidence, and destroying it costs more than a stale pid.
+
+    Never raises (hook context): a failed write costs one observation,
+    not a session.
     """
     if not session_id:
         return False
     try:
         path = entry_path(claude_dir, session_id)
         if path.exists():
+            if pid is None:
+                return False
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return False
+            if not isinstance(payload, dict) or payload.get("pid") == pid:
+                return False
+            payload["pid"] = int(pid)
+            tmp = path.with_suffix(f".tmp-{os.getpid()}")
+            tmp.write_text(json.dumps(payload, indent=2) + "\n",
+                           encoding="utf-8")
+            os.replace(tmp, path)
             return False
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -164,6 +183,8 @@ def record_session_start(claude_dir, session_id: str, source: str = "",
             "source": source or "",
             "cwd": cwd or "",
         }
+        if pid is not None:
+            payload["pid"] = int(pid)
         tmp = path.with_suffix(f".tmp-{os.getpid()}")
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
@@ -206,6 +227,7 @@ def read_entries(claude_dir) -> list[dict]:
         started_at = None
         source = ""
         cwd = ""
+        pid = None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
@@ -213,6 +235,10 @@ def read_entries(claude_dir) -> list[dict]:
                 source = raw.get("source") or ""
                 cwd = raw.get("cwd") or ""
                 session_id = raw.get("session_id") or session_id
+                try:
+                    pid = int(raw.get("pid"))
+                except (TypeError, ValueError):
+                    pid = None
         except (OSError, json.JSONDecodeError):
             pass
         entries.append({
@@ -220,6 +246,7 @@ def read_entries(claude_dir) -> list[dict]:
             "started_at": started_at,
             "source": source,
             "cwd": cwd,
+            "pid": pid,
         })
     entries.sort(key=lambda e: (e["started_at"] is None,
                                 e["started_at"] or "", e["session_id"]))

@@ -24,7 +24,7 @@ Claude Code stores session data in `~/.claude/projects/` as JSONL files. These c
 
 ## Quick Start
 
-Four commands install everything -- the CLI, the git store that holds the backups, and the Claude Code plugin that fires backups automatically on PreCompact and SessionEnd:
+Five commands install everything -- the CLI, the git store that holds the backups, the Claude Code plugin that fires backups automatically on PreCompact and SessionEnd, and the OS schedule that fires them when Claude Code doesn't run at all:
 
 ```bash
 # 1. Install the csb CLI
@@ -40,6 +40,12 @@ claude plugin marketplace add "DazzleML/Claude-Session-Backup"
 
 # 4. Install the plugin -- registers the PreCompact + SessionEnd hooks
 claude plugin install claude-session-backup@dazzle-claude-session-backup
+
+# 5. Schedule a recurring backup -- the hooks above fire only when you
+#    USE Claude Code; this protects the machine that sits idle while
+#    Claude Code's cleanup timer runs. Guided (24h default); verifies
+#    the scheduler works with an immediate prime run.
+csb setup schedule
 ```
 
 Then verify it works:
@@ -128,15 +134,20 @@ Renaming later is completely safe, so rename if the work drifts and name old ses
 The patterns that come up every day:
 
 ```bash
+# "What was I working on before the restart / crash / weekend?" -- the
+# boot epoch: every session active before the last shutdown, as a
+# numbered roster with a paste-able resume command per row.
+csb set show last
+csb resume --set 2              # reclaim member 2 of that roster
+csb set show current            # ...and what is open RIGHT NOW
+csb list -n 5                   # manual fallback: recent activity
+
 # "What sessions touched THIS project?" -- cd into any folder you were
 # working in and ask. The shortcut form needs no flags to remember.
 cd ~/code/my-project
 csb scan .
 csb scan -D .                   # this folder exactly, no subfolders
 csb scan -s .                   # only sessions that STARTED here
-
-# "What was I working on before the reboot / crash / weekend?"
-csb list -n 5
 
 # "I remember discussing it, but in WHICH session?" -- search by content,
 # then read the winner like a chat log.

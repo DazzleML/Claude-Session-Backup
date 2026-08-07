@@ -279,13 +279,30 @@ def _claude_dir() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".claude"
 
 
+def _host_pid():
+    """The hosting claude process PID, from run-hook.mjs (#72), or None.
+
+    run-hook.mjs is a direct child of the claude process, so its
+    process.ppid is ground truth -- the one identity signal that works
+    for fresh, forked, AND in-app-switched sessions, none of which can
+    be attributed from process argv after launch. Absent or garbled env
+    (old run-hook.mjs, manual invocation) degrades to None.
+    """
+    try:
+        return int(os.environ.get("CSB_HOOK_HOST_PID", ""))
+    except (TypeError, ValueError):
+        return None
+
+
 def _live_start(session_id, source, cwd, note):
     """Live Session Registry (#64): record this session as OPEN.
 
     One JSON file per session under <claude_dir>/csb-live/, removed by
     _live_end on a clean close -- so a leftover entry is evidence (crash,
-    forced restart), not garbage. Write-if-missing: a source=compact
-    restart of the same session must not reset started_at.
+    forced restart), not garbage. Write-if-missing for started_at: a
+    source=compact restart of the same session must not reset it. The
+    host ``pid`` (#72) is newest-wins: every hook fire knows the current
+    host, so an existing entry gets its pid refreshed in place.
 
     Inline stdlib mirror of claude_session_backup/live_registry.py
     (canonical semantics live THERE) -- this hook runs under whatever
@@ -299,7 +316,24 @@ def _live_start(session_id, source, cwd, note):
         live = _claude_dir() / "csb-live"
         live.mkdir(parents=True, exist_ok=True)
         path = live / f"{session_id}.json"
+        host_pid = _host_pid()
         if path.exists():
+            # Refresh pid only; started_at/source/cwd keep first-open
+            # truth. An unparseable entry is left untouched (evidence).
+            if host_pid is None:
+                return
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return
+            if not isinstance(payload, dict) or payload.get("pid") == host_pid:
+                return
+            payload["pid"] = host_pid
+            tmp = live / f"{session_id}.tmp-{os.getpid()}"
+            tmp.write_text(json.dumps(payload, indent=2) + "\n",
+                           encoding="utf-8")
+            os.replace(tmp, path)
+            note(f"live-registry: pid refresh {host_pid} for {session_id[:8]}")
             return
         payload = {
             "session_id": session_id,
@@ -307,6 +341,8 @@ def _live_start(session_id, source, cwd, note):
             "source": source or "",
             "cwd": cwd or "",
         }
+        if host_pid is not None:
+            payload["pid"] = host_pid
         tmp = live / f"{session_id}.tmp-{os.getpid()}"
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
