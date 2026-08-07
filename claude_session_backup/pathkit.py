@@ -126,6 +126,12 @@ class ClaudePaths:
     #                                       this name (it can't import csb)
     LIVE_DIR: ClassVar[str] = "csb-live"  # Live Session Registry; the hook
     #                                       mirrors this name too
+    BACKUPS: ClassVar[str] = "backups"    # Claude Code's own backups dir
+    #                                       (USER_DIRS class -- committed)
+    SCHEDULE_BACKUPS_SUB: ClassVar[str] = "csb-schedule"  # #69 Delta-1
+    #                                       pre-mutate snapshots (crontab,
+    #                                       task XML, plists) live here so
+    #                                       they ride the USER commit
 
     # Provenance sets for programmatic "is this optional for this user?"
     # reasoning (diagnostics, future doctor command). Must partition the
@@ -177,6 +183,11 @@ class ClaudePaths:
     @property
     def fts_dir(self) -> Path:
         return self.root / self.FTS_DIR
+
+    @property
+    def schedule_backups(self) -> Path:
+        """``<root>/backups/csb-schedule/`` -- #69 pre-mutate snapshots."""
+        return self.root / self.BACKUPS / self.SCHEDULE_BACKUPS_SUB
 
     @property
     def gitattributes(self) -> Path:

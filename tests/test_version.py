@@ -44,10 +44,18 @@ def test_display_version_includes_project_phase():
 def test_pip_version_pep440():
     pip_v = get_pip_version()
     assert "-" not in pip_v
+    # Structural PEP 440 check. The shapes we emit: X.Y.Z (main, no
+    # phase), X.Y.Z{a|b|rc}N (phased), X.Y.Z[...]devN (branch builds --
+    # dev releases are LEGAL PEP 440). The old digits-only else-branch
+    # falsely failed on the first-ever feature-branch build stamp
+    # (0.8.5.dev82, #69 checkpoint 3): it had only ever run against
+    # main-branch stamps, where the dev segment never appears.
+    import re
+    assert re.fullmatch(
+        r"\d+\.\d+\.\d+(?:(?:a|b|rc)\d+)?(?:\.dev\d+)?", pip_v
+    ), pip_v
     if PHASE:
-        assert any(c.isalpha() for c in pip_v.split(".")[-1])
-    else:
-        assert all(c.isdigit() or c == "." for c in pip_v)
+        assert re.search(r"(?:a|b|rc)\d+", pip_v), pip_v
 
 
 # ── v0.6.1: full build details in `csb -V` ─────────────────────────────
