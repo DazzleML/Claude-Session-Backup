@@ -360,3 +360,45 @@ class TestCliCrud:
         out = capsys.readouterr().out
         assert "CSB-STACK" in out
         assert "unavailable" in out
+
+    def test_list_advertises_the_boot_view(self, env, capsys, monkeypatch):
+        """The epoch in progress must be discoverable from the overview.
+        The boot VIEW shipped in v0.8.5 without a list row -- the one
+        view `csb set list` didn't advertise (caught live by the user)."""
+        from datetime import datetime, timezone
+
+        import claude_session_backup.live_registry as lr
+        monkeypatch.setattr(lr, "current_boot_utc",
+                            lambda: datetime(2026, 8, 1,
+                                             tzinfo=timezone.utc))
+        assert _run(env, "set", "list") == 0
+        out = capsys.readouterr().out
+        assert "csb set show boot" in out
+        assert "in progress" in out
+
+    def test_list_json_gains_additive_boot_key(self, env, capsys,
+                                               monkeypatch):
+        """Additive alongside the legacy `epoch` key, which stays."""
+        from datetime import datetime, timezone
+
+        import claude_session_backup.live_registry as lr
+        monkeypatch.setattr(lr, "current_boot_utc",
+                            lambda: datetime(2026, 8, 1,
+                                             tzinfo=timezone.utc))
+        assert _run(env, "set", "list", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["boot"] == {"name": "boot",
+                                   "boot_at": "2026-08-01T00:00:00Z"}
+        assert "epoch" in payload
+
+    def test_list_boot_row_absent_when_boot_unknowable(self, env, capsys,
+                                                       monkeypatch):
+        """No guessed row: unknowable boot instant -> no boot line.
+        (Trivially true pre-fix; load-bearing once the row exists.)"""
+        import claude_session_backup.live_registry as lr
+        monkeypatch.setattr(lr, "current_boot_utc", lambda: None)
+        assert _run(env, "set", "list") == 0
+        out = capsys.readouterr().out
+        assert "csb set show boot" not in out
+        assert _run(env, "set", "list", "--json") == 0
+        assert json.loads(capsys.readouterr().out)["boot"] is None

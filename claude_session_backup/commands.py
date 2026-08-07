@@ -4264,6 +4264,12 @@ def cmd_set_list(args) -> int:
     except FenceUnavailableError as exc:
         epoch_note = str(exc)
 
+    # The epoch in progress: fence-free (only needs the boot instant),
+    # so it lists even where fence reading cannot work.
+    from . import live_registry
+
+    boot_utc = live_registry.current_boot_utc()
+
     if json_mode:
         payload = {
             "sets": [
@@ -4275,6 +4281,13 @@ def cmd_set_list(args) -> int:
                 }
                 for name, entry in sets
             ],
+            # Additive alongside the legacy "epoch" key (kept byte-stable
+            # for existing consumers; the epochs array arrives with
+            # history addressing).
+            "boot": (
+                {"name": "boot", "boot_at": _iso_z(boot_utc)}
+                if boot_utc is not None else None
+            ),
             "epoch": (
                 {
                     "name": "last",
@@ -4323,6 +4336,13 @@ def cmd_set_list(args) -> int:
 
     print()
     print("Boot epochs:")
+    if boot_utc is not None:
+        _style_print([
+            ("  ", None), ("boot", "bold cyan"),
+            (f"  in progress (booted {relative_date(_iso_z(boot_utc))})",
+             None),
+            ("   csb set show boot", "dim"),
+        ])
     if epoch is not None:
         _style_print([
             ("  ", None), ("last", "bold cyan"),
@@ -4330,8 +4350,10 @@ def cmd_set_list(args) -> int:
             (f"  ({epoch.cause})", "dim"),
             ("   csb set show last", "dim"),
         ])
-    else:
+    elif boot_utc is None:
         print(f"  (unavailable -- {epoch_note})")
+    else:
+        print(f"  last  (unavailable -- {epoch_note})")
     return 0
 
 
@@ -5925,6 +5947,7 @@ def _materialize_current_roster(config) -> dict:
     conn = open_db(config["index_path"])
     init_schema(conn)
     members = []
+    pairs = []  # (member, entry) for pid-claim arbitration (#72)
     for index, entry in enumerate(this_boot, start=1):
         sid = entry["session_id"]
         session = get_session(conn, sid) or {}
@@ -5949,6 +5972,8 @@ def _materialize_current_roster(config) -> dict:
             "live_status": "running" if pid is not None else "unverified",
             "pid": pid,
         })
+        pairs.append((members[-1], entry))
+    liveness.arbitrate_pid_claims(pairs)
     conn.close()
     return {
         "kind": "current",
@@ -6018,6 +6043,7 @@ def _materialize_boot_roster(config):
     members, missing = build_roster(rows, boot_utc, now_utc)
 
     indexed_ids = set()
+    pairs = []  # (member, entry) for pid-claim arbitration (#72)
     for m in members:
         indexed_ids.add(m["session_id"])
         entry = registry_ids.get(m["session_id"])
@@ -6025,6 +6051,7 @@ def _materialize_boot_roster(config):
             pid = liveness.verify_entry(scan, entry, m["session_name"])
             m["live_status"] = "running" if pid is not None else "unverified"
             m["pid"] = pid
+            pairs.append((m, entry))
         elif hooks_active:
             m["live_status"] = "exited"
             m["pid"] = None
@@ -6059,6 +6086,8 @@ def _materialize_boot_roster(config):
             "live_status": "running" if pid is not None else "unverified",
             "pid": pid,
         })
+        pairs.append((members[-1], entry))
+    liveness.arbitrate_pid_claims(pairs)
     conn.close()
 
     return {

@@ -9,6 +9,12 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.2] -- 2026-08-07 (beta)
+
+### Fixed
+- **`csb set list` now advertises the `boot` view** -- the epoch in progress heads the "Boot epochs" section (`boot  in progress (booted 1 week ago)`), which had been the one view the overview never mentioned since it shipped. Fence-free, so the row appears even where `last` cannot. `--json` gains an additive `boot` key; the legacy `epoch` key is unchanged.
+- **One pid, one owner: rosters now arbitrate competing claims on a single process.** A pid is one process hosting one conversation, but two rows could wear it: a legacy pid-less entry whose frozen command line still names a session its process abandoned would ride the same pid another session had *captured* -- keeping the ghost `[running]` alive even after the pid-capture fix. Capture now beats command-line matching, and between two captured claims (an in-app switch stranding the old entry's stale pid) the freshest stamp wins -- entries record `pid_at` alongside `pid` for exactly this. Demoted rows fall to `[no exit observed]`, never a guess. Live consequence on the machine that motivated it: the roster's count corrects from "4 running" (one a ghost, two real ones missed) to the true five once the updated plugin's hooks re-stamp the open sessions.
+
 ## [0.9.1] -- 2026-08-07 (beta)
 
 **Liveness that survives forks and session switching (#72).** `[running]` promises process-proof, but the proof was the `--resume` token in process command lines -- frozen at launch while the conversation a process hosts is not. A live machine showed the full damage in one roster: a session nothing hosted wearing `[running]` (its old process had switched to a different conversation), two provably-open sessions stuck at `[no exit observed]` (a fork child's fresh UUID appears in no command line, ever), and a parent credited its fork's pid. The fix captures identity where it cannot lie: csb's SessionStart hook runs inside the hosting process's own tree, so it records the host PID into the registry entry, and verification becomes "is that exact pid alive, a claude CLI, and older than the entry" -- which works identically for fresh, forked, and switched sessions.
@@ -1272,7 +1278,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.2...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

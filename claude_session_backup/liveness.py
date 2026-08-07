@@ -258,3 +258,39 @@ def verify_entry(scan_result: LiveScan, entry: dict,
         return pid
     return verify_member(scan_result, entry.get("session_id") or "",
                          session_name)
+
+
+def arbitrate_pid_claims(pairs) -> None:
+    """Resolve multiple roster rows claiming ONE pid (#72 arbitration).
+
+    A pid is one process hosting one conversation -- two rows wearing it
+    means at most one is right. Rules, strongest evidence first:
+
+    * Among pid-BEARING entries claiming the same verified pid, the
+      freshest ``pid_at`` stamp keeps it: an in-app switch strands the
+      old entry's stale pid while the new conversation's hook re-stamps
+      the same host.
+    * A pid proven by any pid-bearing entry cannot also be claimed by a
+      pid-LESS entry's argv match -- capture beats argv, because the
+      frozen argv naming a session its process abandoned IS the ghost.
+
+    Claims that are argv-only on both sides are left alone: there is no
+    stronger evidence to arbitrate with. Demoted rows fall to
+    unverified/None in place. ``pairs`` is ``(member, entry)`` with
+    members already verified.
+    """
+    by_pid: dict = {}
+    for member, entry in pairs:
+        if member.get("pid") is not None:
+            by_pid.setdefault(member["pid"], []).append((member, entry))
+    for claims in by_pid.values():
+        if len(claims) < 2:
+            continue
+        captured = [(m, e) for m, e in claims if e.get("pid") is not None]
+        if not captured:
+            continue
+        keep = max(captured, key=lambda me: me[1].get("pid_at") or "")[0]
+        for member, _entry in claims:
+            if member is not keep:
+                member["live_status"] = "unverified"
+                member["pid"] = None

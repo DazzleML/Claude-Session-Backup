@@ -184,6 +184,94 @@ class TestCurrentRosterPidTruth:
         assert by_id[UUID_FPARENT]["pid"] is None
 
 
+# ── pid-claim arbitration: one pid, one owner ─────────────────────────
+
+
+def _member(sid, pid, status="running"):
+    return {"session_id": sid, "live_status": status if pid else "unverified",
+            "pid": pid}
+
+
+class TestArbitration:
+    def test_capture_beats_argv_the_legacy_ghost(self):
+        """The live machine's exact scenario: an abandoned session's
+        pid-LESS entry argv-matches the pid another session CAPTURED.
+        The capture wins; the argv claim is the ghost."""
+        switched = _member(UUID_SWITCHED, 222)
+        ghost = _member(UUID_GHOST, 222)
+        lv.arbitrate_pid_claims([
+            (switched, _entry(UUID_SWITCHED, pid=222)),
+            (ghost, _entry(UUID_GHOST)),          # pid-less -> argv claim
+        ])
+        assert switched["live_status"] == "running"
+        assert switched["pid"] == 222
+        assert ghost["live_status"] == "unverified"
+        assert ghost["pid"] is None
+
+    def test_freshest_capture_wins_between_two_stamps(self):
+        """An in-app switch strands the old entry's stale captured pid;
+        the new conversation's fresher stamp owns the host."""
+        old = _member(UUID_GHOST, 222)
+        new = _member(UUID_SWITCHED, 222)
+        e_old = _entry(UUID_GHOST, pid=222)
+        e_old["pid_at"] = "2026-08-01T12:00:00Z"
+        e_new = _entry(UUID_SWITCHED, pid=222)
+        e_new["pid_at"] = "2026-08-01T13:00:00Z"
+        lv.arbitrate_pid_claims([(old, e_old), (new, e_new)])
+        assert new["pid"] == 222
+        assert old["live_status"] == "unverified" and old["pid"] is None
+
+    def test_argv_only_claims_are_left_alone(self):
+        """No capture in the dispute -> no stronger evidence to rule
+        with; both rows keep their argv verdicts."""
+        a = _member(UUID_GHOST, 300)
+        b = _member(UUID_SWITCHED, 300)
+        lv.arbitrate_pid_claims([
+            (a, _entry(UUID_GHOST)), (b, _entry(UUID_SWITCHED)),
+        ])
+        assert a["pid"] == 300 and b["pid"] == 300
+
+    def test_sole_claims_untouched(self):
+        m = _member(UUID_GHOST, 100)
+        lv.arbitrate_pid_claims([(m, _entry(UUID_GHOST, pid=100))])
+        assert m["pid"] == 100 and m["live_status"] == "running"
+
+
+class TestArbitrationThroughCli:
+    def test_legacy_ghost_demoted_in_current_roster(self, tmp_path,
+                                                    monkeypatch, capsys):
+        """End to end: post-plugin-update this session captures its host
+        pid; the abandoned session's legacy pid-less entry may no longer
+        ride that pid's argv."""
+        claude_dir = tmp_path / "claude"
+        db = tmp_path / "arb.db"
+        conn = open_db(db)
+        init_schema(conn, quiet=True)
+        _insert(conn, UUID_GHOST, "ABANDONED__session")
+        _insert(conn, UUID_SWITCHED, "ACTIVE__session")
+        conn.commit()
+        conn.close()
+        lr.live_dir(claude_dir).mkdir(parents=True, exist_ok=True)
+        lr.entry_path(claude_dir, UUID_GHOST).write_text(
+            json.dumps(_entry(UUID_GHOST)), encoding="utf-8")  # pid-less
+        lr.entry_path(claude_dir, UUID_SWITCHED).write_text(
+            json.dumps(_entry(UUID_SWITCHED, pid=222)), encoding="utf-8")
+        monkeypatch.setattr(lr, "current_boot_utc", lambda: BOOT)
+        monkeypatch.setattr(lv, "scan", lambda: lv.LiveScan(
+            by_pid={222: lv.ProcInfo(
+                cmdline=f"claude --resume {UUID_GHOST}")},
+            by_uuid={UUID_GHOST.lower(): 222},
+        ))
+        assert cli.main(["set", "show", "current", "--json", "--claude-dir",
+                         str(claude_dir), "--db", str(db)]) == 0
+        by_id = {m["session_id"]: m
+                 for m in json.loads(capsys.readouterr().out)["members"]}
+        assert by_id[UUID_SWITCHED]["live_status"] == "running"
+        assert by_id[UUID_SWITCHED]["pid"] == 222
+        assert by_id[UUID_GHOST]["live_status"] == "unverified"
+        assert by_id[UUID_GHOST]["pid"] is None
+
+
 # ── registry semantics: newest-wins pid, write-if-missing started_at ──
 
 
@@ -193,6 +281,19 @@ class TestRecordSessionStart:
                                        source="startup", pid=111) is True
         [entry] = lr.read_entries(tmp_path)
         assert entry["pid"] == 111
+        assert entry["pid_at"] == entry["started_at"]  # one instant
+
+    def test_refresh_updates_pid_at_stamp(self, tmp_path):
+        lr.record_session_start(tmp_path, UUID_GHOST, pid=111)
+        path = lr.entry_path(tmp_path, UUID_GHOST)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["pid_at"] = "2020-01-01T00:00:00Z"  # age the stamp
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        lr.record_session_start(tmp_path, UUID_GHOST, source="compact",
+                                pid=222)
+        [entry] = lr.read_entries(tmp_path)
+        assert entry["pid"] == 222
+        assert entry["pid_at"] > "2020-01-01T00:00:00Z"
 
     def test_compact_heal_refreshes_pid_keeps_started_at(self, tmp_path):
         lr.record_session_start(tmp_path, UUID_GHOST, source="startup",

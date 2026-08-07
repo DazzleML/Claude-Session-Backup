@@ -171,6 +171,10 @@ def record_session_start(claude_dir, session_id: str, source: str = "",
             if not isinstance(payload, dict) or payload.get("pid") == pid:
                 return False
             payload["pid"] = int(pid)
+            # pid_at: when this claim was stamped -- the arbitration key
+            # when two entries claim one pid (an in-app switch strands
+            # the old entry's stale pid; the freshest stamp wins).
+            payload["pid_at"] = _iso(_utc_now())
             tmp = path.with_suffix(f".tmp-{os.getpid()}")
             tmp.write_text(json.dumps(payload, indent=2) + "\n",
                            encoding="utf-8")
@@ -185,6 +189,7 @@ def record_session_start(claude_dir, session_id: str, source: str = "",
         }
         if pid is not None:
             payload["pid"] = int(pid)
+            payload["pid_at"] = payload["started_at"]
         tmp = path.with_suffix(f".tmp-{os.getpid()}")
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
@@ -228,6 +233,7 @@ def read_entries(claude_dir) -> list[dict]:
         source = ""
         cwd = ""
         pid = None
+        pid_at = None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
@@ -239,6 +245,7 @@ def read_entries(claude_dir) -> list[dict]:
                     pid = int(raw.get("pid"))
                 except (TypeError, ValueError):
                     pid = None
+                pid_at = raw.get("pid_at") or None
         except (OSError, json.JSONDecodeError):
             pass
         entries.append({
@@ -247,6 +254,7 @@ def read_entries(claude_dir) -> list[dict]:
             "source": source,
             "cwd": cwd,
             "pid": pid,
+            "pid_at": pid_at,
         })
     entries.sort(key=lambda e: (e["started_at"] is None,
                                 e["started_at"] or "", e["session_id"]))

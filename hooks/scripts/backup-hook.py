@@ -329,6 +329,8 @@ def _live_start(session_id, source, cwd, note):
             if not isinstance(payload, dict) or payload.get("pid") == host_pid:
                 return
             payload["pid"] = host_pid
+            payload["pid_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                              time.gmtime())
             tmp = live / f"{session_id}.tmp-{os.getpid()}"
             tmp.write_text(json.dumps(payload, indent=2) + "\n",
                            encoding="utf-8")
@@ -343,6 +345,7 @@ def _live_start(session_id, source, cwd, note):
         }
         if host_pid is not None:
             payload["pid"] = host_pid
+            payload["pid_at"] = payload["started_at"]
         tmp = live / f"{session_id}.tmp-{os.getpid()}"
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
