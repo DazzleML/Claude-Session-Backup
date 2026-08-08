@@ -9,6 +9,15 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.9] -- 2026-08-08 (beta)
+
+### Fixed
+- **A session launched from an elevated terminal showed `[no exit observed]` while running.** A process at a higher integrity level hides its command line from a non-elevated query (the executable name still reads), and the process scan admitted sessions to its pid map only when the *command line* identified them -- so pid verification silently inherited the argv dependency that capturing the host pid exists to escape. The scan now accepts the executable name when the command line is unreadable, for pid verification only; the argv-derived maps are unchanged, Claude Desktop stays excluded, and the pid-reuse guard still applies. Affected only sessions started from an administrator terminal, which is why it looked intermittent and appeared to heal on its own.
+
+### Added
+- **Liveness rosters distinguish recorded from verified.** `csb set current --json` and `csb set show boot --json` now carry `recorded_pid` and `pid_at` (what the registry entry stored) alongside `pid` (what verification concluded). Previously a null `pid` meant either "no host was ever captured" or "captured, but it no longer verifies" -- opposite problems, shown identically, and telling them apart took an evening across two machines.
+- **The backup hook records how it captured a pid**: log lines now read `via=walk` (an ancestor was identified as the claude CLI), `via=env-fallback` (the walk could not complete, so the environment ppid was used -- possibly a transient shell), or `via=none`. The previously silent no-pid path now says so explicitly. Ships with the plugin; run `csb setup update` to pick it up.
+
 ## [0.9.8] -- 2026-08-08 (beta)
 
 ### Added
@@ -1328,7 +1337,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.9...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

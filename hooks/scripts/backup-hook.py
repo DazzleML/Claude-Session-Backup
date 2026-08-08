@@ -323,17 +323,18 @@ def _process_table():
         return None
 
 
-def _host_pid(start_pid=None):
-    """The hosting claude CLI's PID, or None (#72, corrected #78).
+def _host_pid_detailed(start_pid=None):
+    """``(pid_or_None, route)`` -- the walk's verdict AND how it got it.
 
-    process.ppid alone is ONE LEVEL SHORT: Claude Code executes hook
-    commands through a shell, so node's parent is a TRANSIENT cmd/sh
-    that dies when the hook finishes -- captured live twice (fork-birth
-    and compact both stamped already-dead shells while the real host,
-    created the same second as the entry, ran on). So: WALK the
-    ancestry from this process upward until a claude CLI cmdline
-    appears. The env ppid remains the fallback when the table cannot
-    be read -- better a maybe-transient pid than none.
+    Routes: ``walk`` (an ancestor was a claude CLI -- the trustworthy
+    case), ``env-fallback`` (the walk could not complete, so the env
+    ppid is used; on Windows that is often the TRANSIENT shell #78 was
+    about, i.e. a pid that may already be dead), ``none`` (neither).
+
+    Split out for DIAGNOSABILITY: a registry entry alone cannot say
+    whether its pid came from the walk or the fallback, and those are
+    different confidence levels that fail in different ways. Costing an
+    hour of cross-machine deduction once was enough.
     """
     env_pid = None
     try:
@@ -356,9 +357,26 @@ def _host_pid(start_pid=None):
             if parent is None or parent == current:
                 break
             if _is_claude_cli(cmdlines.get(parent, "")):
-                return parent
+                return parent, "walk"
             current = parent
-    return env_pid
+    if env_pid is not None:
+        return env_pid, "env-fallback"
+    return None, "none"
+
+
+def _host_pid(start_pid=None):
+    """The hosting claude CLI's PID, or None (#72, corrected #78).
+
+    process.ppid alone is ONE LEVEL SHORT: Claude Code executes hook
+    commands through a shell, so node's parent is a TRANSIENT cmd/sh
+    that dies when the hook finishes -- captured live twice (fork-birth
+    and compact both stamped already-dead shells while the real host,
+    created the same second as the entry, ran on). So: WALK the
+    ancestry from this process upward until a claude CLI cmdline
+    appears. The env ppid remains the fallback when the table cannot
+    be read -- better a maybe-transient pid than none.
+    """
+    return _host_pid_detailed(start_pid)[0]
 
 
 def _live_start(session_id, source, cwd, note):
@@ -383,11 +401,13 @@ def _live_start(session_id, source, cwd, note):
         live = _claude_dir() / "csb-live"
         live.mkdir(parents=True, exist_ok=True)
         path = live / f"{session_id}.json"
-        host_pid = _host_pid()
+        host_pid, route = _host_pid_detailed()
         if path.exists():
             # Refresh pid only; started_at/source/cwd keep first-open
             # truth. An unparseable entry is left untouched (evidence).
             if host_pid is None:
+                note(f"live-registry: no host pid (via={route}) for "
+                     f"{session_id[:8]} -- entry left as-is")
                 return
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -402,7 +422,8 @@ def _live_start(session_id, source, cwd, note):
             tmp.write_text(json.dumps(payload, indent=2) + "\n",
                            encoding="utf-8")
             os.replace(tmp, path)
-            note(f"live-registry: pid refresh {host_pid} for {session_id[:8]}")
+            note(f"live-registry: pid refresh {host_pid} via={route} "
+                 f"for {session_id[:8]}")
             return
         payload = {
             "session_id": session_id,
@@ -416,7 +437,8 @@ def _live_start(session_id, source, cwd, note):
         tmp = live / f"{session_id}.tmp-{os.getpid()}"
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, path)
-        note(f"live-registry: open {session_id[:8]} (source={source or '-'})")
+        note(f"live-registry: open {session_id[:8]} "
+             f"(source={source or '-'} pid={host_pid} via={route})")
     except OSError as exc:
         note(f"live-registry: record failed ({exc!r})")
 

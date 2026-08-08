@@ -461,3 +461,159 @@ class TestScanShape:
         scan = lv.scan()
         assert scan.by_pid[42].created is None
         assert scan.by_name == {"SOME__name": "42"}
+
+
+class TestElevatedSessionVerification:
+    """An ELEVATED session hides its cmdline from a non-elevated scan.
+
+    Caught live 2026-08-08: a running `claude.exe` under an admin
+    Windows Terminal returned an empty CommandLine (and ExecutablePath)
+    to a non-elevated Win32_Process query while `Name` still read fine.
+    The cmdline-only gate dropped it from `by_pid`, so pid verification
+    -- the mechanism #72 added precisely to stop depending on argv --
+    failed, and a running session rendered `[no exit observed]`.
+    """
+
+    ENTRY = {
+        "session_id": "eeee0001-bbbb-cccc-dddd-000000000001",
+        "started_at": "2026-08-08T17:42:02Z",
+        "pid": 17668,
+        "pid_at": "2026-08-08T17:42:02Z",
+    }
+
+    def _scan_with_hidden_cmdline(self, monkeypatch):
+        """The exact shape observed: name reads, cmdline does not."""
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(17668, "claude.exe", "", None)])
+        return lv.scan()
+
+    def test_elevated_session_verifies_by_pid(self, monkeypatch):
+        """RED-GREEN anchor: name-only identification must still admit
+        the process to by_pid, so the captured pid verifies."""
+        scan = self._scan_with_hidden_cmdline(monkeypatch)
+        assert lv.verify_entry(scan, self.ENTRY, None) == 17668
+
+    def test_hidden_cmdline_contributes_no_argv_identity(self, monkeypatch):
+        """A nameless match carries no identifier: it must NOT land in
+        the argv maps, or a cmdline-less process would become a wildcard
+        for name/uuid matching."""
+        scan = self._scan_with_hidden_cmdline(monkeypatch)
+        assert scan.by_uuid == {}
+        assert scan.by_name == {}
+        assert 17668 in scan.by_pid
+
+    def test_desktop_claude_still_excluded_when_cmdline_readable(
+            self, monkeypatch):
+        """The name gate must not resurrect Claude Desktop: with a
+        READABLE desktop cmdline the existing exclusion still wins."""
+        desktop = (r'"C:\Users\X\AppData\Local\AnthropicClaude'
+                   r'\app-1.25927.0\claude.exe" --type=renderer')
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(4242, "claude.exe", desktop, None)])
+        scan = lv.scan()
+        assert 4242 not in scan.by_pid
+
+    def test_creation_guard_still_applies_to_name_only_matches(
+            self, monkeypatch):
+        """Name-only admission does not weaken the pid-reuse guard: a
+        process created well AFTER the entry is still rejected."""
+        from datetime import datetime, timedelta, timezone
+        later = datetime(2026, 8, 8, 18, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(17668, "claude.exe", "", later)])
+        scan = lv.scan()
+        assert lv.verify_entry(scan, self.ENTRY, None) is None
+
+
+class TestElevatedSessionAdversarial:
+    """Probes for the v0.9.9 elevation fix, beyond the RED-GREEN anchor.
+
+    ``is_claude_process_name`` is a WEAKER identifier than argv by its
+    own docstring's admission. These tests pin exactly how weak, so a
+    future change cannot silently widen or narrow the boundary without
+    a test noticing.
+    """
+
+    def test_non_claude_process_named_claude_with_empty_cmdline_is_admitted(
+            self, monkeypatch):
+        """A process that is NOT actually the Claude CLI, but happens to
+        be named 'claude.exe' with an unreadable cmdline, IS admitted to
+        by_pid -- liveness.py has no way to rule it out from name alone.
+        This is the accepted tradeoff the docstring names, not a bug:
+        containment is that mere by_pid admission verifies nothing by
+        itself (see the next test) -- only an EXACT recorded-pid match
+        within the creation-time skew window would ever treat it as a
+        live session, and that match is what the hook's own capture
+        (not this scan) is responsible for being trustworthy."""
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(31337, "claude.exe", "", None)])
+        scan = lv.scan()
+        assert 31337 in scan.by_pid
+        assert scan.by_uuid == {} and scan.by_name == {}
+
+    def test_desktop_shaped_process_admitted_when_cmdline_hidden_but_harmless(
+            self, monkeypatch):
+        """'Claude Desktop stays excluded' (checklist section 3) holds
+        for a READABLE Desktop cmdline via DESKTOP_MARKERS -- see
+        test_desktop_claude_still_excluded_when_cmdline_readable. It is
+        NOT a structural exclusion at the by_pid level once cmdline is
+        hidden: name alone cannot distinguish Desktop's claude.exe from
+        the CLI's (the module's own docstring says so). The real
+        containment argument is registry-level, not scan-level: no
+        registry entry ever records Desktop's pid, so admission here
+        must never cause an UNRELATED entry to verify against it."""
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(5150, "Claude.exe", "", None)])  # Desktop-shaped, hidden
+        scan = lv.scan()
+        assert 5150 in scan.by_pid  # admitted -- name alone can't rule it out
+        other_entry = {"session_id": UUID_GHOST, "started_at": STARTED,
+                       "pid": 9001, "pid_at": STARTED}
+        assert lv.verify_entry(scan, other_entry, None) is None
+
+    def test_admission_precedes_creation_guard_rejection(self, monkeypatch):
+        """Confirms the TWO-STEP sequence explicitly: a future-created,
+        name-only match IS admitted to by_pid (scan()'s job) and is THEN
+        rejected by the creation-time guard (verify_entry's job) --
+        rather than simply being absent from by_pid altogether, which
+        would be the pre-fix shape and would make a guard test pass for
+        the wrong reason (nothing to guard against)."""
+        later = datetime(2026, 8, 8, 18, 30, tzinfo=timezone.utc)
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(17668, "claude.exe", "", later)])
+        scan = lv.scan()
+        assert 17668 in scan.by_pid, "must be admitted despite future creation"
+        entry = {"session_id": "eeee0001-bbbb-cccc-dddd-000000000001",
+                 "started_at": "2026-08-08T17:42:02Z", "pid": 17668,
+                 "pid_at": "2026-08-08T17:42:02Z"}
+        assert lv.verify_entry(scan, entry, None) is None, \
+            "creation-time guard must still reject it"
+
+    def test_two_distinct_elevated_sessions_dont_cross_verify(
+            self, monkeypatch):
+        """Two SEPARATE elevated sessions (each admitted via the
+        name-only path, each with its own recorded pid) must verify
+        independently through arbitrate_pid_claims -- broadening by_pid
+        must not make arbitration see a false shared claim just because
+        both rows took the same (name-only) admission path."""
+        monkeypatch.setattr(
+            lv, "_enumerate_processes",
+            lambda: [(2001, "claude.exe", "", None),
+                     (2002, "claude.exe", "", None)])
+        scan = lv.scan()
+        entry_a = {"session_id": UUID_GHOST, "started_at": STARTED,
+                  "pid": 2001, "pid_at": STARTED}
+        entry_b = {"session_id": UUID_SWITCHED, "started_at": STARTED,
+                  "pid": 2002, "pid_at": STARTED}
+        pid_a = lv.verify_entry(scan, entry_a, None)
+        pid_b = lv.verify_entry(scan, entry_b, None)
+        member_a = _member(UUID_GHOST, pid_a)
+        member_b = _member(UUID_SWITCHED, pid_b)
+        lv.arbitrate_pid_claims([(member_a, entry_a), (member_b, entry_b)])
+        assert member_a["pid"] == 2001 and member_a["live_status"] == "running"
+        assert member_b["pid"] == 2002 and member_b["live_status"] == "running"

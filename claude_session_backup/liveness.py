@@ -162,6 +162,29 @@ def is_claude_cli(cmdline: str) -> bool:
     return exe.endswith("claude") or exe.endswith("claude.exe")
 
 
+def is_claude_process_name(name: str) -> bool:
+    """True when the EXECUTABLE NAME alone identifies the Claude Code CLI.
+
+    The elevation escape hatch. A process running at a higher integrity
+    level than csb hides its PEB: Win32_Process returns an empty
+    ``CommandLine`` (and ``ExecutablePath``) while ``Name`` still reads
+    -- observed live, a whole ancestry unreadable
+    (claude.exe -> cmd.exe -> WindowsTerminal.exe) under an admin
+    terminal owned by the same user.
+
+    Name is a WEAKER identifier than the command line -- it cannot
+    distinguish Claude Desktop's ``claude.exe`` -- so it qualifies a
+    process for PID verification ONLY (``by_pid``), never for the
+    argv-derived maps. That is sound because a pid-bearing entry did not
+    guess its pid: the hook captured it from INSIDE the process tree,
+    and the creation-time guard still applies. Desktop's claude.exe
+    cannot collide, because no registry entry ever records its pid.
+    """
+    if not name:
+        return False
+    return name.strip().lower() in ("claude", "claude.exe")
+
+
 def resume_identifier(cmdline: str) -> Optional[str]:
     """The token following ``--resume`` / ``-r``, or None (fresh session)."""
     tokens = cmdline.split()
@@ -183,14 +206,25 @@ def scan() -> LiveScan:
     by_pid: dict = {}
     bare: list = []
     for row in procs:
-        pid, _name, cmdline = row[0], row[1], row[2]
+        pid, name, cmdline = row[0], row[1], row[2]
         created = row[3] if len(row) > 3 else None
-        if not is_claude_cli(cmdline):
+        cli = is_claude_cli(cmdline)
+        # by_pid admits a NAME-only match too: an elevated session hides
+        # its cmdline from a non-elevated scan, and dropping it here made
+        # pid verification inherit the very argv dependency #72 exists to
+        # escape -- a live session rendering [no exit observed] while
+        # running (caught live, 2026-08-08). The argv maps below stay
+        # cmdline-only: they genuinely need argv, and a nameless match
+        # carries no identifier to file under.
+        if not cli and not (not (cmdline or "").strip()
+                            and is_claude_process_name(name)):
             continue
         try:
             by_pid[int(pid)] = ProcInfo(cmdline=cmdline, created=created)
         except (TypeError, ValueError):
             pass
+        if not cli:
+            continue
         ident = resume_identifier(cmdline)
         if ident is None:
             bare.append(pid)

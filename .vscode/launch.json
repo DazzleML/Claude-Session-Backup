@@ -2,6 +2,67 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "csb: set current (liveness path)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "claude_session_backup",
+            "args": [
+                "set",
+                "current"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "csb: set current --json",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "claude_session_backup",
+            "args": [
+                "set",
+                "current",
+                "--json"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "csb: set show last",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "claude_session_backup",
+            "args": [
+                "set",
+                "show",
+                "last"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "csb: status",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "claude_session_backup",
+            "args": [
+                "status"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
+            "name": "csb: backup --no-commit",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "claude_session_backup",
+            "args": [
+                "backup",
+                "--no-commit"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": false
+        },
+        {
             "name": "wtf-restarted: diagnose",
             "type": "debugpy",
             "request": "launch",
@@ -14,7 +75,9 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["--verbose"],
+            "args": [
+                "--verbose"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -23,7 +86,9 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["--json"],
+            "args": [
+                "--json"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -32,7 +97,9 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["--skip-dump"],
+            "args": [
+                "--skip-dump"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -41,7 +108,10 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["--hours", "72"],
+            "args": [
+                "--hours",
+                "72"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -50,7 +120,9 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["history"],
+            "args": [
+                "history"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -59,7 +131,11 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["history", "--days", "90"],
+            "args": [
+                "history",
+                "--days",
+                "90"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -68,7 +144,10 @@
             "type": "debugpy",
             "request": "launch",
             "module": "wtf_restarted",
-            "args": ["history", "--json"],
+            "args": [
+                "history",
+                "--json"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -77,7 +156,10 @@
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
-            "args": ["tests/", "-v"],
+            "args": [
+                "tests/",
+                "-v"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         },
@@ -86,7 +168,10 @@
             "type": "debugpy",
             "request": "launch",
             "module": "pytest",
-            "args": ["${file}", "-v"],
+            "args": [
+                "${file}",
+                "-v"
+            ],
             "justMyCode": true,
             "console": "integratedTerminal"
         }

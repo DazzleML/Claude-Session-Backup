@@ -4318,7 +4318,7 @@ def _cmd_set_show_boot(args, json_mode) -> int:
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
                     "purged", "is_fork", "in_index", "messages",
-                    "live_status", "pid",
+                    "live_status", "pid", "recorded_pid", "pid_at",
                 )}
                 for m in members
             ],
@@ -4419,7 +4419,7 @@ def _cmd_set_show_current(args, json_mode) -> int:
                     "start_folder", "started_at", "last_active_at",
                     "purged", "is_fork", "in_index", "messages",
                     "source",
-                    "live_status", "pid",
+                    "live_status", "pid", "recorded_pid", "pid_at",
                 )}
                 for m in members
             ],
@@ -6696,6 +6696,13 @@ def _materialize_current_roster(config) -> dict:
             "messages": session.get("message_count"),
             "live_status": "running" if pid is not None else "unverified",
             "pid": pid,
+            # RECORDED vs VERIFIED are different facts, and collapsing
+            # them costs real diagnosis time: `pid: null` alone cannot
+            # distinguish "the hook never captured a host" from
+            # "captured one, but it no longer verifies" -- which point
+            # at opposite bugs (capture path vs a stale/transient pid).
+            "recorded_pid": entry.get("pid"),
+            "pid_at": entry.get("pid_at"),
         })
         pairs.append((members[-1], entry))
     liveness.arbitrate_pid_claims(pairs)
@@ -6776,6 +6783,8 @@ def _materialize_boot_roster(config):
     for m in members:
         indexed_ids.add(m["session_id"])
         entry = registry_ids.get(m["session_id"])
+        m["recorded_pid"] = entry.get("pid") if entry is not None else None
+        m["pid_at"] = entry.get("pid_at") if entry is not None else None
         if entry is not None:
             pid = liveness.verify_entry(scan, entry, m["session_name"])
             m["live_status"] = "running" if pid is not None else "unverified"
@@ -6815,6 +6824,8 @@ def _materialize_boot_roster(config):
             "messages": session.get("message_count"),
             "live_status": "running" if pid is not None else "unverified",
             "pid": pid,
+            "recorded_pid": entry.get("pid"),
+            "pid_at": entry.get("pid_at"),
         })
         pairs.append((members[-1], entry))
     liveness.arbitrate_pid_claims(pairs)
