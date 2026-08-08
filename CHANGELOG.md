@@ -9,6 +9,11 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.5] -- 2026-08-07 (beta)
+
+### Added
+- **`csb setup update` + plugin drift detection.** The plugin delivers the hook scripts, so a stale install silently withholds hook-side features -- it happened on the maintainer's own machine, three releases running. `csb status` now carries a `Plugin:` line (green when current, a yellow drift line naming the fix, calm "not installed (optional)" for CLI-only users -- detection is filesystem-only, never a subprocess), and `csb setup update` runs the unmemorable `claude plugin update name@marketplace` incantation for you, reporting before/after and the fact users doubt: no session restarts needed. The plugin spec now lives in exactly one place in the code.
+
 ## [0.9.4] -- 2026-08-07 (beta)
 
 ### Added
@@ -1308,7 +1313,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.5...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

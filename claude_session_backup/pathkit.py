@@ -137,6 +137,12 @@ class ClaudePaths:
     #                                       evidence; lives under CSB_LOGS.
     #                                       The filename IS the source marker
     #                                       (scheduled vs hook runs)
+    # The plugin's identity (#75 U5): the incantation lives HERE and only
+    # here -- the update wrapper, the status drift line, and the setup
+    # checklist all read these.
+    PLUGIN_NAME: ClassVar[str] = "claude-session-backup"
+    PLUGIN_MARKETPLACE: ClassVar[str] = "dazzle-claude-session-backup"
+    PLUGIN_SPEC: ClassVar[str] = PLUGIN_NAME + "@" + PLUGIN_MARKETPLACE
 
     # Provenance sets for programmatic "is this optional for this user?"
     # reasoning (diagnostics, future doctor command). Must partition the
@@ -203,6 +209,14 @@ class ClaudePaths:
         """``<root>/csb-logs/schedule.log`` -- the #69 run-log; one owner
         for the path every ScheduleSpec bakes in and every status reads."""
         return self.root / self.CSB_LOGS / self.SCHEDULE_LOG
+
+    @property
+    def plugin_cache(self) -> Path:
+        """``<root>/plugins/cache/<marketplace>/<plugin>/`` -- Claude
+        Code's installed-plugin versions, one directory per version
+        (#75: the subprocess-free drift-detection source)."""
+        return (self.root / self.PLUGINS / "cache"
+                / self.PLUGIN_MARKETPLACE / self.PLUGIN_NAME)
 
     @property
     def gitattributes(self) -> Path:

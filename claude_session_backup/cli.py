@@ -272,6 +272,23 @@ def build_parser():
     # (bare `csb setup` keeps its exact behavior; installing OS persistence
     # always takes this explicit extra word -- AC-17).
     setup_sub = p_setup.add_subparsers(dest="setup_action", metavar="<action>")
+    p_setup_update = setup_sub.add_parser(
+        "update",
+        help="Update the installed csb plugin (the hook scripts) via the "
+             "claude CLI -- no incantation to remember",
+        description=(
+            "Refresh the installed Claude Code plugin to the current csb "
+            "version. The plugin ships the hook scripts (automatic "
+            "backups, the Live Session Registry, host-pid capture), so a "
+            "stale plugin silently withholds new hook-side behavior -- "
+            "`csb status` shows the drift. Runs `claude plugin update "
+            "claude-session-backup@dazzle-claude-session-backup` for you "
+            "and reports the before/after versions. No session restarts "
+            "are needed afterwards: hooks resolve the installed plugin "
+            "at fire time."
+        ),
+    )
+    _add_common_flags(p_setup_update)
     p_setup_schedule = setup_sub.add_parser(
         "schedule",
         help="Install a scheduled `csb backup` in the OS scheduler "

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -533,8 +534,8 @@ def _style_print(segments, err=False):
 # enhances csb (richer `csb search` channels via .convo/.sesslog
 # transcripts, session-name enrichment) -- csb backs up and restores its
 # files, so setup surfaces it as a considered choice, not a requirement.
-_PLUGIN_KEY = "claude-session-backup@dazzle-claude-session-backup"
-_MARKETPLACE_KEY = "dazzle-claude-session-backup"
+_PLUGIN_KEY = ClaudePaths.PLUGIN_SPEC          # one home: pathkit (#75 U5)
+_MARKETPLACE_KEY = ClaudePaths.PLUGIN_MARKETPLACE
 _LOGGER_PLUGIN_KEY = "session-logger@dazzle-claude-plugins"
 _LOGGER_MARKETPLACE_KEY = "dazzle-claude-plugins"
 _LOGGER_MARKETPLACE_REPO = "DazzleML/claude-session-logger"
@@ -638,7 +639,17 @@ def _setup_checklist(config, claude_dir, repo_note):
 
     marketplace, plugin = _plugin_status(claude_dir)
     if marketplace and plugin:
-        _checklist_done("auto-backup plugin", f"{_PLUGIN_KEY} installed")
+        # Drift surfaces here too (#75 U3): installed-but-stale withholds
+        # hook-side fixes just as surely as not-installed withholds hooks.
+        from ._version import get_base_version
+        installed_ver = installed_plugin_version(claude_dir)
+        if installed_ver is not None and installed_ver != get_base_version():
+            _checklist_todo(
+                "auto-backup plugin",
+                f"({installed_ver} installed -- csb is {get_base_version()})")
+            _checklist_cmd("csb setup update")
+        else:
+            _checklist_done("auto-backup plugin", f"{_PLUGIN_KEY} installed")
     else:
         _checklist_todo("auto-backup plugin", "(fires on PreCompact + SessionEnd)")
         if not marketplace:
@@ -833,6 +844,8 @@ def cmd_setup(args) -> int:
     # takes this explicit extra word (AC-17).
     if getattr(args, "setup_action", None) == "schedule":
         return cmd_setup_schedule(args)
+    if getattr(args, "setup_action", None) == "update":
+        return cmd_setup_update(args)
 
     config = _get_config(args)
     claude_dir = config["claude_dir"]
@@ -1118,6 +1131,89 @@ def _schedule_status_report(backend, config) -> int:
                    "not-installed": "yellow"}.get(verdict.state)
     _style_print([("  Verdict:         ", None), (verdict.detail, state_style)])
     return 0
+
+
+def installed_plugin_version(claude_dir):
+    """Newest installed csb-plugin version from the cache layout, or None.
+
+    Filesystem-only by design (#75 U2): drift detection must stay fast
+    and never depend on the claude CLI. Tolerates a missing tree
+    (CLI-only users are first-class -> None, never a warning),
+    unparseable directory names (skipped), and multiple cached versions
+    (numeric max wins).
+    """
+    cache = ClaudePaths.from_dir(claude_dir).plugin_cache
+    best = None
+    best_key = None
+    try:
+        entries = list(cache.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.is_dir():
+            continue
+        try:
+            key = tuple(int(part) for part in entry.name.split("."))
+        except ValueError:
+            continue
+        if best_key is None or key > best_key:
+            best_key, best = key, entry.name
+    return best
+
+
+def cmd_setup_update(args) -> int:
+    """`csb setup update` -- refresh the installed plugin (#75).
+
+    The plugin delivers the hook scripts, and this week proved staleness
+    is not cosmetic (pid capture shipped twice via plugin updates the
+    user had to incant by hand). Wrapper semantics (U4): honest
+    degradations with the exact manual commands, the claude CLI's own
+    output as the progress UI, and the one fact users doubt afterwards
+    stated plainly (no restarts needed).
+    """
+    from ._version import get_base_version
+
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    spec = ClaudePaths.PLUGIN_SPEC
+
+    installed = installed_plugin_version(claude_dir)
+    if installed is None:
+        print("The csb plugin is not installed -- nothing to update.")
+        print("  Install it (registers the backup + registry hooks):",
+              file=sys.stderr)
+        print('    claude plugin marketplace add '
+              '"DazzleML/Claude-Session-Backup"', file=sys.stderr)
+        print(f"    claude plugin install {spec}", file=sys.stderr)
+        return 3
+
+    claude_cli = shutil.which("claude")
+    if claude_cli is None:
+        print("The `claude` CLI is not on PATH -- run the update from a "
+              "shell where it is:", file=sys.stderr)
+        print(f"  claude plugin update {spec}", file=sys.stderr)
+        return 3
+
+    print(f"Installed plugin: {installed}  (csb is {get_base_version()})")
+    try:
+        result = subprocess.run([claude_cli, "plugin", "update", spec],
+                                timeout=120, check=False)
+    except subprocess.TimeoutExpired:
+        print("`claude plugin update` timed out after 120s.",
+              file=sys.stderr)
+        return 1
+    after = installed_plugin_version(claude_dir)
+    if result.returncode == 0:
+        if after != installed:
+            print(f"Updated: {installed} -> {after}")
+        else:
+            print(f"Already current: {after}")
+        print("  No session restarts needed -- hooks resolve the "
+              "installed plugin at fire time.", file=sys.stderr)
+        return 0
+    print(f"`claude plugin update` exited {result.returncode} -- its "
+          "output above has the detail.", file=sys.stderr)
+    return result.returncode or 1
 
 
 def cmd_setup_schedule(args) -> int:
@@ -1846,6 +1942,25 @@ def cmd_status(args) -> int:
                 ])
             if n > limit:
                 print(f"    + {n - limit} more not shown")
+
+    # Plugin drift (#75 U3): report-surface only, never an ambient nag.
+    # The plugin delivers the hook scripts, so staleness decides whether
+    # liveness features actually arrive.
+    try:
+        from ._version import get_base_version
+
+        installed = installed_plugin_version(claude_dir)
+        base = get_base_version()
+        if installed is None:
+            _sline("Plugin", "not installed (optional -- hook automation "
+                   "off)", "dim")
+        elif installed == base:
+            _sline("Plugin", f"{installed} (current)", "green")
+        else:
+            _sline("Plugin", f"{installed} installed -- csb is {base}; "
+                   "run `csb setup update`", "yellow")
+    except Exception:  # noqa: BLE001 -- ambient line is best-effort
+        pass
 
     # Scheduled backup (#69 AC-15): one ambient line, the three-layer
     # verdict behind it. A probe failure never breaks `csb status`.
