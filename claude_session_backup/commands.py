@@ -3959,6 +3959,46 @@ def _named_set_roster(conn, entry):
     return members
 
 
+def _annotate_named_set_liveness(config, members) -> int:
+    """Tag a NAMED set's members with live status. Returns the open count.
+
+    `csb set list` already reports "(N open now)" per named set; this is
+    what lets `csb set show <name>` say WHICH ones, in the same tiers the
+    live views use.
+
+    REGISTRY-FIRST, so a set with nothing open pays nothing: the entry
+    glob is ~free and gates the 1-2s process scan entirely.
+
+    Only TWO tiers are honest here. A named set is not boot-scoped, so a
+    member absent from the registry usually just means "not open right
+    now" -- the normal resting state of a curated group -- and rendering
+    `boot`'s `[exited]` for it would claim an observed close that never
+    happened. Absent members stay unadorned; the same rule the reclaim
+    menu already applies (available = not in the registry).
+    """
+    from . import liveness
+
+    entries = {e["session_id"]: e for e in _live_entries(config)}
+    if not entries:
+        return 0
+    matched = [m for m in members if m["session_id"] in entries]
+    if not matched:
+        return 0
+
+    scan = liveness.scan()
+    pairs = []
+    for m in matched:
+        entry = entries[m["session_id"]]
+        pid = liveness.verify_entry(scan, entry, m.get("session_name"))
+        m["live_status"] = "running" if pid is not None else "unverified"
+        m["pid"] = pid
+        pairs.append((m, entry))
+    # One pid belongs to one row (#72): a fork's frozen command line can
+    # name its parent, and both may sit in this set.
+    liveness.arbitrate_pid_claims(pairs)
+    return sum(1 for m in matched if m.get("live_status") == "running")
+
+
 def _materialize_set_roster(config, name):
     """The canonical roster for a set -- epoch (`last`) or named (#63).
 
@@ -4207,9 +4247,13 @@ def _materialize_set_roster(config, name):
     init_schema(conn)
     members = _named_set_roster(conn, entry)
     conn.close()
+    # Live tiers ride the materializer, so `resume --set NAME` and
+    # `--from NAME` see the same liveness `show` displays.
+    open_count = _annotate_named_set_liveness(config, members)
     return {
         "kind": "named", "name": stored, "epoch": None,
         "members": members, "missing_timestamps": 0,
+        "open_count": open_count,
         "created_at": entry.get("created_at"),
         "updated_at": entry.get("updated_at"),
         "promoted_from": entry.get("promoted_from"),
@@ -4467,12 +4511,15 @@ def _cmd_set_show_named(args, name, json_mode) -> int:
             "created_at": roster.get("created_at"),
             "updated_at": roster.get("updated_at"),
             "promoted_from": roster.get("promoted_from"),
+            "open_count": roster.get("open_count", 0),
             "members": [
-                {k: m[k] for k in (
+                {**{k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
                     "purged", "is_fork", "in_index", "messages",
-                )}
+                )},
+                 "live_status": m.get("live_status"),
+                 "pid": m.get("pid")}
                 for m in members
             ],
             "missing_timestamps": 0,
@@ -4485,6 +4532,9 @@ def _cmd_set_show_named(args, name, json_mode) -> int:
         (f"Set '{stored}'", "bold"),
         (f" -- {count} {noun}", "dim"),
     ]]
+    open_count = roster.get("open_count", 0)
+    if open_count:
+        header[0].append((f" ({open_count} open now)", "green"))
     promoted = roster.get("promoted_from")
     if promoted:
         # Provenance (R3 H5): where the freeze came from -- the token at
@@ -4510,6 +4560,16 @@ def _cmd_set_show_named(args, name, json_mode) -> int:
             f"Note: {unresolved} {noun} no longer in the index -- purged "
             "beyond recovery, or the index needs `csb update rebuild-index`."
         )
+    # A running member's plain resume hint would invite a second client
+    # onto one live transcript; branch instead (same rule as `current`).
+    from .set_render import _resume_hint_target, ambiguous_names_in
+    ambiguous = ambiguous_names_in(members)
+    for m in members:
+        if m.get("live_status") == "running":
+            m["hint_override"] = (
+                f"csb resume {_resume_hint_target(m, ambiguous)} "
+                "-- --fork-session"
+            )
     render_roster(members, header, footer_notes=tuple(footers),
                   shutdown_utc=None)
     return 0

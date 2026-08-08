@@ -64,6 +64,8 @@ csb resume CSB-STACK:3                      # open member 3 here
 
 A set promoted from an epoch remembers its source: `promoted from 'last~2' (shutdown ...)` -- provenance that stays true as that epoch's address drifts deeper into history. The reclaim menu is driven by liveness, not stored progress: exiting a session puts it back on the list, because its clean close erased its registry entry.
 
+A named set's roster shows **which members are open right now** (`4 members (3 open now)`), with the same `[running]` / `[no exit observed]` tiers the live views use and a branching hint on running rows. Only those two tiers appear: a named set is not tied to a boot, so a member that simply is not open stays unadorned -- absence here means "not open right now", never an observed close.
+
 ## Naming
 
 Set names follow the same conventions as session names (see [naming.md](naming.md)). The grammar reserves `last`, `current`, `boot`, `set`, bare integers, `last~N`, and bare-date shapes (`2026-8-9`) -- suffixed forms like `2026-8-9__release-day` stay legal.

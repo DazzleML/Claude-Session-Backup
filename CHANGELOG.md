@@ -9,6 +9,11 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.8] -- 2026-08-08 (beta)
+
+### Added
+- **`csb set show <name>` shows which members are open.** `csb set list` already reported `(N open now)` per named set, but the roster itself showed no liveness -- the one view in the family without it. Named-set rows now carry the same evidence tiers the live views use, the header repeats the open count, and a running member's hint branches (`-- --fork-session`) instead of inviting a second client onto one live transcript. Two tiers only: a named set is not boot-scoped, so a member simply not open right now stays unadorned rather than claiming an observed close. Costs nothing when nothing is open -- the registry check gates the process scan.
+
 ## [0.9.7] -- 2026-08-07 (beta)
 
 ### Changed
@@ -1323,7 +1328,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.8...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

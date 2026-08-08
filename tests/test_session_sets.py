@@ -448,3 +448,119 @@ class TestCliCrud:
         assert "csb set show boot" not in out
         assert _run(env, "set", "list", "--json") == 0
         assert json.loads(capsys.readouterr().out)["boot"] is None
+
+
+class TestNamedSetLiveness:
+    """`csb set show <name>` tells you WHICH members are open.
+
+    `csb set list` already reported "(N open now)" per named set; the
+    roster itself showed nothing -- the one view in the family without
+    liveness. Two tiers only: a named set is not boot-scoped, so absence
+    from the registry means "not open right now", never `boot`'s
+    observed-close `[exited]`.
+    """
+
+    def _boot_at_epoch(self, monkeypatch):
+        from datetime import datetime, timezone
+
+        import claude_session_backup.live_registry as lr
+        monkeypatch.setattr(lr, "current_boot_utc",
+                            lambda: datetime(2020, 1, 1,
+                                             tzinfo=timezone.utc))
+
+    def test_running_member_is_tagged_and_gets_the_fork_hint(
+            self, env, capsys, monkeypatch):
+        """RED-GREEN anchor: a process-verified member wears [running],
+        and its hint branches instead of inviting a second client onto
+        one live transcript."""
+        import claude_session_backup.live_registry as lr
+        import claude_session_backup.liveness as lv
+        _run(env, "set", "new", "CSB-STACK", "ALPHA__session",
+             "BETA__session")
+        capsys.readouterr()
+        lr.record_session_start(env.claude_dir, UUID_A)
+        self._boot_at_epoch(monkeypatch)
+        monkeypatch.setattr(lv, "scan",
+                            lambda: lv.LiveScan(by_uuid={UUID_A.lower(): 4242},
+                                                ok=True))
+        assert _run(env, "set", "show", "CSB-STACK") == 0
+        out = capsys.readouterr().out
+        assert "(3 open now)" not in out
+        assert "(1 open now)" in out
+        alpha_line = next(ln for ln in out.splitlines()
+                          if "ALPHA__session" in ln and "[running]" in ln)
+        assert alpha_line
+        assert "csb resume ALPHA__session -- --fork-session" in out
+
+    def test_absent_member_is_unadorned_never_exited(self, env, capsys,
+                                                     monkeypatch):
+        """The honest-tier rule: a curated set's member that simply is
+        not open now must not claim an observed close."""
+        import claude_session_backup.live_registry as lr
+        import claude_session_backup.liveness as lv
+        _run(env, "set", "new", "CSB-STACK", "ALPHA__session",
+             "BETA__session")
+        capsys.readouterr()
+        lr.record_session_start(env.claude_dir, UUID_A)
+        self._boot_at_epoch(monkeypatch)
+        monkeypatch.setattr(lv, "scan",
+                            lambda: lv.LiveScan(by_uuid={UUID_A.lower(): 4242},
+                                                ok=True))
+        assert _run(env, "set", "show", "CSB-STACK") == 0
+        out = capsys.readouterr().out
+        assert "[exited]" not in out
+        beta_line = next(ln for ln in out.splitlines()
+                         if "BETA__session" in ln)
+        assert "[running]" not in beta_line
+        assert "[no exit observed]" not in beta_line
+
+    def test_registry_only_member_is_unverified(self, env, capsys,
+                                                monkeypatch):
+        import claude_session_backup.live_registry as lr
+        import claude_session_backup.liveness as lv
+        _run(env, "set", "new", "CSB-STACK", "ALPHA__session")
+        capsys.readouterr()
+        lr.record_session_start(env.claude_dir, UUID_A)
+        self._boot_at_epoch(monkeypatch)
+        monkeypatch.setattr(lv, "scan", lambda: lv.LiveScan(ok=True))
+        assert _run(env, "set", "show", "CSB-STACK") == 0
+        out = capsys.readouterr().out
+        assert "[no exit observed]" in out
+        assert "(1 open now)" not in out   # unverified is not "open now"
+
+    def test_nothing_open_costs_no_process_scan(self, env, capsys,
+                                                monkeypatch):
+        """Registry-first: the ~free entry glob gates the 1-2s scan, so
+        a set with nothing open pays nothing."""
+        import claude_session_backup.liveness as lv
+
+        def forbidden_scan():
+            raise AssertionError("scan must not run without a registry hit")
+
+        monkeypatch.setattr(lv, "scan", forbidden_scan)
+        _run(env, "set", "new", "CSB-STACK", "ALPHA__session")
+        capsys.readouterr()
+        assert _run(env, "set", "show", "CSB-STACK") == 0
+        out = capsys.readouterr().out
+        assert "[running]" not in out
+        assert "open now" not in out
+
+    def test_json_carries_tiers_and_open_count(self, env, capsys,
+                                               monkeypatch):
+        import claude_session_backup.live_registry as lr
+        import claude_session_backup.liveness as lv
+        _run(env, "set", "new", "CSB-STACK", "ALPHA__session",
+             "BETA__session")
+        capsys.readouterr()
+        lr.record_session_start(env.claude_dir, UUID_A)
+        self._boot_at_epoch(monkeypatch)
+        monkeypatch.setattr(lv, "scan",
+                            lambda: lv.LiveScan(by_uuid={UUID_A.lower(): 4242},
+                                                ok=True))
+        assert _run(env, "set", "show", "CSB-STACK", "--json") == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["open_count"] == 1
+        by_id = {m["session_id"]: m for m in payload["members"]}
+        assert by_id[UUID_A]["live_status"] == "running"
+        assert by_id[UUID_A]["pid"] == 4242
+        assert by_id[UUID_B]["live_status"] is None
