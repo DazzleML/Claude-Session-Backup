@@ -201,7 +201,7 @@ class TestPromotion:
 
 class TestResumeSetCurrent:
     def test_index_addressing_into_current(self, env):
-        assert _run(env, "resume", "--set", "current", "2") == 0
+        assert _run(env, "resume", "--set", "current:2") == 0
         calls = _claude_calls(env)
         assert len(calls) == 1
         assert calls[0][2] == UUID_UNV
@@ -209,7 +209,7 @@ class TestResumeSetCurrent:
     def test_unindexed_member_still_launches(self, env):
         """A fresh session csb has not indexed yet is still resumable --
         claude --resume works regardless of csb's index."""
-        assert _run(env, "resume", "--set", "current", "3") == 0
+        assert _run(env, "resume", "--set", "current:3") == 0
         calls = _claude_calls(env)
         assert calls[0][2] == UUID_NEW
 
@@ -236,7 +236,7 @@ class TestReclaimMenu:
         assert "1 available to reclaim" in out
         assert "CLOSED__session" in out
         assert "RUNNING__session" not in out          # open -> hidden
-        assert "csb resume --set WORK 2" in out          # canonical index kept
+        assert "csb resume --set WORK:2" in out          # canonical index kept
         assert _claude_calls(env) == []                # menu launches nothing
 
     def test_exit_returns_a_member_to_the_menu(self, env, capsys):

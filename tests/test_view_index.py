@@ -107,6 +107,18 @@ class TestViewIndexGrammar:
         assert [m["session_id"] for m in entry["members"]] == [UUID_NOTES]
         assert "->" not in capsys.readouterr().out  # no view-grab echo
 
+    def test_exact_name_beats_a_matching_set_prefix(self, env, capsys):
+        """Name-first everywhere (the grammar unification): even WITH a
+        set named `notes`, the session literally named `notes:1` wins the
+        bare token. (Flips V1's original edge, where the set prefix
+        outranked the name; user-created names always beat promoted
+        grammar.)"""
+        create_set(env.claude_dir, "notes", [UUID_DEEP])
+        assert _run(env, "set", "new", "SHADOW", "notes:1") == 0
+        entry = get_set(env.claude_dir, "SHADOW")
+        assert [m["session_id"] for m in entry["members"]] == [UUID_NOTES]
+        assert "->" not in capsys.readouterr().out  # name path, no echo
+
     def test_out_of_range_aborts_whole_create(self, env, capsys):
         """The half-built-set rule: boot:99 fails -> NO set exists."""
         rc = _run(env, "set", "new", "BROKEN", "NEW__session", "boot:99")

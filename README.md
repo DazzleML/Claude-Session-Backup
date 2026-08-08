@@ -98,7 +98,7 @@ csb set show last               # What was active before the last shutdown (rest
 csb set show current            # What is open right now (live registry)
 csb distill <query>             # Read a session as a chat log -> ~/.claude/distilled/
 csb resume <query>              # Reopen in Claude Code (UUID, prefix, name, keyword...)
-csb resume --set <N>            # Reclaim member N of a set, in THIS terminal
+csb resume last:3               # Reclaim member 3 of that epoch, in THIS terminal
 csb view <query>                # Open in Claude Code History Viewer
 csb restore <session-id>        # Recover a deleted session from git history
 csb status                      # Summary stats
@@ -138,7 +138,7 @@ The patterns that come up every day:
 # boot epoch: every session active before the last shutdown, as a
 # numbered roster with a paste-able resume command per row.
 csb set show last
-csb resume --set 2              # reclaim member 2 of that roster
+csb resume last:2               # reclaim member 2 of that roster
 csb set show current            # ...and what is open RIGHT NOW
 csb list -n 5                   # manual fallback: recent activity
 

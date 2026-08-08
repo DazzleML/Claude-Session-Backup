@@ -626,9 +626,13 @@ def build_parser():
             "`claude --resume <uuid>`. Forward extra args to claude after `--`:\n\n"
             "  csb resume <query>                    resume it\n"
             "  csb resume <query> -- --fork-session  resume + forward --fork-session to claude\n\n"
-            "Index addressing via --set (numbers from `csb set show`):\n\n"
-            "  csb resume --set 3                    member 3 of the last boot epoch\n"
-            "  csb resume --set NAME 3               member 3 of a named set\n"
+            "Roster addressing (numbers from `csb set show`, same tokens\n"
+            "`csb set add` takes; an exact session NAME always wins):\n\n"
+            "  csb resume last:3                     member 3 of the last epoch\n"
+            "  csb resume NAME:3                     member 3 of a named set\n"
+            "  csb resume --set last:3               the explicit lane -- always the\n"
+            "                                        member, even if a session is\n"
+            "                                        literally named 'last:3'\n"
             "  csb resume --set NAME                 the reclaim menu: who is NOT open\n\n"
             "Everything after `--` is passed verbatim to claude (don't re-pass\n"
             "--resume / -r -- csb already supplies it)."
@@ -640,22 +644,28 @@ def build_parser():
         "session_id", metavar="query", nargs="?", default=None,
         help="Session UUID/prefix, exact session NAME, .jsonl path, folder, "
              "sesslog dir name, or keyword (every format csb view "
-             "accepts; a superset of claude --resume's native surface). "
-             "With --set, this is the roster NUMBER instead.",
+             "accepts; a superset of claude --resume's native surface) -- "
+             "or a `view-or-set:N` roster token: `csb resume last:3` = "
+             "member 3 of the last epoch (same tokens `csb set add` "
+             "takes). An exact session NAME always wins over a token.",
     )
-    # Index addressing (#63, re-grammared in Phase 6 R1): --set replaced
-    # the old `set` sentinel so no session name is ever shadowed -- a
-    # session literally named `set` resumes plainly. nargs="?" with
-    # const="last" keeps the short form: `csb resume --set 3` = member 3
-    # of the last epoch. The `--` split still precedes parsing, so
-    # `csb resume --set 2 -- --fork-session` forwards.
+    # Roster addressing (grammar unification): ONE token vocabulary,
+    # `view-or-set:N`, spoken bare (names win first) or after --set (the
+    # fully-qualified lane: set vocabulary only, never a session name).
+    # nargs="?" with const="" makes bare `--set` detectable so it can
+    # error with the token spelling -- the old implicit-`last` forms
+    # (`--set 3`, `--set NAME 3`) are retired as ambiguous. The `--`
+    # split still precedes parsing, so
+    # `csb resume last:2 -- --fork-session` forwards.
     p_resume.add_argument(
-        "--set", dest="from_set", nargs="?", const="last", default=None,
-        metavar="NAME",
-        help="Address a set by roster number: `--set 3` = member 3 of the "
-             "last boot epoch; `--set NAME 3` = member 3 of NAME; bare "
-             "`--set NAME` lists who is NOT currently open (the reclaim "
-             "menu). Numbers are canonical positions from `csb set show`.",
+        "--set", dest="from_set", nargs="?", const="", default=None,
+        metavar="NAME[:N]",
+        help="The explicit set-vocabulary lane: `--set last:3` = member 3 "
+             "of the last epoch even if a session is literally named "
+             "'last:3'; `--set NAME` lists who is NOT currently open (the "
+             "reclaim menu). Bare tokens work too (`csb resume last:3`) "
+             "when no session name collides. Numbers are canonical "
+             "positions from `csb set show`.",
     )
     # Pruned-session handling (v0.3.14, #34): if the session has deleted_at
     # set, Claude Code can't resume it (JSONL missing). These flags control
@@ -1132,7 +1142,7 @@ def build_parser():
         help="Epoch view only: narrow to members that were provably open "
              "at the shutdown (from the live-registry boundary snapshot). "
              "A display filter -- indices keep their canonical values, so "
-             "gaps are expected and `csb resume --set <N>` still matches.",
+             "gaps are expected and `csb resume last:<N>` still matches.",
     )
 
     # csb set new / list / add / rm -- named sets (#62)

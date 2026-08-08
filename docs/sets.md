@@ -40,8 +40,8 @@ The asymmetry is the design: a clean close *erases*; an unclean one *testifies*.
 ```bash
 csb set list                      # which epochs are addressable?
 csb set show last                 # the roster: who was active before the restart
-csb resume --set 2                # reclaim member 2, in THIS terminal
-csb resume --set last 2 -- --fork-session    # or branch it instead
+csb resume last:2                 # reclaim member 2, in THIS terminal
+csb resume last:2 -- --fork-session          # or branch it instead
 ```
 
 csb never spawns a terminal, window, or tab -- you choose where each session lands. Roster numbers are canonical: `--window` narrows what is *shown* (gaps, never renumbering), so the number you read always addresses the session you meant. `--open` narrows to members a boundary snapshot proves were open at the shutdown -- exact within the retained history (five boundaries), honestly absent beyond it.
@@ -59,7 +59,7 @@ csb set add CSB-STACK <session>             # extend
 csb set new TUESDAY --from 2026-7-15        # freeze a whole epoch
 csb set new NOW --from current              # freeze what is open right now
 csb resume --set CSB-STACK                  # the reclaim menu: what is NOT open yet
-csb resume --set CSB-STACK 3                # open member 3 here
+csb resume CSB-STACK:3                      # open member 3 here
 ```
 
 A set promoted from an epoch remembers its source: `promoted from 'last~2' (shutdown ...)` -- provenance that stays true as that epoch's address drifts deeper into history. The reclaim menu is driven by liveness, not stored progress: exiting a session puts it back on the list, because its clean close erased its registry entry.

@@ -126,6 +126,11 @@ out/
 .secret
 credentials.json
 *auth*.json
+# ...but the PUBLIC checklist directory is never a secret store: a
+# checklist legitimately named after a feature ("resume tokens") must
+# not be silently swallowed by the hygiene patterns above. Last match
+# wins, so this re-includes everything under it.
+!tests/checklists/**
 *config*.json
 
 # Project-specific directories

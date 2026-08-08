@@ -65,8 +65,8 @@ csb set show <name>                   # A named set's roster
 csb set list                          # Every named set, plus the 'last' epoch
 csb set add <name> <session>...       # Extend a named set
 csb set rm <name> [<session>...]      # Remove members, or delete the set
-csb resume --set <N>                  # Reclaim member N of the last boot epoch
-csb resume --set <name> [<N>]         # Member N of a named set; omit N for the reclaim menu
+csb resume last:<N>                   # Reclaim member N of the last epoch
+csb resume <name>:<N>                 # Member N of a named set (--set <name> for its reclaim menu)
 csb status                            # Summary stats
 csb show <session-id>                 # Detailed session info with folder analysis
 csb search "query"                    # Search transcript content (USER/AI/AGENT messages)
@@ -256,7 +256,7 @@ csb set boot                          # `show` is implicit for any view or set n
 
 When a date matches two restarts, csb lists both with their exact `last~N` tokens and exits 2 -- a date is a human address, and picking silently would be a guess.
 
-Relative addresses seek the last **working** set: if `last~1` turns out empty (deep epochs thin out as their sessions get resumed later), the view shows its empty header and continues to the nearest deeper epoch that has members -- disclosed, never silently redirected -- and `csb resume --set last~1 <N>` addresses the roster you were actually shown. Dates stay exact: an empty answer to "what was I running that day" *is* the answer. When nothing deeper has members either, csb says so and names how far back the index's activity reaches.
+Relative addresses seek the last **working** set: if `last~1` turns out empty (deep epochs thin out as their sessions get resumed later), the view shows its empty header and continues to the nearest deeper epoch that has members -- disclosed, never silently redirected -- and `csb resume last~1:<N>` addresses the roster you were actually shown. Dates stay exact: an empty answer to "what was I running that day" *is* the answer. When nothing deeper has members either, csb says so and names how far back the index's activity reaches.
 
 ```
 Epoch 'last' -- shutdown 2026-07-25 16:16 UTC  [restart initiated by a process (update/restart)]  boot +45s
@@ -294,7 +294,7 @@ The registry also makes the **reclaim loop** whole:
 csb set new MY-GROUP --from current   # freeze what's open as a named set
 # ...machine restarts, sessions close, life happens...
 csb resume --set MY-GROUP             # the reclaim menu: who is NOT open yet
-csb resume --set MY-GROUP 2           # reopen one, in THIS terminal
+csb resume MY-GROUP:2                 # reopen one, in THIS terminal
 ```
 
 The menu lists only members not currently open -- **exiting a session puts it back** (its clean close erased its entry), and open members keep their numbers, so the gaps are the progress indicator. After a restart, the boundary sweep freezes what was open into a snapshot: `csb set show last` badges those rows `[open at shutdown]`, and `--open` narrows the view to them (canonical indices, as always).
@@ -324,30 +324,30 @@ Members resolve with csb's usual vocabulary (UUID or prefix, session name, path,
 
 A member that has left the index (purged beyond recovery, or an index needing a rebuild) is shown **marked, not dropped** — a set that quietly shrinks is a set that lies about what it holds.
 
-### Reclaiming a set: `csb resume --set <N>`
+### Reclaiming a set: `csb resume last:<N>`
 
 The roster's numbers are addresses. Reclaiming a set is a loop **you** drive, one window at a time:
 
 ```bash
 csb set show last            # read the numbered roster
                              # ...open your terminal, position the tab...
-csb resume --set 1           # reclaim member 1 -- here, in this window
+csb resume last:1            # reclaim member 1 -- here, in this window
                              # ...next window, your choice of emulator...
-csb resume --set 3
+csb resume last:3
 ```
 
 | Form | Means |
 |---|---|
-| `csb resume --set <N>` | member N of the most recent boot epoch |
-| `csb resume --set last~1 <N>` | member N of a historical epoch (dates work too) |
-| `csb resume --set <name> <N>` | member N of a named set |
+| `csb resume last:<N>` | member N of the most recent epoch |
+| `csb resume last~1:<N>` | member N of a historical epoch (dates work too) |
+| `csb resume <name>:<N>` | member N of a named set |
 | `csb resume --set <name>` | the reclaim menu: members not currently open |
 
-**csb never spawns a terminal, window, or tab.** `csb resume --set <N>` launches one session in the terminal you ran it from — exactly what `csb resume <query>` has always done. csb cannot know which emulator you use, where the tab belongs, or how you arrange things, and guessing wrong is worse than not guessing: you would have to close what you did not want.
+**csb never spawns a terminal, window, or tab.** `csb resume last:<N>` launches one session in the terminal you ran it from — exactly what `csb resume <query>` has always done. csb cannot know which emulator you use, where the tab belongs, or how you arrange things, and guessing wrong is worse than not guessing: you would have to close what you did not want.
 
-Everything after `--` still forwards, so `csb resume --set 2 -- --fork-session` branches from member 2 instead of resuming it.
+Everything after `--` still forwards, so `csb resume last:2 -- --fork-session` branches from member 2 instead of resuming it.
 
-**Numbers are stable.** An index is a position in the *full* roster, so `csb resume --set 3` means the same session today, tomorrow, and after the next restart. A narrower view (`--window`) changes what is *displayed*, never what a number addresses. This also settles a case names cannot: if two sessions share a name — easy to do across a project's branches — the name is ambiguous and the number is not.
+**Numbers are stable.** An index is a position in the *full* roster, so `csb resume last:3` means the same session today, tomorrow, and after the next restart. A narrower view (`--window`) changes what is *displayed*, never what a number addresses. This also settles a case names cannot: if two sessions share a name — easy to do across a project's branches — the name is ambiguous and the number is not.
 
 The `--set` flag keeps the query namespace clean: a session literally named `set` resumes plainly (`csb resume set`).
 

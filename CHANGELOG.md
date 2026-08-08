@@ -9,6 +9,11 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.7] -- 2026-08-07 (beta)
+
+### Changed
+- **BREAKING: one roster-addressing grammar -- `csb resume last:3`.** The `view-or-set:N` tokens the membership verbs already speak (`csb set add NAME boot:1`) now work directly as the resume query: `csb resume last:3`, `csb resume boot:2`, `csb resume MYSET:3` -- and an EXACT session name always wins over a token, so nothing you named can ever be shadowed (a session literally named `last:3` resumes as itself, with a one-line pointer at the qualified form). `--set` is reappropriated as the explicit set-vocabulary lane for exactly that collision case (`csb resume --set last:3` always means the member) and keeps the reclaim menu (`--set NAME`). The retired forms -- `--set 3` (whose bare number silently meant `last` when a reader could as easily assume `boot`), `--set NAME 3`, and bare `--set` -- now error with the exact token spelling. Membership verbs adopt the same name-first precedence (previously a set named `notes` outranked a session literally named `notes:1`; now the name wins there too, with the per-grab echo disclosing either way). Migration: `csb resume --set 2` -> `csb resume last:2`; `csb resume --set NAME 2` -> `csb resume NAME:2`.
+
 ## [0.9.6] -- 2026-08-07 (beta)
 
 ### Added
@@ -1318,7 +1323,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.7...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

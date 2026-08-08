@@ -231,7 +231,7 @@ Some shapes are rejected at creation, because the `csb set` grammar already clai
 | `last~N` (e.g. `last~1`) | epoch-history addresses (previous boots) |
 | bare dates (`2026-8-9`) | epoch date-addresses; `2026-8-9__topic` stays legal |
 | `set` | reserved for grammar safety around the `csb set` command family |
-| bare integers (`1`, `42`, `0042`) | collide with `csb resume --set <N>` index addressing |
+| bare integers (`1`, `42`, `0042`) | reserved for grammar safety around roster addressing |
 
 Near-misses are fine: `last-one`, `set-aside`, and `42-things` all work. Only the exact tokens are taken.
 

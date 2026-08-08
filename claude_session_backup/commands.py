@@ -3856,6 +3856,14 @@ def _resolve_membership_args(config, conn, queries):
     for token in queries:
         prefix, sep, suffix = token.rpartition(":")
         is_view_index = bool(sep) and suffix.isdigit()
+        # Name-first everywhere (the grammar unification): a session the
+        # user literally named like a token stays addressable by that
+        # name -- user-created names always beat promoted grammar in the
+        # bare namespace. (Flips V1's edge, where a set named `notes`
+        # outranked a session named `notes:1`; the per-grab echo makes
+        # the resolution visible either way.)
+        if is_view_index and _session_name_exists(conn, token):
+            is_view_index = False
         if is_view_index and prefix not in rosters:
             if (prefix in ("current", "boot")
                     or classify_epoch_token(prefix) is not None
@@ -3910,7 +3918,7 @@ def _named_set_roster(conn, entry):
     rather than dropped (#62 AC): a set that silently shrinks is a set
     that lies about what it holds. Indices are 1-based positions in the
     FULL member list -- the same stable-numbering contract the epoch
-    roster established, which `csb resume --set <N>` relies on.
+    roster established, which `csb resume last:<N>` relies on.
     """
     members = []
     for index, raw in enumerate(entry.get("members", []), start=1):
@@ -3954,7 +3962,7 @@ def _named_set_roster(conn, entry):
 def _materialize_set_roster(config, name):
     """The canonical roster for a set -- epoch (`last`) or named (#63).
 
-    One path serves `csb set show` and `csb resume --set <N>`, so an index
+    One path serves `csb set show` and `csb resume last:<N>`, so an index
     printed by the first always addresses the same session in the second.
 
     **This function takes no filter parameters, and that absence is the
@@ -5018,7 +5026,7 @@ def cmd_set_show(args) -> int:
                 "window_hours": round(window_hours, 1),
                 "window_source": window_source,
             },
-            # `index` is the CANONICAL position -- what `csb resume --set <N>`
+            # `index` is the CANONICAL position -- what `csb resume last:<N>`
             # addresses -- so a narrowed view yields gaps, never a
             # renumbering. roster_size is the unfiltered total.
             "display_window_hours": display_window,
@@ -5097,7 +5105,7 @@ def cmd_set_show(args) -> int:
             (f"Showing {len(members)} of {len(all_members)} -- "
              f"{narrow_desc}. ", None),
             ("Numbers stay canonical, so gaps are expected and "
-             "`csb resume --set` numbers still match.", "dim"),
+             "`csb resume last:<N>` numbers still match.", "dim"),
         ])
     if not members:
         for segs in header:
@@ -6446,6 +6454,33 @@ def _transcript_is_resumable(jsonl_full_path: Path) -> tuple[bool, str]:
     return True, ""
 
 
+def _split_set_token(config, token):
+    """``<view-or-set>:<N>`` -> ``(prefix, index_str)``, else None.
+
+    The ONE token grammar (#76 V1, promoted to resume): split on the
+    LAST colon; the suffix must be a bare integer AND the prefix must
+    resolve as a view (current/boot/last/last~K/date) or an existing
+    named set. Exact tests only -- no scoring, no guessing.
+    """
+    prefix, sep, suffix = token.rpartition(":")
+    if not (sep and suffix.isdigit() and prefix):
+        return None
+    if (prefix in ("current", "boot")
+            or classify_epoch_token(prefix) is not None
+            or session_sets.resolve_set_name(config["claude_dir"], prefix)
+            is not None):
+        return prefix, suffix
+    return None
+
+
+def _session_name_exists(conn, name: str) -> bool:
+    """Exact session-name match in the index (purged rows included --
+    a name the user gave ALWAYS wins the bare namespace)."""
+    return conn.execute(
+        "SELECT 1 FROM sessions WHERE session_name = ? LIMIT 1", (name,)
+    ).fetchone() is not None
+
+
 def cmd_resume(args) -> int:
     """Launch claude --resume with the full session UUID.
 
@@ -6453,32 +6488,99 @@ def cmd_resume(args) -> int:
     historical surface), exact session NAME (Claude Code's own /resume
     title semantics -- csb resolves it to the UUID, so Claude always
     receives the one format that is unconditionally direct), .jsonl path,
-    directory, sesslog folder name, or free-text keyword.
+    directory, sesslog folder name, or free-text keyword -- plus, since
+    the grammar unification, the SAME ``view-or-set:N`` tokens the
+    membership verbs take: ``csb resume last:3`` is member 3 of the last
+    epoch.
 
-    Index addressing rides ``--set`` (Phase 6 R1 -- it replaced the old
-    ``set`` sentinel so no session name is ever shadowed; a session
-    literally named ``set`` resumes plainly).
+    Two lanes, one grammar (the promotion principle):
+
+      bare    ``csb resume last:3``       names always win -- a session
+              literally NAMED ``last:3`` resumes as itself (with a
+              one-line pointer at the flag); otherwise the token fires.
+      --set   ``csb resume --set last:3`` the fully-qualified lane:
+              everything after the flag is set vocabulary, never a
+              session name. ``--set NAME`` (no index) is the reclaim
+              menu. The pre-unification forms (``--set 3``,
+              ``--set NAME 3``, bare ``--set``) error with the exact
+              token spelling -- bare integers were ambiguous (boot?
+              last?) and are gone.
     """
     # getattr: pre-R1 call sites and test namespaces lack the attribute.
     from_set = getattr(args, "from_set", None)
     query = getattr(args, "session_id", None)
     if from_set is not None:
-        # `--set 3` binds "3" as the flag VALUE; integers are reserved
-        # set names, so a digit-shaped from_set can only mean an index
-        # into `last`.
-        if from_set.isdigit() and query is None:
-            return _cmd_resume_set(args, "last", from_set)
-        return _cmd_resume_set(args, from_set, query)
+        config = _get_config(args)
+        if from_set == "":
+            print(
+                "--set needs a set-family word:\n"
+                "  csb resume --set last:3     member 3 of the last epoch\n"
+                "  csb resume --set NAME       the reclaim menu",
+                file=sys.stderr,
+            )
+            return 2
+        if from_set.isdigit():
+            print(
+                f"`--set {from_set}` was ambiguous (boot? last?) and is "
+                "retired -- name the view:\n"
+                f"  csb resume --set last:{from_set}\n"
+                f"  csb resume --set boot:{from_set}",
+                file=sys.stderr,
+            )
+            return 2
+        if query is not None:
+            if query.isdigit():
+                print(
+                    f"`--set {from_set} {query}` is retired -- use the "
+                    f"token form:\n  csb resume --set {from_set}:{query}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Unexpected argument '{query}' after --set "
+                    f"{from_set}.",
+                    file=sys.stderr,
+                )
+            return 2
+        token = _split_set_token(config, from_set)
+        if token is not None:
+            return _cmd_resume_set(args, token[0], token[1])
+        # Token-shaped but the prefix resolves to nothing: name the
+        # PREFIX as the missing set, not the whole token (sweep R1).
+        bad_prefix, bad_sep, bad_suffix = from_set.rpartition(":")
+        if bad_sep and bad_suffix.isdigit() and bad_prefix:
+            print(
+                f"No set named '{bad_prefix}' (from token '{from_set}'). "
+                "`csb set list` shows named sets and addressable epochs.",
+                file=sys.stderr,
+            )
+            return 1
+        return _cmd_resume_set(args, from_set, None)  # the reclaim menu
     if query is None:
         print(
-            "csb resume needs a session query, or --set for index "
-            "addressing.\n"
+            "csb resume needs a session query.\n"
             "  csb resume <query>          resume a session\n"
-            "  csb resume --set 3          member 3 of the last boot epoch\n"
+            "  csb resume last:3           member 3 of the last epoch\n"
             "  csb resume --set NAME       the reclaim menu",
             file=sys.stderr,
         )
         return 2
+    # The flagless ladder: (1) an exact session name always wins;
+    # (2) a set-vocabulary token; (3) the ordinary multi-modal search.
+    token_config = _get_config(args)
+    token = _split_set_token(token_config, query)
+    if token is not None:
+        conn = open_db(token_config["index_path"])
+        init_schema(conn)
+        shadowed = _session_name_exists(conn, query)
+        conn.close()
+        if not shadowed:
+            return _cmd_resume_set(args, token[0], token[1])
+        print(
+            f"note: resolved as the session named '{query}'; for member "
+            f"{token[1]} of '{token[0]}' use: csb resume --set {query}",
+            file=sys.stderr,
+        )
     return _resume_query(args, query)
 
 
@@ -6695,7 +6797,7 @@ def _filter_roster_for_display(members, shutdown_utc, window_hours):
     assigned in the canonical roster, so a narrowed view shows gaps
     (``1, 3, 5``) rather than renumbering -- the gaps are the honest
     signal that rows were filtered out, and they keep
-    `csb resume --set 3` meaning what the reader just saw.
+    `csb resume last:3` meaning what the reader just saw.
 
     A window wider than the epoch simply matches everything: there is
     nothing before the previous fence that belongs to *this* epoch.
@@ -6714,7 +6816,7 @@ def _filter_roster_for_display(members, shutdown_utc, window_hours):
 
 
 def _cmd_resume_set(args, set_name: str, index_token) -> int:
-    """`csb resume --set [NAME] [N]` -- reclaim member N of a set (#63/R1).
+    """Reclaim member N of a set -- `csb resume last:3` / `--set NAME:3`.
 
     Reclaiming a set is a loop the USER drives: read the roster, open a
     terminal where you want it, run this. csb supplies the addressing,
@@ -6737,9 +6839,8 @@ def _cmd_resume_set(args, set_name: str, index_token) -> int:
     except ValueError:
         print(
             f"'{index_token}' is not a roster number. Use the number shown "
-            f"by `csb set show {set_name}` -- and note the order: "
-            f"`csb resume --set {index_token} <N>` if "
-            f"'{index_token}' was meant as the set name.",
+            f"by `csb set show {set_name}`, in the token form: "
+            f"`csb resume --set {set_name}:<N>`.",
             file=sys.stderr,
         )
         return 2
@@ -6808,7 +6909,7 @@ def _reclaim_menu(args, set_name: str) -> int:
     Session Registry -- so exiting a session puts it back on this list,
     and resuming one (however: csb, bare `claude --resume`, anything
     that fires SessionStart) removes it. Indices stay canonical, so the
-    gaps ARE the progress indicator and `csb resume --set <name> <N>`
+    gaps ARE the progress indicator and `csb resume --set NAME:N`
     means the same thing before and after.
     """
     config = _get_config(args)
@@ -6846,7 +6947,7 @@ def _reclaim_menu(args, set_name: str) -> int:
              f"`csb set show {roster['name']}` shows everyone)", "dim"),
         ])
     for m in available:
-        m["hint_override"] = f"csb resume --set {roster['name']} {m['index']}"
+        m["hint_override"] = f"csb resume --set {roster['name']}:{m['index']}"
     _render(available, header, shutdown_utc=None)
     return 0
 
@@ -6977,7 +7078,7 @@ def _live_pid_for(config, session_id: str, session_name) -> Optional[int]:
 def _resume_session_row(args, config, session) -> int:
     """Launch ``claude --resume`` for an already-resolved session (#63).
 
-    Extracted so `csb resume <query>` and `csb resume --set <N>` share one
+    Extracted so `csb resume <query>` and `csb resume last:<N>` share one
     launcher rather than two. Everything that makes resume more than a
     subprocess call lives here -- the pruned-session restore offer, the
     live-session guard (#67), the transcript preflight, cwd derivation,
