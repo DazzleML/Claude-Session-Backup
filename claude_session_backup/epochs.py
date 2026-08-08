@@ -715,7 +715,7 @@ def epoch_window(
 
 
 def build_roster(
-    rows, lo: datetime, hi: datetime
+    rows, lo: datetime, hi: datetime, segments=None
 ) -> tuple[list[dict], int]:
     """Sessions with activity inside ``[lo, hi]`` -> (members, missing_count).
 
@@ -725,23 +725,50 @@ def build_roster(
     session_id for determinism, and numbered 1-based. ``missing_count``
     is the number of rows whose ``last_active_at`` could not be parsed:
     they are counted, never silently dropped (#61 AC).
+
+    ``segments`` (#80 S2) maps session_id -> list of ``(start, end,
+    messages)`` sitting tuples (aware UTC datetimes, oldest-first). A
+    session WITH segments is a member of every window one overlaps --
+    so it appears in every epoch its timeline really touched, and in
+    none it provably skipped -- and its row reports IN-WINDOW values:
+    ``last_active_at`` becomes the last in-window instant (clipped to
+    ``hi``), ``messages`` the in-window sitting sum. A session WITHOUT
+    segments (pre-migration, never re-scanned) keeps point-membership
+    on ``last_active_at`` exactly as before -- the S4 ladder, no cliff.
+    ``segment_backed`` marks which rung produced each row.
     """
     candidates: list[tuple[datetime, str, dict]] = []
     missing = 0
     for row in rows:
-        la = parse_index_ts(row["last_active_at"])
-        if la is None:
-            missing += 1
-            continue
-        if not (lo <= la <= hi):
-            continue
         sid = row["session_id"]
-        try:
-            # Substance stat; tolerated absent so callers with narrower
-            # row shapes (tests, older SELECTs) keep working.
-            messages = row["message_count"]
-        except (KeyError, IndexError):
-            messages = None
+        session_segments = segments.get(sid) if segments else None
+        if session_segments:
+            overlapping = [
+                (seg_start, seg_end, seg_messages)
+                for seg_start, seg_end, seg_messages in session_segments
+                if seg_start <= hi and seg_end >= lo
+            ]
+            if not overlapping:
+                continue
+            la = max(min(seg_end, hi) for _s, seg_end, _m in overlapping)
+            member_last_active = la.strftime("%Y-%m-%dT%H:%M:%SZ")
+            messages = sum(m for _s, _e, m in overlapping)
+            segment_backed = True
+        else:
+            la = parse_index_ts(row["last_active_at"])
+            if la is None:
+                missing += 1
+                continue
+            if not (lo <= la <= hi):
+                continue
+            member_last_active = row["last_active_at"]
+            try:
+                # Substance stat; tolerated absent so callers with
+                # narrower row shapes (tests, older SELECTs) keep working.
+                messages = row["message_count"]
+            except (KeyError, IndexError):
+                messages = None
+            segment_backed = False
         candidates.append(
             (
                 la,
@@ -752,13 +779,14 @@ def build_roster(
                     "project": row["project"],
                     "start_folder": row["start_folder"],
                     "started_at": row["started_at"],
-                    "last_active_at": row["last_active_at"],
+                    "last_active_at": member_last_active,
                     "jsonl_path": row["jsonl_path"],
                     "jsonl_mtime": row["jsonl_mtime"],
                     "purged": bool(row["deleted_at"]),
                     "is_fork": bool(row["is_fork"]),
                     "in_index": True,
                     "messages": messages,
+                    "segment_backed": segment_backed,
                 },
             )
         )

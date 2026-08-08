@@ -9,6 +9,11 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 
 ## [Unreleased]
 
+## [0.9.6] -- 2026-08-07 (beta)
+
+### Added
+- **Epoch rosters now read real activity timelines.** The index records every *sitting* (contiguous activity in a session's transcript, split at gaps over 10 minutes) in a new `session_activity` table, and epoch membership becomes segment-overlap: a session appears in every epoch it was genuinely active in -- so reactivating an old session no longer erases it from the epochs it really lived in -- and in none its timeline provably skipped. Per-row gap and message counts in epoch views are the in-window values. Boundary-snapshot members with no indexed activity in the window are appended and marked (`[open at shutdown -- no indexed activity in this window]`), never dropped. Backfill is immediate for live sessions: the first `csb backup` after upgrading records timelines for everything still on disk (the scanner already re-parses every live transcript per backup). Purged sessions keep the old last-activity rule -- their transcripts are gone -- and stay covered by point membership and snapshot-union. The fold rides the scanner's existing streaming parse: measured +~8% on the parse itself (850MB of real transcripts: 11.9s -> 12.9s), ~13ms added per `csb set show` on a 275-session store. Schema migration v9, applied automatically.
+
 ## [0.9.5] -- 2026-08-07 (beta)
 
 ### Added
@@ -1313,7 +1318,7 @@ First release with the repository public. Focus: make the install path work toda
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
 
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.6...HEAD
 [0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
 [0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0

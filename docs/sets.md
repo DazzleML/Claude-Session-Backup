@@ -31,6 +31,7 @@ Every roster row says only what can be shown, never more:
 | `[no exit observed]` | open per the registry, unproven | registry entry; no process proof |
 | `[exited]` | opened this boot, closed cleanly | its close *erased* the registry entry |
 | `[open at shutdown]` | was open when the machine went down | the boundary snapshot for that epoch |
+| `[open at shutdown -- no indexed activity in this window]` | snapshot-proven open, but the index holds no activity there | the boundary snapshot; appended to the roster, counted, never dropped |
 
 The asymmetry is the design: a clean close *erases*; an unclean one *testifies*. Leftover registry entries with no process behind them are crash evidence, not garbage. One pid belongs to one row: when claims collide (a fork's frozen command line naming its parent; a switched session's stale identity), captured evidence beats command-line matching and the freshest capture wins.
 
@@ -44,6 +45,10 @@ csb resume --set last 2 -- --fork-session    # or branch it instead
 ```
 
 csb never spawns a terminal, window, or tab -- you choose where each session lands. Roster numbers are canonical: `--window` narrows what is *shown* (gaps, never renumbering), so the number you read always addresses the session you meant. `--open` narrows to members a boundary snapshot proves were open at the shutdown -- exact within the retained history (five boundaries), honestly absent beyond it.
+
+Epoch membership reads each session's **activity timeline**, not its last heartbeat: the index records every sitting (contiguous activity, split at 10-minute-plus gaps), and a session belongs to every epoch a sitting overlaps. Reactivating an old session no longer erases it from the epochs it really lived in, the per-row gap and message counts are the *in-window* values, and an epoch the session sat closed through stays empty of it. Sessions indexed before this existed keep the old last-activity rule until `csb backup` (or one `csb update rebuild-index`) backfills their timeline.
+
+**Scripting note -- aggregating across epochs.** An empty relative address settles on the nearest epoch with members (the disclosed fallthrough above), so two addresses can answer with the same roster. A script that walks `last~0..N --json` and aggregates should skip any payload where `requested_token != name` -- that payload is a settled answer for an empty epoch, already counted under its own address. With that one filter, per-epoch in-window message counts sum cleanly: a session's counts across the epochs it touched partition its lifetime total.
 
 ## Named sets and promotion
 

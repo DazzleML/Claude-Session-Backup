@@ -187,7 +187,15 @@ def member_row_segments(member: dict, shutdown_utc=None,
         # An erased registry entry IS an observed exit -- hence the tag.
         line1.append(("  [exited]", "dim"))
     if member.get("open_at_shutdown"):
-        line1.append(("  [open at shutdown]", "bold"))
+        if member.get("snapshot_only"):
+            # Snapshot-union row (#80 S3): the boundary snapshot proves
+            # it was open, but no indexed activity falls in this window
+            # (purged before indexing, or pre-segments rows). Appended
+            # and disclosed, never dropped.
+            line1.append(("  [open at shutdown -- no indexed activity "
+                          "in this window]", "bold"))
+        else:
+            line1.append(("  [open at shutdown]", "bold"))
     if member["is_fork"]:
         line1.append(("  [fork]", "dim"))
     if member["purged"]:

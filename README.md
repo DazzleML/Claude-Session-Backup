@@ -75,7 +75,7 @@ csb backup
 - **Session restore**: Recover deleted sessions from git history with `csb restore`
 - **Readable chat logs**: `csb distill` renders any session as an IM-style log -- the full JSONL stays preserved regardless
 - **Fork lineage**: `csb tree` shows which session spawned which as an indented tree -- including purged ancestors csb still remembers, so a chain never reads headless
-- **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special (and the `apt upgrade && reboot` special: fences read from the Windows event log or journalctl/wtmp on POSIX), with a paste-able resume command per row. History is addressable too: `csb set last~2`, or `csb set 2026-7-15` by date
+- **Restart recovery**: `csb set show last` reconstructs which sessions were active before the machine's last shutdown -- the Windows Update special (and the `apt upgrade && reboot` special: fences read from the Windows event log or journalctl/wtmp on POSIX), with a paste-able resume command per row. History is addressable too: `csb set last~2`, or `csb set 2026-7-15` by date -- and membership reads each session's real activity timeline, so reopening an old session never erases it from the epochs it lived in
 - **Live session tracking**: `csb set show current` knows what is open *right now* -- csb's hooks register every session on start and erase the record on clean close, so leftovers are crash evidence, `csb set new NAME --from current` freezes the group, and `csb resume --set NAME` lists what's left to reclaim
 - **Two-commit model**: Noise (transient state) and user (configs, skills) committed separately
 - **Scheduled backup**: `csb setup schedule` registers a recurring backup with the OS scheduler (Task Scheduler / cron / launchd) -- hooks only fire when you use Claude Code, and the purge countdown runs whether you do or not
@@ -110,7 +110,7 @@ Every command, every flag, and the nitty-gritties live in **[docs/commands.md](d
 
 Every csb lookup (`list`, `scan`, `tree`, `resume`) matches against the session **name**. Claude Code only assigns a UUID, so an unnamed vault is a wall of `3b0924e5-...` that you can only [search](https://github.com/DazzleML/Claude-Session-Backup/blob/main/docs/commands.md#searching-conversations) by *content*. Naming is what makes Claude Code sessions easily browsable, and it's the difference between finding old work in a second or two, versus having to excavate older sessions.
 
-**Hand-name it with `/rename` the moment you walk into a new session**, before any work. Starting a new project you know what you've set out to do; whereas nothing else in the system does yet, and nothing reconstructs it quite as well later. Claude Code then shows that name at the top-right of the text input bar, so it also helps distinguish which Claude window is which when several projects are open at once.
+**Hand-name it with `/rename` the moment you walk into a new session**, before any work. Starting a new project you know what you've set out to do -- whereas nothing else in the system does yet, and nothing reconstructs it quite as well later. Claude Code then shows that name at the top-right of the text input bar, so it also helps distinguish which Claude window is which when several projects are open at once.
 
 The convention that makes lookups easier and less painful later is this -- **what**, **when**, **about**:
 
@@ -127,7 +127,7 @@ DAZZLECMD__2026-7-5__fiber-nuance-with-FQCN
 
 The project leads so `csb list DAZZLECMD` and `csb tree "DAZZLECMD*"` anchor on it.
 
-Renaming later is completely safe, so rename if the work drifts and name old sessions after the fact. The **[docs/naming.md](docs/naming.md)** file covers everything else: the separator grammar, `/renameAI` for backlogs of older unclear sessions, the workflow that leaves a searchable trail, naming forks so `csb tree` reads as a narrative, anti-patterns, and more.
+Renaming later is completely safe, so rename if the work drifts and name old sessions after the fact. The **[docs/naming.md](docs/naming.md)** file covers everything else: anti-patterns, the separator grammar, `/renameAI` for backlogs of older unclear sessions, the workflow that leaves a searchable trail, naming forks so `csb tree` reads as a narrative, and more.
 
 ### Common workflows
 

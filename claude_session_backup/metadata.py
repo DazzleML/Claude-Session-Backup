@@ -10,6 +10,18 @@ from pathlib import Path
 from typing import Optional
 
 from . import pathlevels, toolpaths
+from .epochs import parse_index_ts
+
+# Sitting split threshold (#80 S1): a gap longer than this between event
+# timestamps ends one activity segment and starts the next. The value is
+# COMPRESSION, not correctness -- membership truth is "any activity in
+# the window", and segments blur only sub-threshold gaps. At 10 minutes,
+# falsely bridging an entire epoch would require messaging within 10
+# minutes on both sides of a full reboot. (User review tightened this
+# from 60; row cost is one per sitting either way.)
+ACTIVITY_GAP_MINUTES = 10
+
+_SEGMENT_ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 
 @dataclass
@@ -56,6 +68,12 @@ class SessionMetadata:
     parent_message_uuid: Optional[str] = None
     forked_at: Optional[str] = None  # the boundary event's own timestamp
     is_fork: bool = False
+    # Activity segments (#80): (seg_start, seg_end, messages) ISO-Z
+    # tuples, one per sitting, oldest-first. ``activity_extracted`` is
+    # the S2b guard -- True only when the streaming parse actually ran,
+    # so narrower meta paths can never wipe indexed segments.
+    activity_segments: list[tuple[str, str, int]] = field(default_factory=list)
+    activity_extracted: bool = False
 
 
 def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
@@ -69,6 +87,7 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
     touched: set = set()                  # folders touched at all (presence)
     provenance: dict = {}                 # folder -> coldest route (v8)
     seen_cwds: set = set()                # distinct session cwds observed
+    activity_points: list = []            # (utc datetime, is_message) (#80)
     first_cwd = None
     first_ts = None
     last_ts = None
@@ -119,6 +138,13 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
             if first_ts is None:
                 first_ts = ts
             last_ts = ts
+            # Activity fold input (#80): every timestamped event marks
+            # the session ALIVE at that instant; user/assistant events
+            # additionally count toward the sitting's message tally.
+            ts_dt = parse_index_ts(ts)
+            if ts_dt is not None:
+                activity_points.append(
+                    (ts_dt, event.get("type") in ("user", "assistant")))
 
         # Track the session's nominal working directory. This is the LAUNCH
         # directory (Claude Code only ever follows it into descendants), so
@@ -211,6 +237,28 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
         meta.folder_provenance[path] = provenance.get(path, "extracted")
 
     meta.tool_paths_extracted = True
+
+    # Fold activity points into sittings (#80 S1). SORT FIRST (S2a):
+    # transcript order is only NEAR-chronological -- a forked session's
+    # file leads with inherited pre-fork events -- and a streaming fold
+    # over unsorted points would mint spurious or overlapping segments.
+    activity_points.sort(key=lambda point: point[0])
+    gap_seconds = ACTIVITY_GAP_MINUTES * 60
+    segments: list = []  # [start_dt, end_dt, messages]
+    for point_ts, is_message in activity_points:
+        if segments and (point_ts - segments[-1][1]).total_seconds() \
+                <= gap_seconds:
+            segments[-1][1] = point_ts
+            if is_message:
+                segments[-1][2] += 1
+        else:
+            segments.append([point_ts, point_ts, 1 if is_message else 0])
+    meta.activity_segments = [
+        (seg_start.strftime(_SEGMENT_ISO), seg_end.strftime(_SEGMENT_ISO),
+         seg_messages)
+        for seg_start, seg_end, seg_messages in segments
+    ]
+    meta.activity_extracted = True
 
     return meta
 

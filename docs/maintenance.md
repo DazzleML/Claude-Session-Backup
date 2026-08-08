@@ -42,7 +42,7 @@ The pre-v0.3.11 implementation was destructive: it deleted the entire index file
 v0.3.11 makes the rebuild safe via a snapshot-then-merge dance:
 
 1. Take `backup_lock`.
-2. Snapshot every deleted-session row (plus its `folder_usage` rows) to memory.
+2. Snapshot every deleted-session row (plus its `folder_usage` and activity-segment rows) to memory. Segments matter most for purged sessions: their transcripts are gone from disk, so the rescan could never re-derive their timelines -- the snapshot is what keeps them epoch-addressable.
 3. Move the existing DB aside as `<db>.bak` -- never `unlink` it.
 4. Run the indexer (`cmd_backup --no-commit`) against the live filesystem to rebuild the active-session view.
 5. If the rebuild fails, restore `<db>.bak` and propagate the error. The user never ends up with a missing-or-corrupt DB.

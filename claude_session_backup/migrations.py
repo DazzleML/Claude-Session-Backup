@@ -238,6 +238,42 @@ def _v8_add_folder_provenance_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE folder_usage ADD COLUMN provenance TEXT")
 
 
+def _v9_add_session_activity(conn: sqlite3.Connection) -> None:
+    """Activity segments (v0.9.6, #80): epoch membership from timelines.
+
+    One row per SITTING -- a contiguous activity run in one session's
+    transcript, split where the gap between event timestamps exceeds
+    ``metadata.ACTIVITY_GAP_MINUTES``. Epoch rosters take every session
+    with a segment overlapping the window, so a session reactivated
+    later stops vanishing from the epochs it really lived in (the
+    MYProject scenario), while epochs its timeline provably skipped
+    stay empty of it.
+
+    Populated by the scanner's existing streaming parse (no extra
+    pass); ``csb update rebuild-index`` backfills history. Rows for
+    sessions never re-scanned simply don't exist yet -- consumers fall
+    back to point-membership on ``last_active_at`` (the S4 ladder), so
+    an un-backfilled index behaves exactly as before.
+
+    ``messages`` is the user+assistant count within the sitting,
+    unlocking per-epoch message columns. The (session_id, seg_start)
+    key doubles as the per-session lookup index.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS session_activity (
+            session_id TEXT NOT NULL,
+            seg_start TEXT NOT NULL,
+            seg_end TEXT NOT NULL,
+            messages INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (session_id, seg_start),
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+                ON DELETE CASCADE
+        );
+        """
+    )
+
+
 def create_migration_indexes(conn: sqlite3.Connection) -> None:
     """(Re)create indexes that belong to migration-added columns.
 
@@ -267,6 +303,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     6: _v6_add_fork_lineage,
     7: _v7_add_tool_folder_provenance,
     8: _v8_add_folder_provenance_column,
+    9: _v9_add_session_activity,
 }
 
 

@@ -64,6 +64,7 @@ from . import session_sets
 from .set_render import epoch_header_segments, render_roster
 from .index import (
     count_deleted_with_filter,
+    fetch_activity_segments,
     find_sessions_by_folder_usage,
     get_active_session_ids,
     get_all_known_session_ids,
@@ -4037,6 +4038,7 @@ def _materialize_set_roster(config, name):
             "       deleted_at, is_fork, message_count"
             "  FROM sessions"
         ).fetchall()
+        segments = _load_activity_segments(conn)
         last_scan_row = conn.execute(
             "SELECT scanned_at FROM scan_history ORDER BY scan_id DESC LIMIT 1"
         ).fetchone()
@@ -4058,7 +4060,8 @@ def _materialize_set_roster(config, name):
         settled = None
         for idx, ep in candidates:
             lo_i, hi_i, ws_i = epoch_window(ep, window_hours)
-            members_i, missing_i = build_roster(rows, lo_i, hi_i)
+            members_i, missing_i = build_roster(rows, lo_i, hi_i,
+                                                segments=segments)
             if members_i:
                 settled = (idx, ep, lo_i, hi_i, ws_i, members_i, missing_i)
                 break
@@ -4089,7 +4092,8 @@ def _materialize_set_roster(config, name):
                 for j in range(history_index - 1, -1, -1):
                     lo_j, hi_j, _ws_j = epoch_window(history[j],
                                                      window_hours)
-                    members_j, _missing_j = build_roster(rows, lo_j, hi_j)
+                    members_j, _missing_j = build_roster(
+                        rows, lo_j, hi_j, segments=segments)
                     if members_j:
                         nearest_working = {
                             "token": "last" if j == 0 else f"last~{j}",
@@ -4098,11 +4102,64 @@ def _materialize_set_roster(config, name):
                         }
                         break
             lo, hi, window_source = epoch_window(epoch, window_hours)
-            members, missing = build_roster(rows, lo, hi)
+            members, missing = build_roster(rows, lo, hi, segments=segments)
             skipped_empty = []
         else:
             history_index, epoch, lo, hi, window_source, members, missing \
                 = settled
+
+        # Snapshot badge + UNION (#80 S3, placed per S3a): a boundary
+        # snapshot covering the settled epoch marks members provably open
+        # at its shutdown -- and members it names that segment membership
+        # DIDN'T surface (purged before indexing, pre-migration rows) are
+        # APPENDED, marked, counted, never dropped. Lives here in the
+        # shared materializer so `resume --set` and `--from` land on the
+        # same roster `show` displays (the H8 lesson).
+        from . import live_registry as _lr
+
+        snapshot = _lr.read_snapshot(
+            config["claude_dir"], boot_utc=epoch.boot_utc,
+            shutdown_utc=epoch.shutdown_utc,
+        )
+        snapshot_ids: set = set()
+        snap_entries: dict = {}
+        if snapshot:
+            for e in snapshot["open_at_shutdown"]:
+                sid = e.get("session_id")
+                if sid:
+                    snapshot_ids.add(sid)
+                    snap_entries[sid] = e
+        for m in members:
+            if m["session_id"] in snapshot_ids:
+                m["open_at_shutdown"] = True
+        rows_by_id = {r["session_id"]: r for r in rows}
+        union_index = len(members)
+        for sid in sorted(snapshot_ids - {m["session_id"] for m in members}):
+            row = rows_by_id.get(sid)
+            entry = snap_entries.get(sid, {})
+            union_index += 1
+            members.append({
+                "index": union_index,
+                "session_id": sid,
+                "session_name": row["session_name"] if row is not None
+                                else None,
+                "project": row["project"] if row is not None else None,
+                "start_folder": (row["start_folder"] if row is not None
+                                 else None) or entry.get("cwd"),
+                "started_at": (row["started_at"] if row is not None
+                               else None) or entry.get("started_at"),
+                "last_active_at": None,
+                "jsonl_path": row["jsonl_path"] if row is not None else None,
+                "jsonl_mtime": row["jsonl_mtime"] if row is not None else 0,
+                "purged": bool(row["deleted_at"]) if row is not None
+                          else False,
+                "is_fork": bool(row["is_fork"]) if row is not None else False,
+                "in_index": row is not None,
+                "messages": None,
+                "segment_backed": False,
+                "snapshot_only": True,
+                "open_at_shutdown": True,
+            })
 
         canonical = "last" if history_index == 0 else f"last~{history_index}"
         return {
@@ -4114,6 +4171,7 @@ def _materialize_set_roster(config, name):
             "fallthrough_exhausted": exhausted,
             "activity_floor": activity_floor,
             "nearest_working": nearest_working,
+            "snapshot_available": bool(snapshot_ids),
             "members": members, "missing_timestamps": missing,
             "window_lo": lo, "window_hi": hi,
             "window_hours": (hi - lo).total_seconds() / 3600.0,
@@ -4153,6 +4211,28 @@ def _materialize_set_roster(config, name):
 
 _INVOCATION_NOTE = ("(row numbers reflect this invocation -- they renumber "
                     "as sessions open and close; hints use stable names)")
+
+
+def _load_activity_segments(conn):
+    """session_id -> [(start_dt, end_dt, messages)] for roster builds (#80).
+
+    One read + parse serves every ``build_roster`` call a command makes
+    (the H8 fallthrough can probe several epochs). Unparseable rows are
+    skipped -- a session whose every segment is garbage degrades to
+    point-membership (S4), never to an error.
+    """
+    parsed: dict = {}
+    for sid, seg_list in fetch_activity_segments(conn).items():
+        out = []
+        for seg_start, seg_end, seg_messages in seg_list:
+            start_dt = parse_index_ts(seg_start)
+            end_dt = parse_index_ts(seg_end)
+            if start_dt is None or end_dt is None:
+                continue
+            out.append((start_dt, end_dt, seg_messages))
+        if out:
+            parsed[sid] = out
+    return parsed
 
 
 def _cmd_set_show_boot(args, json_mode) -> int:
@@ -4860,24 +4940,10 @@ def cmd_set_show(args) -> int:
               file=sys.stderr)
         return 0
 
-    # Open-at-shutdown badges (#64/P4b): when a boundary snapshot covers
-    # THIS epoch's boot, the sessions frozen into it were provably open
-    # when the machine went down -- exactness as annotation, not as a
-    # competing set kind. R3: read_snapshot searches retained boundary
-    # snapshots by boot instant, so `last~N` badges exact within K.
-    from . import live_registry as _lr2
-    snapshot = _lr2.read_snapshot(
-        config["claude_dir"], boot_utc=epoch.boot_utc,
-        shutdown_utc=epoch.shutdown_utc,
-    )
-    snapshot_ids: set = set()
-    if snapshot:
-        snapshot_ids = {
-            e.get("session_id") for e in snapshot["open_at_shutdown"]
-        }
-    for m in roster["members"]:
-        if m["session_id"] in snapshot_ids:
-            m["open_at_shutdown"] = True
+    # Open-at-shutdown badges + snapshot-union rows arrive FROM the
+    # materializer (#80 S3a) -- `resume --set` and `--from` see the same
+    # roster this command displays.
+    snapshot_available = roster.get("snapshot_available", False)
 
     # The canonical roster is the epoch; --window (and --open) narrow what
     # is SHOWN while indices keep their canonical values (gaps, never
@@ -4887,7 +4953,7 @@ def cmd_set_show(args) -> int:
     members, hidden = _filter_roster_for_display(
         all_members, epoch.shutdown_utc, display_window)
     if getattr(args, "open_only", False):
-        if not snapshot_ids:
+        if not snapshot_available:
             print(
                 "Note: no boundary snapshot covers this epoch -- `--open` "
                 "needs the live registry to have been active before the "
@@ -4958,13 +5024,16 @@ def cmd_set_show(args) -> int:
             "display_window_hours": display_window,
             "roster_size": len(all_members),
             "hidden_by_window": hidden,
-            "snapshot_available": bool(snapshot_ids),
+            "snapshot_available": snapshot_available,
             "members": [
                 {**{k: m[k] for k in (
                     "index", "session_id", "session_name", "project",
                     "start_folder", "started_at", "last_active_at",
                     "purged", "is_fork", "in_index", "messages",
-                )}, "open_at_shutdown": bool(m.get("open_at_shutdown"))}
+                )},
+                 "open_at_shutdown": bool(m.get("open_at_shutdown")),
+                 "segment_backed": bool(m.get("segment_backed")),
+                 "snapshot_only": bool(m.get("snapshot_only"))}
                 for m in members
             ],
             "missing_timestamps": missing,
@@ -6534,7 +6603,11 @@ def _materialize_boot_roster(config):
         "       deleted_at, is_fork, message_count"
         "  FROM sessions"
     ).fetchall()
-    members, missing = build_roster(rows, boot_utc, now_utc)
+    # Segment-overlap membership applies to the boot window identically
+    # (#80 S7): [boot, now] is just an epoch still in progress.
+    segments = _load_activity_segments(conn)
+    members, missing = build_roster(rows, boot_utc, now_utc,
+                                    segments=segments)
 
     indexed_ids = set()
     pairs = []  # (member, entry) for pid-claim arbitration (#72)

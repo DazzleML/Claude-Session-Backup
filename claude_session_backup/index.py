@@ -11,7 +11,7 @@ from typing import Optional
 
 from .metadata import SessionMetadata
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_info (
@@ -92,6 +92,20 @@ CREATE TABLE IF NOT EXISTS session_sources (
     content_hash TEXT,
     FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
     UNIQUE (session_id, source_path)
+);
+
+CREATE TABLE IF NOT EXISTS session_activity (
+    session_id TEXT NOT NULL,
+    -- One row per SITTING (#80): contiguous activity in the transcript,
+    -- split at >ACTIVITY_GAP_MINUTES gaps. Epoch membership = any
+    -- segment overlapping the window; sessions with no rows here fall
+    -- back to point-membership on last_active_at (the S4 ladder).
+    seg_start TEXT NOT NULL,
+    seg_end TEXT NOT NULL,
+    -- user+assistant events within the sitting -> per-epoch msg counts.
+    messages INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (session_id, seg_start),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS git_deleted_jsonls (
@@ -277,7 +291,43 @@ def upsert_session(conn: sqlite3.Connection, meta: SessionMetadata,
              meta.folder_provenance.get(folder_path)),
         )
 
+    # Activity segments (#80): replace-on-rescan, mirroring folder_usage
+    # -- but ONLY when this meta's parse actually ran (the S2b guard).
+    # A meta built by a narrower path (enrich-only, synthesized rows)
+    # must never wipe segments a real parse indexed; same shape as the
+    # v0.3.16 restore-verify gate.
+    if getattr(meta, "activity_extracted", False):
+        conn.execute("DELETE FROM session_activity WHERE session_id = ?",
+                     (meta.session_id,))
+        for seg_start, seg_end, seg_messages in meta.activity_segments:
+            conn.execute(
+                "INSERT OR REPLACE INTO session_activity "
+                "(session_id, seg_start, seg_end, messages) "
+                "VALUES (?, ?, ?, ?)",
+                (meta.session_id, seg_start, seg_end, seg_messages),
+            )
+
     conn.commit()
+
+
+def fetch_activity_segments(conn: sqlite3.Connection) -> dict[str, list]:
+    """All activity segments, keyed by session_id.
+
+    Values are ``(seg_start, seg_end, messages)`` tuples (ISO strings,
+    oldest-first). One read serves a whole roster build -- the table is
+    one row per sitting, so \"all of it\" is small by construction.
+    Sessions absent from the result simply have no segments indexed yet
+    (pre-migration rows, never-rescanned sessions): consumers fall back
+    to point-membership (S4).
+    """
+    out: dict[str, list] = {}
+    for row in conn.execute(
+        "SELECT session_id, seg_start, seg_end, messages "
+        "FROM session_activity ORDER BY session_id, seg_start"
+    ):
+        out.setdefault(row["session_id"], []).append(
+            (row["seg_start"], row["seg_end"], row["messages"]))
+    return out
 
 
 def register_session_sources(
@@ -378,6 +428,16 @@ def snapshot_deleted_sessions(conn: sqlite3.Connection) -> list[dict]:
             (r["session_id"],),
         ).fetchall()
         d["_folders"] = [dict(f) for f in folders]
+        # Segments ride the snapshot too (#80): a purged session's JSONL
+        # is gone from disk, so the rebuild's live-FS rescan can never
+        # re-derive its sittings -- losing them here would silently
+        # demote the row from segment-backed to point-membership.
+        segs = conn.execute(
+            "SELECT seg_start, seg_end, messages FROM session_activity "
+            "WHERE session_id = ? ORDER BY seg_start",
+            (r["session_id"],),
+        ).fetchall()
+        d["_segments"] = [dict(s) for s in segs]
         out.append(d)
     return out
 
@@ -414,6 +474,7 @@ def restore_deleted_snapshot(conn: sqlite3.Connection,
             continue
 
         folders = d.pop("_folders", [])
+        segments = d.pop("_segments", [])
 
         # Build INSERT from columns the snapshot AND live schema both have
         cols = [k for k in d.keys()
@@ -431,6 +492,13 @@ def restore_deleted_snapshot(conn: sqlite3.Connection,
                 "(session_id, folder_path, usage_count, is_start_folder) "
                 "VALUES (?, ?, ?, ?)",
                 (sid, f["folder_path"], f["usage_count"], f["is_start_folder"]),
+            )
+        for s in segments:
+            conn.execute(
+                "INSERT OR REPLACE INTO session_activity "
+                "(session_id, seg_start, seg_end, messages) "
+                "VALUES (?, ?, ?, ?)",
+                (sid, s["seg_start"], s["seg_end"], s["messages"]),
             )
         restored += 1
 
