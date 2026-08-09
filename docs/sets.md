@@ -62,6 +62,20 @@ csb resume --set CSB-STACK                  # the reclaim menu: what is NOT open
 csb resume CSB-STACK:3                      # open member 3 here
 ```
 
+### When a row is wrong: `csb set forget`
+
+A session closed with **Ctrl+C** leaves its registry entry behind -- the SessionEnd hook is cancelled before it can erase it -- and an entry written by an older plugin carries no host pid to check. Both then read `[no exit observed]` indefinitely, which is indistinguishable from genuine crash evidence. You were there; csb was not:
+
+```bash
+csb set forget current:1        # the row you are looking at
+csb set forget <session>        # by name or UUID
+csb set forget current:1 --force   # even if it verifies as running
+```
+
+It **refuses** a session csb can verify is running -- claiming it is closed would be wrong, not merely overridden. `--force` exists for a different reason: retracting an entry whose recorded path you would rather not keep. That is a privacy decision, which csb cannot evaluate for you; asserting a false state is a mistake it can catch.
+
+Note the distinction from `csb set rm`, which edits membership *you declared* in a named set. `forget` retracts evidence *csb recorded*. Same gesture, opposite semantics -- which is why they are separate verbs, and why `forget` addresses a row with no registry entry behind it (an index-derived `boot` row) with an error rather than a silent success. Removal is a plain unlink: `csb-live/` rides the noise commits, so `git log -- csb-live/` keeps the entry's whole life and death.
+
 A set promoted from an epoch remembers its source: `promoted from 'last~2' (shutdown ...)` -- provenance that stays true as that epoch's address drifts deeper into history. The reclaim menu is driven by liveness, not stored progress: exiting a session puts it back on the list, because its clean close erased its registry entry.
 
 A named set's roster shows **which members are open right now** (`4 members (3 open now)`), with the same `[running]` / `[no exit observed]` tiers the live views use and a branching hint on running rows. Only those two tiers appear: a named set is not tied to a boot, so a member that simply is not open stays unadorned -- absence here means "not open right now", never an observed close.

@@ -327,3 +327,206 @@ class TestLastIntegration:
         captured = capsys.readouterr()
         assert rc == 0
         assert "no boundary snapshot covers this epoch" in captured.err
+
+
+class TestSetForget:
+    """`csb set forget` -- the user testifying about what csb cannot know.
+
+    A Ctrl+C'd session leaves its entry behind (SessionEnd is cancelled
+    before it can erase it) and a pid-less entry can never be resolved
+    by evidence -- both read `[no exit observed]` forever, which is
+    indistinguishable from crash evidence. The witness settles it.
+
+    Decisions pinned here: RV1 (it lives in the `set` family, distinct
+    from `set rm` which edits declared membership), RV2 (a row with no
+    entry errors rather than silently succeeding), RV3 (plain unlink --
+    git history is the archive).
+    """
+
+    def test_retracts_an_unverified_entry(self, env, capsys):
+        """RED-GREEN anchor: the registry-only session (no process
+        proof) is retractable, and its file is gone afterwards."""
+        assert lr.entry_path(env.claude_dir, UUID_UNV).exists()
+        rc = _run(env, "set", "forget", "current:2")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Retracted" in out
+        assert not lr.entry_path(env.claude_dir, UUID_UNV).exists()
+
+    def test_refuses_a_verifiably_running_session(self, env, capsys):
+        """Asserting 'it is closed' about a process csb can SEE is a
+        mistake, not an override -- and the error names the escape."""
+        rc = _run(env, "set", "forget", "current:1")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "RUNNING" in err and "--force" in err
+        assert lr.entry_path(env.claude_dir, UUID_RUN).exists()
+
+    def test_force_overrides_for_privacy(self, env, capsys):
+        """--force is legitimate for privacy (an entry naming a path you
+        want gone), which is why it exists at all."""
+        rc = _run(env, "set", "forget", "current:1", "--force")
+        assert rc == 0
+        assert "Retracted" in capsys.readouterr().out
+        assert not lr.entry_path(env.claude_dir, UUID_RUN).exists()
+
+    def test_row_without_an_entry_errors(self, env, capsys):
+        """RV2: an index-derived row is not an observation. Silently
+        succeeding would hide that the row reappears next invocation."""
+        import sqlite3
+        conn = sqlite3.connect(env.db)
+        conn.execute(
+            "INSERT INTO sessions (session_id, session_name, project,"
+            " start_folder, started_at, last_active_at, is_fork) VALUES"
+            " ('99999999-bbbb-cccc-dddd-000000000009', 'NOENTRY__session',"
+            " 'C--code-test', 'C:\code\test', '2026-07-01T00:00:00Z',"
+            " '2026-08-01T14:00:00Z', 0)")
+        conn.commit()
+        conn.close()
+        rc = _run(env, "set", "forget", "NOENTRY__session")
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "nothing to retract" in err
+
+    def test_bare_invocation_teaches_the_forms(self, env, capsys):
+        rc = _run(env, "set", "forget")
+        err = capsys.readouterr().err
+        assert rc == 2
+        assert "current:1" in err
+
+    def test_retraction_echoes_where_the_record_lives(self, env, capsys):
+        """RV3: removal is a plain unlink because csb-live/ rides the
+        noise commits -- so the echo must say where history is kept, or
+        'recoverable' is true but undiscoverable."""
+        _run(env, "set", "forget", "current:2")
+        err = capsys.readouterr().err
+        assert "git log" in err and "csb-live" in err
+
+    def test_forget_is_not_set_rm(self, env, capsys):
+        """RV1: distinct verbs for opposite semantics. `set rm` edits
+        membership you declared; it must not accept a live view."""
+        rc = _run(env, "set", "rm", "current")
+        assert rc == 1
+        assert "No set named" in capsys.readouterr().err
+
+
+class TestSetForgetPathTraversal:
+    """SECURITY GAP found in the v0.9.10 tester-unbounded audit (2026-08-09),
+    confirmed against real (unmocked) subprocess execution before being
+    reduced to this regression anchor -- see
+    tests/checklists/results/v0.9.10__set-forget__results__2026-08-08.md.
+
+    ``live_registry.read_entries()`` keys each entry by
+    ``raw.get("session_id") or path.stem`` -- the JSON BODY's
+    ``session_id`` field wins over the entry's own filename.
+    ``_materialize_current_roster`` surfaces every ``*.json`` file found
+    in ``csb-live/`` this way, indexed and addressable via ordinary
+    ``current:N`` tokens, with NO validation that the recorded
+    ``session_id`` looks like a UUID or is otherwise filename-safe.
+    ``cmd_set_forget`` then calls
+    ``live_registry.entry_path(claude_dir, sid).unlink()``, where
+    ``entry_path`` is a bare ``Path(claude_dir) / "csb-live" /
+    f"{session_id}.json"`` -- no rejection of path separators or ``..``
+    segments before that path is built and unlinked.
+
+    Net effect: a file planted in ``csb-live/`` (by anything with write
+    access to the Claude data dir -- a compromised plugin, another tool,
+    a corrupted sync) with a crafted ``"session_id": "../<name>"`` body
+    field becomes an addressable ``current:N`` row whose ``forget``
+    deletes ``<claude_dir>/<name>.json`` instead of anything inside
+    ``csb-live/``. Deeper ``../../..`` chains reach further outside
+    ``claude_dir`` entirely -- this test exercises the shallowest case
+    (escaping csb-live/ into its immediate parent) since that alone is
+    enough to prove entry_path() performs no containment check at all.
+
+    FIXED at both ends (v0.9.10): `is_safe_entry_id` rejects ids that
+    could become a path (separators, `..`, leading dot, drive/UNC
+    punctuation, over-long); `read_entries` honours a body-claimed id
+    only when it is safe, falling back to the filename stem; and
+    `cmd_set_forget` re-checks containment against live_dir at the point
+    of no return, because that is the only place csb DELETES from a path
+    built out of registry data.
+
+    Why registry contents are untrusted input at all: `csb-live/` rides
+    the backup store's commits, so an entry can arrive from another
+    machine or a restored store, not just from a local hook.
+    """
+
+    def _plant(self, claude_dir, filename, claimed_id):
+        """A crafted entry: innocuous filename, hostile body."""
+        path = lr.live_dir(claude_dir) / f"{filename}.json"
+        path.write_text(json.dumps({
+            "session_id": claimed_id, "started_at": "2026-08-01T12:40:00Z",
+            "source": "startup", "cwd": "C:/nope",
+        }), encoding="utf-8")
+        return path
+
+    def test_crafted_session_id_cannot_escape_the_registry_directory(
+            self, env, capsys):
+        """RED-GREEN anchor: the traversal id must never be honoured."""
+        canary = env.claude_dir / "canary.json"
+        canary.write_text('{"marker": "do not delete me"}', encoding="utf-8")
+        self._plant(env.claude_dir, "evil", "../canary")
+
+        rc = _run(env, "set", "show", "current", "--json")
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        # The hostile id is never adopted: the entry is keyed by its
+        # FILENAME, so no row can address anything outside csb-live/.
+        assert all(m["session_id"] != "../canary"
+                   for m in payload["members"])
+        assert any(m["session_id"] == "evil" for m in payload["members"])
+
+        # And forgetting that row removes the planted entry itself --
+        # never the file its body pointed at.
+        row = next(m for m in payload["members"]
+                   if m["session_id"] == "evil")
+        _run(env, "set", "forget", f"current:{row['index']}")
+        capsys.readouterr()
+        assert canary.exists(), "a crafted session_id escaped csb-live/"
+        assert not (lr.live_dir(env.claude_dir) / "evil.json").exists()
+
+    @pytest.mark.parametrize("bad", [
+        "../canary", "..\canary", "a/b", "a\b", "C:evil", "..",
+        ".hidden", "", "x" * 200,
+    ])
+    def test_entry_path_refuses_unsafe_ids(self, env, bad):
+        """The funnel itself refuses, loudly -- callers unlink what it
+        returns, so failing beats resolving somewhere unexpected."""
+        with pytest.raises(ValueError):
+            lr.entry_path(env.claude_dir, bad)
+
+    def test_ordinary_uuids_still_work(self, env):
+        """The guard must not break the normal case."""
+        p = lr.entry_path(env.claude_dir, UUID_RUN)
+        assert p.name == f"{UUID_RUN}.json"
+        assert lr.is_safe_entry_id(UUID_RUN)
+
+
+def test_set_actions_matches_the_registered_subparsers():
+    """The implicit-show rewrite tests argv[1] against SET_ACTIONS, so a
+    `set` subcommand missing from that tuple is silently rewritten into
+    `csb set show <action>` and dies as "No set named 'X'".
+
+    Cost the `forget` verb an hour of confusion when it was added; this
+    pins the tuple against the parser's real subparsers so the two
+    cannot drift again.
+    """
+    import argparse as _argparse
+
+    parser = cli.build_parser()
+    registered = None
+    for action in parser._actions:
+        if isinstance(action, _argparse._SubParsersAction):
+            set_parser = action.choices.get("set")
+            assert set_parser is not None, "no `set` command registered"
+            for sub in set_parser._actions:
+                if isinstance(sub, _argparse._SubParsersAction):
+                    registered = set(sub.choices)
+            break
+    assert registered, "no `set` subcommands found on the parser"
+    assert registered == set(cli.SET_ACTIONS), (
+        f"SET_ACTIONS {sorted(cli.SET_ACTIONS)} does not match the "
+        f"registered subcommands {sorted(registered)} -- a new action "
+        "would be swallowed by the implicit-show rewrite"
+    )

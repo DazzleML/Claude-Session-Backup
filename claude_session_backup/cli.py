@@ -217,6 +217,14 @@ def _filter_kv(allowed: dict):
     return parse
 
 
+# Every `csb set` subcommand. The implicit-show rewrite below tests
+# against THIS, so a new action must be registered here or it would be
+# silently swallowed ("csb set forget" -> "csb set show forget" ->
+# "No set named 'forget'"). A test pins this list against the parser's
+# real subparsers so the two cannot drift.
+SET_ACTIONS = ("show", "new", "list", "add", "rm", "forget")
+
+
 def build_parser():
     """Build the argument parser."""
     parser = argparse.ArgumentParser(
@@ -1222,6 +1230,44 @@ def build_parser():
              "at); omit to delete the whole set",
     )
 
+    # forget -- retract a live-registry entry (RV1). NOT `set rm`: that
+    # edits membership YOU declared; this retracts evidence CSB recorded.
+    # The bare `csb forget` namespace stays free for the index-level
+    # hide/forget/expunge ladder (#77).
+    p_set_forget = set_sub.add_parser(
+        "forget",
+        help="Retract a stale live-registry entry (a session you know is closed)",
+        description=(
+            "Retract a Live Session Registry entry -- your testimony about "
+            "something csb cannot know.\n\n"
+            "A session closed with Ctrl+C leaves its entry behind (the "
+            "SessionEnd hook is cancelled before it can erase it), and an "
+            "entry written by an older plugin carries no host pid to check. "
+            "Both then read `[no exit observed]` indefinitely, "
+            "indistinguishable from genuine crash evidence. You were there; "
+            "csb was not.\n\n"
+            "  csb set forget current:1     the row you are looking at\n"
+            "  csb set forget <session>     by name or UUID\n\n"
+            "Refuses a session csb can verify is RUNNING -- claiming it is "
+            "closed would be wrong, not merely overridden. `--force` "
+            "proceeds anyway, which is legitimate for privacy (an entry "
+            "naming a path you want gone) but not for state. The removed "
+            "entry stays in your backup store's git history."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    _add_common_flags(p_set_forget)
+    p_set_forget.add_argument(
+        "sessions", nargs="*", metavar="<session>",
+        help="Roster tokens (`current:1`, `MYSET:3`) or ordinary session "
+             "queries -- the same vocabulary `csb set add` takes",
+    )
+    p_set_forget.add_argument(
+        "--force", action="store_true",
+        help="Retract even a verifiably-running session (for privacy, not "
+             "for asserting it is closed)",
+    )
+
     # rebuild-index
     # ── csb update: umbrella for "reach in and refresh a representation" ops ──
     # Lives at the top level so all maintenance verbs group cleanly. Targets:
@@ -1511,7 +1557,7 @@ def main(argv=None):
     # work. The reserved-name grammar keeps this token space safe; a
     # typo'd subcommand degrades to show's clear "no set named X" error.
     if (len(argv) >= 2 and argv[0] == "set"
-            and argv[1] not in ("show", "new", "list", "add", "rm")
+            and argv[1] not in SET_ACTIONS
             and not argv[1].startswith("-")):
         argv = [argv[0], "show"] + argv[1:]
 

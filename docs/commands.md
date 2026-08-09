@@ -65,6 +65,8 @@ csb set show <name>                   # A named set's roster
 csb set list                          # Every named set, plus the 'last' epoch
 csb set add <name> <session>...       # Extend a named set
 csb set rm <name> [<session>...]      # Remove members, or delete the set
+csb set forget <session-or-token>     # Retract a stale live-registry entry
+csb set forget current:1 --force      #   ...even if it verifies as running (privacy)
 csb resume last:<N>                   # Reclaim member N of the last epoch
 csb resume <name>:<N>                 # Member N of a named set (--set <name> for its reclaim menu)
 csb status                            # Summary stats

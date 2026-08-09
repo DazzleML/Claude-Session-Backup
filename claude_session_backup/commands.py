@@ -3786,6 +3786,7 @@ def cmd_set(args) -> int:
             "  csb set list                 -- every named set\n"
             "  csb set add <name> <session>...   -- extend a set\n"
             "  csb set rm <name> [<session>...]  -- remove members, or the set\n"
+            "  csb set forget current:1     -- retract a stale live-registry entry\n"
             "\n"
             "Run `csb set <action> -h` for per-action options.",
             file=sys.stderr,
@@ -3801,6 +3802,8 @@ def cmd_set(args) -> int:
         return cmd_set_add(args)
     if action == "rm":
         return cmd_set_rm(args)
+    if action == "forget":
+        return cmd_set_forget(args)
     # argparse's choices shouldn't let us reach here; defensive.
     print(f"Unknown set action: {action}", file=sys.stderr)
     return 2
@@ -4707,6 +4710,115 @@ def cmd_set_add(args) -> int:
     if skipped:
         noun = "session was" if skipped == 1 else "sessions were"
         print(f"{skipped} {noun} already a member of '{stored}' -- no change.")
+    return 0
+
+
+def cmd_set_forget(args) -> int:
+    """`csb set forget <token-or-session>` -- retract a registry entry (RV1).
+
+    The user testifying about what csb cannot know. A Ctrl+C'd session
+    leaves its entry behind (the SessionEnd hook is cancelled before it
+    can erase it), and a pid-less entry from an older plugin can never
+    be resolved by evidence -- both then read `[no exit observed]`
+    forever, indistinguishable from crash evidence, which is the one
+    ambiguity the tier ladder exists to avoid. The witness who was
+    there can settle it; csb cannot.
+
+    Distinct from `csb set rm`, which edits membership YOU declared.
+    This retracts evidence CSB recorded -- same gesture, opposite
+    semantics, hence the separate verb (and the bare `csb forget`
+    namespace is deliberately left for #77's index-level ladder).
+
+    Guards:
+      * REFUSES a verifiably-running session -- asserting "it is
+        closed" about a process csb can see alive is a mistake, not an
+        override. ``--force`` proceeds anyway, which is legitimate for
+        PRIVACY (an entry naming a path you want gone) but never for
+        state.
+      * A roster row with NO registry entry behind it (an index-derived
+        `boot` row) errors rather than silently succeeding (RV2) -- the
+        row will still be there next invocation, and saying so teaches
+        the difference between an observed entry and a derived row.
+
+    Removal is a plain unlink (RV3): ``csb-live/`` rides the noise
+    commits, so ``git log -- csb-live/`` retains the entry's whole life
+    and death. The echo says so, keeping "recoverable" discoverable.
+    """
+    from . import live_registry, liveness
+    from .ids import format_short_uuid
+
+    config = _get_config(args)
+    claude_dir = config["claude_dir"]
+    queries = list(getattr(args, "sessions", []) or [])
+    if not queries:
+        print(
+            "csb set forget needs a roster row or session to retract.\n"
+            "  csb set forget current:1     the row you are looking at\n"
+            "  csb set forget <session>     by name or UUID",
+            file=sys.stderr,
+        )
+        return 2
+
+    conn = open_db(config["index_path"])
+    init_schema(conn)
+    try:
+        uuids, code = _resolve_membership_args(config, conn, queries)
+    finally:
+        conn.close()
+    if uuids is None:
+        return code
+
+    entries = {e["session_id"]: e for e in live_registry.read_entries(claude_dir)}
+    scan = None
+    retracted = missing = refused = 0
+    for sid in uuids:
+        entry = entries.get(sid)
+        if entry is None:
+            # RV2: addressed a row with nothing behind it.
+            print(f"No live-registry entry for {format_short_uuid(sid)} -- nothing "
+                  "to retract (an index-derived row is not an observation).",
+                  file=sys.stderr)
+            missing += 1
+            continue
+        if not getattr(args, "force", False):
+            if scan is None:
+                scan = liveness.scan()
+            if liveness.verify_entry(scan, entry, None) is not None:
+                print(
+                    f"{format_short_uuid(sid)} is verifiably RUNNING -- refusing to "
+                    "retract an entry csb can see is true. Use --force if you "
+                    "want it gone anyway (e.g. for privacy).",
+                    file=sys.stderr,
+                )
+                refused += 1
+                continue
+        try:
+            target = live_registry.entry_path(claude_dir, sid)
+            # Belt-and-braces: entry_path already rejects unsafe ids,
+            # but this is the only place csb DELETES from a path built
+            # out of registry data, so confirm containment at the point
+            # of no return rather than trusting a caller upstream.
+            live = live_registry.live_dir(claude_dir).resolve()
+            if live not in target.resolve().parents:
+                raise ValueError(f"refusing to unlink outside {live}")
+            target.unlink()
+        except (OSError, ValueError) as exc:
+            print(f"Could not retract {format_short_uuid(sid)}: {exc}",
+                  file=sys.stderr)
+            missing += 1
+            continue
+        name = entry.get("cwd") or ""
+        print(f"Retracted {format_short_uuid(sid)}"
+              + (f"  (started {entry.get('started_at')})"
+                 if entry.get("started_at") else "")
+              + (f"  {name}" if name else ""))
+        retracted += 1
+
+    if retracted:
+        print("  The entry stays in your backup store's history "
+              "(`git log -- csb-live/`).", file=sys.stderr)
+    if refused or missing:
+        return 1
     return 0
 
 

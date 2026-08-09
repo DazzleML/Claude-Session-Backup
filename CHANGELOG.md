@@ -7,9 +7,17 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased]
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.10...HEAD)
 
-## [0.9.9] -- 2026-08-08 (beta)
+## [0.9.10](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.9...v0.9.10) -- 2026-08-09 (beta)
+
+### Added
+- **`csb set forget <row-or-session>`** -- retract a stale live-registry entry. A session closed with Ctrl+C leaves its entry behind (Claude Code cancels the SessionEnd hook before it can erase it), and an entry written by an older plugin carries no host pid to check; both then read `[no exit observed]` indefinitely, indistinguishable from real crash evidence. You were there and csb was not, so you can say so: `csb set forget current:1`. It **refuses** a session csb can verify is running -- claiming that one is closed would be wrong, not merely overridden -- and `--force` exists for the other reason someone wants an entry gone: privacy about a recorded path. Deliberately a separate verb from `csb set rm`, which edits membership *you declared* rather than retracting evidence *csb recorded*.
+
+### Changed
+- **Registry entries are treated as untrusted input.** A session id from an entry's JSON body becomes part of a filename, and `csb set forget` deletes that path -- so ids are now validated (no separators, no `..`, no drive punctuation), a body-claimed id is honoured only when safe, and the deletion re-checks containment against the registry directory. Hardening rather than a patched vulnerability: no exploit path exists today (stores are local, csb never pushes, and planting an entry needs write access you would already have), but this is the one place csb deletes from a path built out of file contents, and a shared or restored store would make that input genuinely foreign.
+
+## [0.9.9](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.8...v0.9.9) -- 2026-08-08 (beta)
 
 ### Fixed
 - **A session launched from an elevated terminal showed `[no exit observed]` while running.** A process at a higher integrity level hides its command line from a non-elevated query (the executable name still reads), and the process scan admitted sessions to its pid map only when the *command line* identified them -- so pid verification silently inherited the argv dependency that capturing the host pid exists to escape. The scan now accepts the executable name when the command line is unreadable, for pid verification only; the argv-derived maps are unchanged, Claude Desktop stays excluded, and the pid-reuse guard still applies. Affected only sessions started from an administrator terminal, which is why it looked intermittent and appeared to heal on its own.
@@ -18,27 +26,27 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **Liveness rosters distinguish recorded from verified.** `csb set current --json` and `csb set show boot --json` now carry `recorded_pid` and `pid_at` (what the registry entry stored) alongside `pid` (what verification concluded). Previously a null `pid` meant either "no host was ever captured" or "captured, but it no longer verifies" -- opposite problems, shown identically, and telling them apart took an evening across two machines.
 - **The backup hook records how it captured a pid**: log lines now read `via=walk` (an ancestor was identified as the claude CLI), `via=env-fallback` (the walk could not complete, so the environment ppid was used -- possibly a transient shell), or `via=none`. The previously silent no-pid path now says so explicitly. Ships with the plugin; run `csb setup update` to pick it up.
 
-## [0.9.8] -- 2026-08-08 (beta)
+## [0.9.8](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.7...v0.9.8) -- 2026-08-08 (beta)
 
 ### Added
 - **`csb set show <name>` shows which members are open.** `csb set list` already reported `(N open now)` per named set, but the roster itself showed no liveness -- the one view in the family without it. Named-set rows now carry the same evidence tiers the live views use, the header repeats the open count, and a running member's hint branches (`-- --fork-session`) instead of inviting a second client onto one live transcript. Two tiers only: a named set is not boot-scoped, so a member simply not open right now stays unadorned rather than claiming an observed close. Costs nothing when nothing is open -- the registry check gates the process scan.
 
-## [0.9.7] -- 2026-08-07 (beta)
+## [0.9.7](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.6...v0.9.7) -- 2026-08-07 (beta)
 
 ### Changed
 - **BREAKING: one roster-addressing grammar -- `csb resume last:3`.** The `view-or-set:N` tokens the membership verbs already speak (`csb set add NAME boot:1`) now work directly as the resume query: `csb resume last:3`, `csb resume boot:2`, `csb resume MYSET:3` -- and an EXACT session name always wins over a token, so nothing you named can ever be shadowed (a session literally named `last:3` resumes as itself, with a one-line pointer at the qualified form). `--set` is reappropriated as the explicit set-vocabulary lane for exactly that collision case (`csb resume --set last:3` always means the member) and keeps the reclaim menu (`--set NAME`). The retired forms -- `--set 3` (whose bare number silently meant `last` when a reader could as easily assume `boot`), `--set NAME 3`, and bare `--set` -- now error with the exact token spelling. Membership verbs adopt the same name-first precedence (previously a set named `notes` outranked a session literally named `notes:1`; now the name wins there too, with the per-grab echo disclosing either way). Migration: `csb resume --set 2` -> `csb resume last:2`; `csb resume --set NAME 2` -> `csb resume NAME:2`.
 
-## [0.9.6] -- 2026-08-07 (beta)
+## [0.9.6](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.5...v0.9.6) -- 2026-08-07 (beta)
 
 ### Added
 - **Epoch rosters now read real activity timelines.** The index records every *sitting* (contiguous activity in a session's transcript, split at gaps over 10 minutes) in a new `session_activity` table, and epoch membership becomes segment-overlap: a session appears in every epoch it was genuinely active in -- so reactivating an old session no longer erases it from the epochs it really lived in -- and in none its timeline provably skipped. Per-row gap and message counts in epoch views are the in-window values. Boundary-snapshot members with no indexed activity in the window are appended and marked (`[open at shutdown -- no indexed activity in this window]`), never dropped. Backfill is immediate for live sessions: the first `csb backup` after upgrading records timelines for everything still on disk (the scanner already re-parses every live transcript per backup). Purged sessions keep the old last-activity rule -- their transcripts are gone -- and stay covered by point membership and snapshot-union. The fold rides the scanner's existing streaming parse: measured +~8% on the parse itself (850MB of real transcripts: 11.9s -> 12.9s), ~13ms added per `csb set show` on a 275-session store. Schema migration v9, applied automatically.
 
-## [0.9.5] -- 2026-08-07 (beta)
+## [0.9.5](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.4...v0.9.5) -- 2026-08-07 (beta)
 
 ### Added
 - **`csb setup update` + plugin drift detection.** The plugin delivers the hook scripts, so a stale install silently withholds hook-side features -- it happened on the maintainer's own machine, three releases running. `csb status` now carries a `Plugin:` line (green when current, a yellow drift line naming the fix, calm "not installed (optional)" for CLI-only users -- detection is filesystem-only, never a subprocess), and `csb setup update` runs the unmemorable `claude plugin update name@marketplace` incantation for you, reporting before/after and the fact users doubt: no session restarts needed. The plugin spec now lives in exactly one place in the code.
 
-## [0.9.4] -- 2026-08-07 (beta)
+## [0.9.4](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.3...v0.9.4) -- 2026-08-07 (beta)
 
 ### Added
 - **Grab roster rows by number**: `csb set add NAME boot:15` (and `new`/`rm`) accept `<view-or-set>:<N>` tokens for any roster -- `boot:`, `current:`, `last~2:`, a date, or another set. Every grab echoes what it resolved (live-view numbers shift; the echo makes a mis-grab visible and `set rm` undoes it), epoch tokens address the roster `show` displayed, a miss aborts the whole command, and `csb set rm MYSET MYSET:3` removes the row you're looking at. Sessions literally named like `notes:1` still resolve by name unless a set called `notes` exists.
@@ -49,7 +57,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **Hook pid capture was one level short.** Claude Code runs hook commands through a shell, so the captured "host" was a transient cmd/sh that died with the hook -- live sessions could never earn `[running]` from organic capture (two dead stamps on one real entry proved it). The hook now walks the process ancestry to the actual claude CLI, on Windows and POSIX, with the old behavior as fallback when the table is unreadable. Ships with the plugin; entries heal at each session's next hook fire after updating.
 - **`csb status` aligned and easier to read**: one label column throughout, the last-scan time in your local timezone with the stored UTC beside it, and light color (git state, un-backed-up warnings) where the terminal supports it.
 
-## [0.9.3] -- 2026-08-07 (beta)
+## [0.9.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.2...v0.9.3) -- 2026-08-07 (beta)
 
 **The session-sets epic completes: `last` everywhere, history addressable, promotion with provenance.** `csb set show last` was the one Windows-only surface; only one epoch had a name; a frozen set forgot where it came from. This release closes all three -- and it was built capture-first: the parsers were frozen against real command output (WSL2/systemd 249), which caught a silent systemd behavior that would have shipped broken.
 
@@ -68,13 +76,13 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **Boot age is precise everywhere**: headers and the `set list` row say `booted 12d19h ago` in the same vocabulary as roster rows' age column, replacing rounded phrases like "1 week ago" that made a 12.8-day boot window look wrong when it wasn't.
 - **csb imports cleanly on boxes without `rich`.** A def-time type annotation crashed `csb` at import when the optional dependency was absent -- found live on a bare WSL python, the kind of bug only a real POSIX box exposes.
 
-## [0.9.2] -- 2026-08-07 (beta)
+## [0.9.2](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.1...v0.9.2) -- 2026-08-07 (beta)
 
 ### Fixed
 - **`csb set list` now advertises the `boot` view** -- the epoch in progress heads the "Boot epochs" section (`boot  in progress (booted 1 week ago)`), which had been the one view the overview never mentioned since it shipped. Fence-free, so the row appears even where `last` cannot. `--json` gains an additive `boot` key; the legacy `epoch` key is unchanged.
 - **One pid, one owner: rosters now arbitrate competing claims on a single process.** A pid is one process hosting one conversation, but two rows could wear it: a legacy pid-less entry whose frozen command line still names a session its process abandoned would ride the same pid another session had *captured* -- keeping the ghost `[running]` alive even after the pid-capture fix. Capture now beats command-line matching, and between two captured claims (an in-app switch stranding the old entry's stale pid) the freshest stamp wins -- entries record `pid_at` alongside `pid` for exactly this. Demoted rows fall to `[no exit observed]`, never a guess. Live consequence on the machine that motivated it: the roster's count corrects from "4 running" (one a ghost, two real ones missed) to the true five once the updated plugin's hooks re-stamp the open sessions.
 
-## [0.9.1] -- 2026-08-07 (beta)
+## [0.9.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.0...v0.9.1) -- 2026-08-07 (beta)
 
 **Liveness that survives forks and session switching (#72).** `[running]` promises process-proof, but the proof was the `--resume` token in process command lines -- frozen at launch while the conversation a process hosts is not. A live machine showed the full damage in one roster: a session nothing hosted wearing `[running]` (its old process had switched to a different conversation), two provably-open sessions stuck at `[no exit observed]` (a fork child's fresh UUID appears in no command line, ever), and a parent credited its fork's pid. The fix captures identity where it cannot lie: csb's SessionStart hook runs inside the hosting process's own tree, so it records the host PID into the registry entry, and verification becomes "is that exact pid alive, a claude CLI, and older than the entry" -- which works identically for fresh, forked, and switched sessions.
 
@@ -86,7 +94,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Changed
 - Updating the plugin is what turns on pid capture (the hook scripts ship with it); until then entries stay pid-less and behave exactly as before. Process scans now also collect per-process creation times (Windows CIM `CreationDate`; POSIX `ps etimes=`, degrading gracefully where unsupported).
 
-## [0.9.0] -- 2026-08-07 (beta)
+## [0.9.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.5...v0.9.0) -- 2026-08-07 (beta)
 
 **Scheduled backup: `csb setup schedule` (#69).** Every csb hook fires on user action -- an untouched machine fires none of them, while Claude Code's own startup cleanup deletes old transcripts on a timer regardless. A never-backed-up transcript on an idle machine could be purged with csb installed and "working". This release closes that gap: the OS scheduler runs `csb backup` on its own, no Claude Code required. The version is a new minor for the new surface, but substantively this is a fix -- the scheduler half of csb's automation was designed alongside the hooks and never shipped, and its absence was a hole in the core promise.
 
@@ -112,7 +120,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - `csb backup` gained `--log-file <path>`: append one structured line per run, and under a console-less interpreter (`pythonw`) rebind stdout/stderr there so failures stay diagnosable. Logging failure never fails the backup. Git subprocesses in scheduled runs suppress child console windows.
 - `docs/automation.md` reframed around the two layers (hooks protect the machine you are using; the schedule protects the one you are not), with interval guidance including how backup cost scales with store size. The old hand-rolled `crontab`/`schtasks` one-liners are replaced by a migration section -- their bare `csb` silently stops working when PATH changes, which is the exact failure mode this feature exists to detect.
 
-## [0.8.5] -- 2026-08-06 (beta)
+## [0.8.5](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.4...v0.8.5) -- 2026-08-06 (beta)
 
 **The `boot` view, the full tier ladder, and `--set` (#68 R1).** The missing middle view: `current` shows what is open, `last` shows the previous epoch, and now **`csb set show boot`** shows everything active since startup -- the epoch in progress, cross-platform from day one. With it comes the third evidence tier and a cleaner resume grammar.
 
@@ -127,7 +135,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **Live views (`current`, `boot`) print stable hints** -- session names (or UUIDs when ambiguous), never index-based commands: a quit renumbers a live roster, so a printed index hint could go stale between reading and typing. Frozen views (named sets, epochs, the reclaim menu) keep index hints -- their numbers are canonical. Both live views now say so: "row numbers reflect this invocation".
 - Stale help text rewritten (`csb set -h` had two circular sentences from mechanical edits, and described named sets as unreleased).
 
-## [0.8.4] -- 2026-08-06 (beta)
+## [0.8.4](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.3...v0.8.4) -- 2026-08-06 (beta)
 
 **The Live Session Registry: `csb set show current` (#64), plus the live-resume guard (#67).** Until now csb could reconstruct the *past* -- what a shutdown killed -- but could not answer the present: *what is open right now*. No activity heuristic can (measured: a provably-live session sat ~64h idle). The answer is observation, not inference: csb's own hooks now record every session open and erase the record on clean close, so **an entry that was never erased is evidence** -- of a running session this boot, or of a crash/forced shutdown before it.
 
@@ -148,7 +156,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - The plugin's hook script gained the registry writes -- **update the installed plugin to activate live tracking**; sessions register on their next start.
 - A session opened after the last backup (not yet indexed) still shows in `current` -- located by the registry's recorded cwd, resumable by index (`claude --resume` needs no csb index).
 
-## [0.8.3] -- 2026-08-05 (beta)
+## [0.8.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.2...v0.8.3) -- 2026-08-05 (beta)
 
 **Two fixes found by the checklist sweep across v0.8.0-v0.8.2.** Both were things the automated suite reported green on, and both were caught only by running the feature the way a person would. The first is a correctness bug in the epic's headline guarantee.
 
@@ -164,7 +172,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Docs
 - [`docs/commands.md`](docs/commands.md) now states that the roster is a snapshot rather than a checklist: reclaiming a session removes it from later views, because membership is inferred from last-activity time. Useful behavior (what's left to reclaim), but it means the roster is not a durable record of what was open -- and nothing on screen previously said so.
 
-## [0.8.2] -- 2026-08-04 (beta)
+## [0.8.2](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.1...v0.8.2) -- 2026-08-04 (beta)
 
 **Index addressing: `csb resume set <N>` (#63).** The roster numbers from v0.8.0 and v0.8.1 become addresses. Reclaiming a set is a loop *you* drive -- read the roster, open the terminal you want, run one command, repeat. **csb never spawns a terminal, window, or tab**; it launches in the one you invoked it from, exactly as `csb resume` always has. csb cannot know which emulator, tab, or placement you meant, and guessing wrong is worse than not guessing.
 
@@ -182,7 +190,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Docs
 - [`docs/commands.md`](docs/commands.md) gains "Reclaiming a set" -- the three forms, the stable-number guarantee, and the no-spawn rule stated plainly.
 
-## [0.8.1] -- 2026-08-03 (beta)
+## [0.8.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.8.0...v0.8.1) -- 2026-08-03 (beta)
 
 **Named sets (#62).** v0.8.0 shipped the *observed* kind of session set -- the boot epoch, which answers "what was I running when it died". This adds the *curated* kind: a group you define, independent of any restart, answering "which sessions do I reload together". Same verb, same roster, no new machinery -- a named set is just a name and a list of sessions.
 
@@ -205,7 +213,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - [`docs/naming.md`](docs/naming.md) gains "Naming sets" -- the two shapes (standing `PURPOSE` vs snapshot `YYYY-M-D__topic`), why set names deliberately do *not* inherit `PROJECT__DATE__topic` (sets span projects), and the reserved names.
 - [`docs/commands.md`](docs/commands.md) gains the CRUD surface, where the file lives, and why that location is the point.
 
-## [0.8.0] -- 2026-08-02 (beta)
+## [0.8.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.5...v0.8.0) -- 2026-08-02 (beta)
 
 **Restart recovery: `csb set show last` (#61).** A forced restart preserves every session and destroys the one thing csb could not recover -- which sessions were *active together* when the machine went down. Reconstructing that meant scrolling `csb list` and reasoning from memory. Now one command answers it, reading the shutdown fence from the Windows event log and membership from timestamps the index already had. Read-only: no hooks fire, nothing is stored, no schema changes. 1408 tests pass.
 
@@ -229,7 +237,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - [`docs/platforms.md`](docs/platforms.md) records the Windows-only fence dependency and the POSIX plan.
 - `tests/checklists/v0.8.0__Feature__csb-set-show-last.md` -- the hand-runnable companion; its high-value step is judging a real post-restart roster against memory, which no mock can do.
 
-## [0.7.5] -- 2026-08-02 (beta)
+## [0.7.5](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5) -- 2026-08-02 (beta)
 
 **Shared tooling moved to the `git-repokit-common` subtree (#16).** `scripts/` held locally-copied tooling that had quietly drifted from upstream -- and, in places, was never adapted to csb at all. It now lives in a squashed subtree at `scripts/repokit-common/`, configured rather than forked. No runtime change; csb's package and CLI are untouched. 1342 tests pass.
 
@@ -248,7 +256,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **`CONTRIBUTING.md` documents the subtree** -- the pull command, the `[tool.repokit-common]` config block, and the rule that files under the subtree prefix must not be edited in place (add config or send a fix upstream, or the next pull conflicts).
 - README's naming section trimmed to a short high-value tease pointing at [`docs/naming.md`](docs/naming.md) -- the full conventions, workflow, and anti-patterns live there rather than in the README.
 
-## [0.7.4] -- 2026-08-02 (beta)
+## [0.7.4](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4) -- 2026-08-02 (beta)
 
 **Session naming, documented.** Every csb lookup -- `list`, `scan`, `tree`, `resume` -- matches against the session *name*, but nothing in the docs said so or suggested how to name one. This release fills that gap: naming is the habit that decides whether finding old work is an instant metadata filter or a content search. Docs only; no behavior change. 1342 tests pass.
 
@@ -263,7 +271,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Changed
 - **Git history rewritten (2026-08-02).** Routine cleanup: some large files were removed from git history to keep clones lean. Commits from v0.3.13 onward have new hashes (and are no longer commit-signed; all release tags were re-signed), while earlier history is untouched. If you cloned before 2026-08-02: re-clone, or `git fetch && git reset --hard origin/main`. Releases and PyPI packages are unaffected.
 
-## [0.7.3] -- 2026-08-02 (beta)
+## [0.7.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.2...v0.7.3) -- 2026-08-02 (beta)
 
 **Path-exposure rungs: pick how much you trust, everything colder comes with it.** The harvester inherently produces path mentions at different confidence levels, and no single display cut answers every question -- `.manifest`-class rows exist at the expressive end no matter how many lexical rules land, because lexical rules cannot decide a foreign path's nature. 0.7.3 stops fighting that shape-by-shape and exposes the spectrum itself, as selectable rungs on a `dazzle_lib.continuum.Continuum` -- csb becomes that module's first consumer outside dazzlecmd's orbit, deliberately (the canary role). Patch bump by project convention (minor = a new verb or major capability; this is within the #56 arc, default-invisible on an existing verb) -- new `--paths` flag, config keys, and additive schema v8 notwithstanding. **One `csb update rebuild-index` stamps provenance**; un-rebuilt sessions degrade to the neutral rung rather than lying about certainty.
 
@@ -289,7 +297,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-08-01__13-18-51__dev-workflow-process__path-trust-rungs-continuum.md` -- the full analysis, including the invariant-theory addendum that derives zero, linearity, and the sign convention rather than choosing them.
 
-## [0.7.2] -- 2026-08-01 (beta)
+## [0.7.2](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.1...v0.7.2) -- 2026-08-01 (beta)
 
 **Hardening of 0.7.1's folder harvesting**, closing every defect found by two adversarial verification passes and live spot-checking against a real vault. 0.7.1 shipped as a documented baseline with these on the ledger; nothing here is new surface, all of it is the same feature told the truth. **Existing indexes need one `csb update rebuild-index`** (same requirement 0.7.1 already carried -- upgrading straight to 0.7.2 rebuilds once).
 
@@ -319,7 +327,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-07-31__03-02-03__dev-workflow-process__harvester-precision-bug-ledger.md` -- the classified ledger these fixes execute, including the measured rejection of existence-based ranking and the cd-fact ("Option 4") adoption.
 
-## [0.7.1] -- 2026-07-31 (beta)
+## [0.7.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.0...v0.7.1) -- 2026-07-31 (beta)
 
 **Folder analysis now reflects where work actually happened (#56).** `csb scan <repo>` found nothing for a repository a session had spent its life editing, and `csb show` listed a single working directory. Both were wrong for **100% of measured sessions** (14/14), because the indexer read one field that cannot carry the answer.
 
@@ -365,7 +373,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-07-30__21-46-10__folder-usage-tool-path-harvest.md` -- the DWP: measured ground truth, 16 acceptance checks, and the decision ledger (weighted multi-folder crediting deferred to #57).
 
-## [0.7.0] -- 2026-07-26 (beta)
+## [0.7.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0) -- 2026-07-26 (beta)
 
 **`csb tree` -- see which session forked from which (#31).** Every time you run `/branch`, continue a `/rewind`, or `claude --fork-session -r`, Claude Code mints a new session that inherits the old one's history. csb has always backed those up; now it shows you how they relate. 1089 tests pass (was 1041 at v0.6.3; +48).
 
@@ -387,7 +395,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Tests
 - 48 new in `tests/test_lineage.py`: extraction (fork detected; boundary-without-pointer, non-boundary mention, and later-in-file cases; first-boundary-wins), migration v6 (columns + idempotency), forest construction (empty, single child, deep chain, multi-root, fork-order sorting, cycle guard, phantom grouping), the three deleted-scope tiers, filtering (component vs `--lineage`, prefix, regex, UUID/folder vocabulary, scope ids, orphans, root, truncation), and rendering (both charsets, cumulative info levels, shortid, markers, truncation hint, JSON shape, encoding probe). Extraction and migration tests are red-green verified against the v0.6.3 baseline.
 
-## [0.6.3] -- 2026-07-22 (beta)
+## [0.6.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...v0.6.3) -- 2026-07-22 (beta)
 
 **`csb resume` works on npm-shim installs (#55).** On Windows boxes where Claude Code is installed via npm, `claude` exists only as shims (`claude` + `claude.cmd` -- no `claude.exe`). `csb resume` spawned the bare name, which goes to Win32 `CreateProcess` -- and CreateProcess searches PATH **for `.exe` only**, never applying `PATHEXT`. Result: `Error: 'claude' command not found in PATH.` while the identical command line worked when typed in the same shell (cmd searches PATH x PATHEXT). Install-method dependence: native-installer boxes worked, npm boxes didn't.
 
@@ -411,7 +419,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-07-22__01-59-49__git-refuses-repo-context-dependent-dubious-ownership.md` -- the DWP: ground-truth timeline (failures bracket exactly the sessions launched from the non-elevated shell), elevation confirmed as the differential (same git binary, same config), candidates A-E, decision ledger (auto-`safe.directory` rejected as automatic; `csb doctor` deferred).
 
-## [0.6.1] -- 2026-07-19 (beta)
+## [0.6.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.0...v0.6.1) -- 2026-07-19 (beta)
 
 **`csb setup` detects claude-session-logger (#53).** The setup checklist gains an optional row for [claude-session-logger](https://github.com/DazzleML/claude-session-logger) -- csb consumes its output (`.convo`/`.sesslog` search channels, session-name enrichment) and backs up / restores its files, so setup now surfaces it as an enhancement worth considering without implying it's required.
 
@@ -423,7 +431,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Tests
 - 7 new (1022 pass): logger absent -> `[~]` + both commands, never `[ ]`; installed -> `[x]`, no re-instruction; marketplace-only -> just the install line; plugin-without-marketplace (local clone) -> done; full-display-version with and without build metadata; BOM'd registry still reads as installed (found by the tester run -- a rejected registry would re-instruct a done step). All-done checklist now pins 4 `[x]` rows and zero commands.
 
-## [0.6.0] -- 2026-07-19 (beta)
+## [0.6.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.1...v0.6.0) -- 2026-07-19 (beta)
 
 **csb enters beta.** The onboarding overhaul below closes the last gap between "the mechanics work" and "the tool takes care of you": setup is now guided, protection is the default, and being unprotected is a signed exception. Beta reflects that the tool now works well for real daily use; surfaces may still break between versions when the design calls for it.
 
@@ -459,7 +467,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - `2026-07-18__13-40-12__csb-list-scan-empty-after-crash-recovery-ux.md` -- DWP #1: ground-truth failure chain (D1 contract bug / D2 silent failure / D3 dead-end UX), candidates A-F, decision ledger (rejected: list live-scan fallback, ambient auto `git init`).
 - `2026-07-18__14-40-27__csb-setup-onboarding-and-protected-by-default.md` -- DWP #2: the onboarding inversion (protected-by-default; setup verb over ambient mutation; every-run banner; signed index-only exception); ambient auto-init stays ledgered behind an evidence trigger.
 
-## [0.5.1] -- 2026-07-15 (alpha)
+## [0.5.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1) -- 2026-07-15 (alpha)
 
 **Multi-term + source-agnostic `csb search -d/-D` (completes #49).** The two things that didn't compose in v0.5.0 now do: you can search **multiple terms** with directory-scope, and directory-scope works with **any `--source`** — not just FTS5. `csb search --match all "SC:N" "SI:N" "SA:N" -d .` (which errored before) works. This is a patch, not a feature: users expected search to already do this. 969 tests pass (was 952 at v0.5.0; +17).
 
@@ -487,7 +495,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-07-15__19-07-23__dev-workflow-process__multiterm-search-with-directory-scope.md` (DWP #1 — FTS5-only composition) and `2026-07-15__19-30-41__dev-workflow-process__source-agnostic-directory-scope-search.md` (DWP #2 — the any-source redesign that supersedes it: decouple directory *scope* from term-search *source*).
 
-## [0.5.0] -- 2026-06-21 (alpha)
+## [0.5.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0) -- 2026-06-21 (alpha)
 
 **Multi-term boolean `csb search` (#49) + a manual PyPI-publish trigger.** You can now search for several terms at once and find the sessions that contain them all, in any order, even across different messages. 952 tests pass (was 949 at v0.4.7; +3).
 
@@ -504,7 +512,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-06-21__19-03-00__dev-workflow-process__multi-term-boolean-search.md` — syntax/matching-unit/combiner analysis + acceptance checks + decision ledger.
 
-## [0.4.7] -- 2026-06-21 (alpha)
+## [0.4.7](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7) -- 2026-06-21 (alpha)
 
 **`csb search` correctness: two bugs that produced silent false negatives (Refs #3).** A user searching `csb search "f-mv"` could not find the session that *created* the `f-mv` tool — even though the term appears 185× in its transcript and `csb scan` lists the session. Root cause was a pair of bugs, both confirmed and red-green verified. 949 tests pass (was 947 at v0.4.6; +2 net, plus 2 contract-correcting updates).
 
@@ -515,7 +523,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Design
 - `2026-06-21__17-11-48__dev-workflow-process__csb-search-fts5-escaping-and-no-fallback.md` — the analysis, both bugs' ground-truth evidence, and the chosen fix with acceptance checks. Same "fresh ≠ complete/correct" principle as the rebuild-safety work: a derived index is an accelerator, not an oracle.
 
-## [0.4.6] -- 2026-06-14 (alpha)
+## [0.4.6](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.5...v0.4.6) -- 2026-06-14 (alpha)
 
 **`--` passthrough: csb as a transparent wrapper (#47).** The commands that launch a subtool now forward everything after a standalone `--` straight to that tool, so the resolve-and-cd convenience extends to any flag the wrapped tool accepts. 947 tests pass (+12 new); the isolation guarantee is red-green verified. Closes #47.
 
@@ -529,7 +537,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **CI green on cache-cold interpreters**: the new `test_launch_viewer_appends_passthrough` broke under CI because `_launch_viewer`'s `platform.system()` shells out via `subprocess` on a cold uname cache, hitting the test's globally-patched `subprocess.Popen` (a context-manager-less fake). It passed locally only because the cache was already warm. The test now pins `platform.system()` before patching `Popen` -- deterministic and OS-independent. Test-only; runtime behavior unchanged.
 - **`pathkit.py` invalid escape sequence**: the module docstring had a stray `\.` (`New\.Project`) that raised `DeprecationWarning: invalid escape sequence` (a `SyntaxError` on future Python). Escaped to `\\.` to match the docstring's other path examples; a whole-package escape-sequence sweep is now clean.
 
-## [0.4.5] -- 2026-06-13 (alpha)
+## [0.4.5](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.4...v0.4.5) -- 2026-06-13 (alpha)
 
 **Docstring/help accuracy audit -- completing the sweep started in v0.4.4.** A follow-up pass over the source files the first sweep missed (`search.py`, `fts5_importer.py`, `transcript_walker.py`), the test suite, and `docs/`. No behavior change; docstrings, comments, and help text only. 935 tests pass.
 
@@ -540,7 +548,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **Dropped stale "Phase N of #3" subtitles** from `search.py`, `fts5_importer.py`, and `cmd_build_fts5` docstrings (the epic shipped); fixed a `# Phase 4 fills in cmd_backfill_deleted` comment (it's implemented).
 - **Removed remaining claude-vault-as-baseline framing** from `fts_paths.py` and `transcript_walker.py` (each now states its rationale on its own merits) -- consistent with the v0.4.4 `fts5_db.py` cleanup.
 
-## [0.4.4] -- 2026-06-12 (alpha)
+## [0.4.4](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.3...v0.4.4) -- 2026-06-12 (alpha)
 
 **`csb update rebuild-index --include-fts5` is real -- the Content Search epic (#3) closes.** The flag has plumbed through to a documented no-op since the v0.3.11 branch handoff; the wiring that "main fills in post-merge" never happened until now. 935 tests pass (was 933; +2 net new alongside the existing seam tests). Red-green verified (no-op probe fails the build test). Closes #3.
 
@@ -551,7 +559,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 ### Notes
 - Closing #3 also records two by-design dispositions from the epic's tail: backup-time incremental FTS5 indexing was REJECTED (hook latency in PreCompact/SessionEnd; v0.3.22's search-time freshness rescue covers staleness instead), and the `messages_fts_meta` linker table was superseded by per-project `fts_schema_version` under the v0.3.2 migration framework.
 
-## [0.4.3] -- 2026-06-12 (alpha)
+## [0.4.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.2...v0.4.3) -- 2026-06-12 (alpha)
 
 **ClaudePaths -- one owner for the `~/.claude` layout (#46).** Layout knowledge (folder names, the absolute-vs-git-relative dual representation, abs<->rel conversion) consolidates from 19 scattered literal joins across 8 files into a single frozen `ClaudePaths` dataclass in `pathkit.py`, with a guard test that keeps it that way. Pure-refactor goal verified -- DB and git-history conventions byte-identical -- plus three real defects the consolidation inventory uncovered are fixed. 933 tests pass (was 913; +20 new). Guard and junction tests red-green verified. Refs #46 (Phase 4 go/no-go still open).
 
@@ -571,7 +579,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - `git_ops` pathspec/match strings (the `SESSION_HISTORY_SCOPES` table, deleted-JSONL globs) compose from `ClaudePaths` name constants -- one spelling, two representations. The repo-prefix machinery itself is untouched.
 - `fts_paths` accepts `str | Path` for `claude_dir` (annotation was `Path`-only while every caller passed `str`).
 
-## [0.4.2] -- 2026-06-12 (alpha)
+## [0.4.2](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2) -- 2026-06-12 (alpha)
 
 **Restore-by-name + follow relocated `~/.claude` setups.** Two gaps surfaced within hours of v0.4.1 -- one while writing README workflow examples, one from real-world container/worktree usage patterns. 913/913 tests pass (was 904; +9 new). Both red-green verified. Closes #44, closes #45.
 
@@ -582,7 +590,7 @@ Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, delet
 - **README "Common workflows" section** -- the daily patterns (`cd proj && csb scan .`, `csb list -n 5` after a reboot, search->distill, resume-by-name, list-deleted->restore-by-name) with an expanded table in `docs/commands.md`.
 - **9 new automated tests**: restore-by-name (exact-name restore, name-multimatch candidates, nonsense-keeps-full-UUID-hint) and the relocation matrix (CLAUDE_CONFIG_DIR alone relocates everything incl. the DB, CLAUDE_DIR beats it, flag beats both, explicit DB override wins, config/settings chicken-and-egg paths, no-relocation regression pin).
 
-## [0.4.1] -- 2026-06-11 (alpha)
+## [0.4.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1) -- 2026-06-11 (alpha)
 
 Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines -- a storefront of highlights with examples, linking into a proper `docs/` manual:
 
@@ -598,7 +606,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 ### Notes
 - This release also serves as a fresh final-upload event for PyPI: the five parallel v0.3.19-v0.4.0 publishes finished out of order (0.3.22's files landed seconds AFTER 0.4.0's) and PyPI's cached "latest" banner stuck on 0.3.22 -- installers were unaffected (pip already served 0.4.0); this upload forces the recompute. Release-ordering rule refined: push the highest version's tag only after the lower versions' workflows complete.
 
-## [0.4.0] -- 2026-06-11 (alpha)
+## [0.4.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0) -- 2026-06-11 (alpha)
 
 **`csb distill` -- read any session like a chat log (#12). The alpha roadmap is complete.** The last of the three alpha epics lands: sessions render as instant-messenger-style logs (timestamped speaker turns, generous separation, one-line tool calls -- never tool output), readable as Markdown in Typora and navigable in Vim. The distilled file is a READING layer over the preserved JSONL -- never a replacement; csb remains full-recovery-first. With #12 + #13 + #14 all shipped, csb is feature-complete for its original roadmap: on the cusp of beta, staying alpha while the tires get kicked. 904/904 tests pass (was 884; +20 new). Red-green verified. Closes #12.
 
@@ -615,7 +623,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 - v1 tool targets are file paths (Vim-jumpable) without line ranges -- the shared FileOpRow doesn't carry ranges yet; a future enrichment can add `path:start-end`.
 - Correction to the [0.3.22] entry below: the README footer work described there was reverted by an editor save race before that commit; the footer landed via the user's subsequent edits instead.
 
-## [0.3.22] -- 2026-06-11 (alpha)
+## [0.3.22](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...v0.3.22) -- 2026-06-11 (alpha)
 
 **FTS5 false-stale fixed at the search layer (#36).** Two robustness fixes close the search false-negative that surfaced in the b6a4929f incident: a byte-identical rewrite (restore, rsync) no longer makes auto-search abandon a perfectly current FTS5 index, and a shell-only `.sesslog` no longer dead-ends the dispatch before the `jsonl` that has the content. Verified LIVE against the original incident session: with its mtime forward-bumped, `csb search qwen --session b6a4929f` now finds content where it previously returned "No content matches". 884/884 tests pass (was 880; +4 new). Red-green verified. Closes #36.
 
@@ -632,7 +640,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 ### Notes
 - #40 (v0.3.18) removed this bug's most common trigger by restoring original mtimes; v0.3.22 fixes the search layer itself so ANY mtime-forward byte-identical path (rsync --times asymmetries, manual copies, pre-v0.3.18 restores) is also covered.
 
-## [0.3.21] -- 2026-06-11 (alpha)
+## [0.3.21](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...v0.3.21) -- 2026-06-11 (alpha)
 
 **`csb resume` accepts everything `csb view` accepts -- including the session NAME (#42).** `csb resume MAKING-LIBS_...__finalizing-libraries-...` now works: csb resolves the name via its index and hands `claude --resume` the full UUID -- the one format that is unconditionally direct. csb's identifier surface is now a strict SUPERSET of Claude Code's native one (verified against the `/resume` source: Claude accepts full UUID or exact custom-title; csb adds prefixes/suffixes, paths, folders, sesslog names, and keywords on top). 880/880 tests pass (was 874; +6 new). Red-green verified.
 
@@ -645,7 +653,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 - Investigation (AC#1, verified empirically against `claude --help` and the `/resume` source): Claude Code natively resolves a FULL UUID (strict 8-4-4-4-12 -- no prefix support) or an exact custom-title match (feature-gated); anything else seeds the interactive picker. csb resolving name->UUID sidesteps both the feature gate and the no-prefix limitation.
 - csb's pruned-detection, restore-first, preflight, and cd-to-start-folder all continue to run regardless of which identifier form was used -- resolution happens before that pipeline.
 
-## [0.3.20] -- 2026-06-11 (alpha)
+## [0.3.20](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...v0.3.20) -- 2026-06-11 (alpha)
 
 **`csb view` -- the "just show me the conversation" one-liner (#14, Alpha #3).** Resolves any session identifier (UUID/prefix, transcript path, folder, sesslog dir name, or keyword) and opens it in Claude Code History Viewer, detached. Repatriated from dazzlecmd's `dz claudeview` (which was written against csb's own API); csb stays a launcher, never a renderer. Pruned sessions restore-in-place first via the same policy and flags as `csb resume` -- closing #34's view-half, with v0.3.18's restore fidelity (symlinks + original timestamps) riding along. 874/874 tests pass (was 850; +24 new). Closes #14, closes #34.
 
@@ -660,7 +668,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 - `docs/maintenance.md` documents the pruned view flow (#34 AC) alongside the resume flow, including the restore-in-place-not-temporary rationale.
 - dazzlecmd follow-up (not csb): thin `dz claudeview` to delegate to `csb view`.
 
-## [0.3.19] -- 2026-06-11 (alpha)
+## [0.3.19](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...v0.3.19) -- 2026-06-11 (alpha)
 
 **One `--deleted` grammar everywhere.** `csb scan` finally adopts the two-valued `--deleted [only|all]` flag that `list` and `search` have used since v0.3.5, and the flag's definition + interpretation now live in exactly one place each. 850/850 tests pass (was 842; +9 new, 1 updated). Red-green verified. Closes #41.
 
@@ -677,7 +685,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 - The one pre-existing Namespace-built test using the retired boolean contract (`deleted=True`) was updated to `deleted="only"`.
 - `add_deleted_flag` is the intended migration seam for the #11 CLI grammar redesign (`--state` etc.).
 
-## [0.3.18] -- 2026-06-11 (alpha)
+## [0.3.18](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...v0.3.18) -- 2026-06-11 (alpha)
 
 **Restore fidelity: links and timestamps.** Two restore-completeness features ship together: `csb restore` now recreates **every** git symlink entry, not just the logger's `transcript.jsonl` (#39), and restored files get their **original timestamps** back -- a restore is now byte+metadata-exact, not just byte-exact (#40). Timestamp sources are content-internal (index mtime, transcript event timestamps, git commit dates), so fidelity is **retroactive for every session already in git history** -- including sessions deleted long before this release. 842/842 tests pass (was 832; +10 new). Both features red-green verified.
 
@@ -694,7 +702,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 - **Changed-detection stays honest:** a restored-old mtime no longer makes a freshly-recovered session look like it has un-backed-up changes, and `--sort expiration` keys on a truthful old mtime after the next scan.
 - A latent test-fixture bug surfaced and fixed: `_populate_db_with_session` was passing an ISO string into the positional `jsonl_mtime` slot (it meant `scanned_at`); production now also defensively coerces non-numeric DB mtimes to None.
 
-## [0.3.17] -- 2026-06-11 (alpha)
+## [0.3.17](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...v0.3.17) -- 2026-06-11 (alpha)
 
 **The project graduates to alpha.** End-to-end restore is proven (#13 closed), content search works (FTS5), and the recovery path is hardened (v0.3.15/v0.3.16). The two remaining roadmap items (#12 distilled layer, #14 in-csb viewer) are convenience features, not core function -- #12 is an alternate form of what claude-session-logger already produces, and #14 is served externally by `dz claudeview`. Also: `csb restore` now **recreates** the logger's `transcript.jsonl` symlink instead of skipping it (#38). 832/832 tests pass (was 827; +5 new). Red-green verified.
 
@@ -712,7 +720,7 @@ Docs restructure + PyPI banner refresh. The README slims from 339 to ~197 lines 
 - **Cross-machine limitation:** the recreated link uses an absolute target on the restoring machine. After relocating `~/.claude` to a different box, the link may briefly point at the old path until the logger heals it on next session activity -- the link is convenience-only (not load-bearing for resume or logger append).
 - **Verified on real data:** the two leftover 107-byte stubs from earlier empirical-walk testing (sessions 7fb868dc, 4d7565f3) were healed into proper symlinks by `csb restore`; zero regular-file `transcript.jsonl` remain in `~/.claude/sesslogs/`.
 
-## [0.3.16] -- 2026-06-10 (prealpha)
+## [0.3.16](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.15...v0.3.16) -- 2026-06-10 (prealpha)
 
 Companion to v0.3.15 (ships in the same release): a **restore-verify gate** that generalizes the v0.3.11 "don't lose deleted-session knowledge" invariant from `rebuild-index` to the everyday `backup` path. A session must not be silently un-deleted from a stub or garbage JSONL -- only a genuine transcript (>=1 parsed event) counts as a revival. This closes the DB cascade that followed the b6a4929f symlink-clobber: after the garbage transcript landed, the next `csb backup` had cleared `deleted_at` and the session vanished from `--deleted` views. 827/827 tests pass (was 817; +10 new). Red-green verified.
 
@@ -729,7 +737,7 @@ Companion to v0.3.15 (ships in the same release): a **restore-verify gate** that
 - **No schema change** -- the guard is a SQL `CASE` expression + bound parameter. No migration.
 - **Recovery after a real fix:** once a genuine transcript is restored (e.g. `csb restore <uuid> --jsonl-only --force` from a healthy commit), the next `csb backup` correctly un-deletes the session, because `event_count > 0`.
 
-## [0.3.15] -- 2026-06-10 (prealpha)
+## [0.3.15](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...v0.3.15) -- 2026-06-10 (prealpha)
 
 Critical fix: `csb restore` could **destroy the transcript it had just restored** by writing through a claude-session-logger `transcript.jsonl` symlink. When a session's restore scope included that symlink (a git blob whose content is the link-target path) AND the symlink still existed on disk (the real-world pruned-session shape -- Claude Code's purge deletes only the JSONL target, the logger's symlink survives), the restore wrote the symlink's 111-byte target-path content *through* the live link onto the freshly-restored 2 MB transcript. `claude --resume` then failed with "No conversation found", and the next `csb backup` re-indexed the garbage and cleared the session's `deleted_at`. Found via a real incident (session `b6a4929f`); the transcript was fully recoverable from git. 817/817 tests pass (was 808; +9 new). Refs the symlink-clobber DWP.
 
@@ -749,7 +757,7 @@ Critical fix: `csb restore` could **destroy the transcript it had just restored*
 - **A separate, lower-severity search bug** surfaced during this investigation and is filed as #36: after a restore rewrites a transcript's mtime, FTS5 is falsely considered stale (the freshness check uses mtime, not the `last_content_hash` it already stores), and the dispatcher can stop at a shell-only `.sesslog` channel before reaching the `jsonl` source. Not addressed in v0.3.15.
 - **No changes to restore scope or overwrite policy** -- v0.3.13/v0.3.14 behavior preserved. This is purely the symlink-safety fix + resume preflight.
 
-## [0.3.14] -- 2026-06-03 (prealpha)
+## [0.3.14](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...v0.3.14) -- 2026-06-03 (prealpha)
 
 `csb resume <uuid>` now handles pruned (deleted_at-set) sessions gracefully -- prompts to restore from git before resuming on TTY, honors `--restore-pruned` / `--no-restore` flags non-TTY. Plus a refactor extracting `_restore_session()` from `cmd_restore` so the resume path reuses the exact same file-level restore policy as `csb restore` (consolidation discipline from #34's AC #1 + #2). 808/808 tests pass (was 801; +7 new). Refs #34 (resume half complete; view half awaits #14).
 
@@ -771,7 +779,7 @@ Critical fix: `csb restore` could **destroy the transcript it had just restored*
 - **`csb view <pruned-uuid>` is NOT addressed in this release.** That depends on #14 (the viewer launcher itself, which doesn't exist yet). #34 stays open until #14 + view's pruned path both land. The helper extraction here means that future work is "wire it up at one call site" instead of "build the whole policy again."
 - **No changes to `csb restore` semantics.** All v0.3.13 behavior preserved -- this is a pure refactor + new feature on `csb resume`.
 
-## [0.3.13] -- 2026-06-03 (prealpha)
+## [0.3.13](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...v0.3.13) -- 2026-06-03 (prealpha)
 
 `csb restore` correctness fix: three SESSION-HISTORY categories that v0.3.12 deferred as "EPHEMERAL (first cut)" are now restored by default. Whitebox investigation against `c:/code-ext/claude-code/` confirmed all three are read on session resume; missing them silently breaks user-visible features. Plus a refactor that makes the SESSION-HISTORY scope table-driven -- adding a new category is now one row instead of two places (pathspec + filter branch). Empirical re-test on a real 8788-message session restored **708 files** vs the v0.3.12 count of 105 -- the missing 603 were almost entirely `file-history/` snapshots. 801/801 tests pass (was 795; +6 new).
 
@@ -794,7 +802,7 @@ Critical fix: `csb restore` could **destroy the transcript it had just restored*
 - **session-env may be empty for many sessions.** Only populated if Setup/SessionStart/CwdChanged hooks ran during the session. Sessions without these hooks get a 0-count for the category in the restore summary -- not a bug, just absence.
 - **No changes to overwrite policy or flags** -- `--jsonl-only` and `--force` semantics from v0.3.12 are unchanged. The preserve-present default still protects local content with newer logger writes from being clobbered.
 
-## [0.3.12] -- 2026-06-03 (prealpha)
+## [0.3.12](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...v0.3.12) -- 2026-06-03 (prealpha)
 
 `csb restore <uuid>` becomes a full session-history restore -- the JSONL plus every git-tracked sidecar keyed to the UUID (subagent transcripts, tool-result spillover, remote-agent metadata, claude-session-logger state files, claude-session-logger sesslog directories). The pre-v0.3.12 behavior (JSONL only) is preserved behind `--jsonl-only`. Empirical verification against a real 2837-message session restored 28 files (vs the 1 it would have returned before), byte-for-byte from git. 797/797 tests pass (was 771; +26 new). Closes #32 and #33. Refs #13 (advances ACs #5 and #6 from PARTIAL to DONE).
 
@@ -818,7 +826,7 @@ Critical fix: `csb restore` could **destroy the transcript it had just restored*
 - **Sesslog append-safety.** When a session is `claude --resume`'d after restore, the logger's `reconcile_session_directory` (claude-session-logger `reconciliation.py:28-39`) finds the restored dir by GUID-in-dirname scan and appends cleanly. No fresh-dir-with-different-name problem.
 - **`sesslogs/bak/`** (singular, sibling of per-session sesslog dirs) is verified user-managed (not written by claude-session-logger; see commit message for the source-grep evidence) and is intentionally NOT auto-restored. The logger DOES write `<sesslog-dir>/baks/` (plural) for housekeeping recovery; those are nested under the per-session sesslog dir and ARE restored.
 
-## [0.3.11] -- 2026-06-03 (prealpha)
+## [0.3.11](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...v0.3.11) -- 2026-06-03 (prealpha)
 
 The restore-shoring-up arc lands on this branch. v0.3.11 closes a confirmed data-loss bug in `csb rebuild-index`, introduces a `csb update` umbrella for maintenance verbs, adds git-history backfill of culled-session metadata with auto-repair for past-rebuild casualties, and ships display polish around the deleted-session story. 771/771 tests pass (was 729 at the post-merge baseline; +42 new). See `docs/maintenance.md` for the user-facing reference.
 
@@ -860,7 +868,7 @@ Plan: `2026-06-02__15-46-56__claude-plan__safe-update-umbrella-and-backfill-v0.3
 Handoff from main worktree: `2026-06-02__14-14-02__handoff__restore-worktree-incorporate-rebuild-safety-and-fts5-blockers.md`.
 Phase 0 reality-check report: `2026-06-02__19-53-38__rebuild-reality-check-report.md`.
 
-## [0.3.10] -- 2026-05-30 (prealpha)
+## [0.3.10](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10) -- 2026-05-30 (prealpha)
 
 Exposes Claude Code's session purge **TTL** (`cleanupPeriodDays`) through `csb config`, so you can see and change how long Claude Code keeps a transcript before deleting it -- without hand-editing `settings.json`. To keep csb's own config and Claude Code's config from ever colliding, Claude Code settings are addressed through a fully-qualified `settings:` namespace: a bare key always means csb's `session-backup-config.json`; a `settings:` key always means Claude Code's `settings.json`. 674/674 tests pass (was 636 at v0.3.9; +38).
 
@@ -875,7 +883,7 @@ Exposes Claude Code's session purge **TTL** (`cleanupPeriodDays`) through `csb c
 - **`read_cleanup_period`** now resolves `settings.json` via the shared `get_settings_path` (with `~` expansion) and its docstring describes the actual fall-through behavior (unset/zero/unreadable -> 30; negative passed through). Behavior is unchanged; the previous docstring claimed it returned 0 when disabled, which it never did.
 - **`csb config` help/usage** documents the `settings:` namespace and the TTL example.
 
-## [0.3.9] -- 2026-05-28 (prealpha)
+## [0.3.9](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...v0.3.9) -- 2026-05-28 (prealpha)
 
 Reframes **SessionStart** from a silent catch-up backup into a **health check**, and surfaces the same signal to users in **`csb status`**. Now that SessionEnd reliably completes (v0.3.8), SessionStart no longer backs up unconditionally -- it detects whether a *prior* session has un-backed-up changes (an unclean shutdown where SessionEnd never ran) and, only then, warns you (a `systemMessage` Claude Code surfaces) **and** runs a recovery backup. The clean path does nothing. This surfaces a missed backup instead of masking it by quietly redoing it. `csb status` now answers "did my session work get saved?" with a per-session `Un-backed-up:` line. 636/636 tests pass (was 624 at v0.3.8; +12).
 
@@ -894,7 +902,7 @@ Reframes **SessionStart** from a silent catch-up backup into a **health check**,
 ### NO CHANGE (with rationale)
 - **PreCompact / SessionEnd** remain unconditional detached backups -- they are the durable triggers. SessionStart is now purely a safety-net detector, per the design directive "detect errors, not patch them."
 
-## [0.3.8] -- 2026-05-28 (prealpha)
+## [0.3.8](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.7...v0.3.8) -- 2026-05-28 (prealpha)
 
 Makes the **SessionEnd** backup actually complete. v0.3.7 fired the backup in the background but with no detach flags, so Claude Code's process-tree teardown hard-killed it mid-run -- leaving the just-ended session un-indexed until the *next* SessionStart caught up. v0.3.8 spawns the backup **decoupled** from the session's process tree so it survives teardown and finishes on its own, and **without a console window**. Verified live: a real backup completed 12.8s *after* the window closed (rc=0), with the stale lock reclaimed and released cleanly. 624/624 tests pass (was 621 at v0.3.7; +3 in `tests/test_backup_hook.py`).
 
@@ -910,7 +918,7 @@ Makes the **SessionEnd** backup actually complete. v0.3.7 fired the backup in th
 - **`SessionStart` still runs a catch-up backup** (not yet reframed to a pure error-detector). v0.3.8 makes SessionEnd reliably complete; reframing SessionStart to *detect and warn* about a missed backup (instead of silently re-running it) is the focused follow-up (v0.3.9), kept separate so this proven durability fix ships on its own.
 - **`commands.py` `cmd_backup`, `lockfile.py`, `run-hook.mjs`** -- unchanged. The fix is purely *how* the backup process is spawned by the hook; the v0.3.6 lock reclaim remains the net for OS-shutdown/logout kills.
 
-## [0.3.7] -- 2026-05-28 (prealpha)
+## [0.3.7](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.6...v0.3.7) -- 2026-05-28 (prealpha)
 
 Durable "backups just happen" -- adds a `SessionStart` backup hook and runs all hook-triggered backups in the **background**, so the session index stays fresh after exits, resumes, and `/fork` / `/rewind`. Fixes the root cause of a session that was unsearchable after a `/rewind`: csb only hooked PreCompact + SessionEnd, and SessionEnd is hard-killed by Claude Code's process-tree teardown before it finishes -- leaving the just-ended (or just-forked) session un-indexed. 621/621 tests pass (was 602 at v0.3.6; +19 in a new `tests/test_backup_hook.py`).
 
@@ -934,7 +942,7 @@ Durable "backups just happen" -- adds a `SessionStart` backup hook and runs all 
 - **`lockfile.py`** -- v0.3.6 reclaim is the safety net for any SessionEnd backup the teardown still kills; unchanged.
 - **`run-hook.mjs`** -- still `spawnSync` to `backup-hook.py`, which now returns immediately after the background spawn, so the Node layer no longer blocks either.
 
-## [0.3.6] -- 2026-05-27 (prealpha)
+## [0.3.6](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.5...v0.3.6) -- 2026-05-27 (prealpha)
 
 Fixes a silent, indefinite backup-freeze bug. The backup lock (`.csb-backup.lock`) only checked whether *some* process with the recorded PID was alive -- with no defense against PID reuse. When a backup died without releasing its lock (a computer restart mid-backup), the OS recycled its PID to another long-lived process, the lock looked permanently held, and **every subsequent backup silently skipped** -- freezing the session index so new sessions became invisible to `csb search`. Observed live: a backup's PID was reused by `WindowsTerminal.exe` after a restart and backups silently skipped for two days. 602/602 tests pass (was 589 at v0.3.5; +13 across the rewritten `test_lockfile.py`).
 
@@ -956,7 +964,7 @@ Fixes a silent, indefinite backup-freeze bug. The backup lock (`.csb-backup.lock
 - **`search.py`** -- the search engine was never broken; the missing session was unindexed (invisible to `search()`'s session enumeration), not mis-searched.
 - **Hook scripts (`hooks/`)** -- they invoke `csb --quiet backup`, routing through the same `cmd_backup` lock; the fix applies to unattended runs (where silent-skip-forever was most damaging) with no hook change.
 
-## [0.3.5] -- 2026-05-21 (prealpha)
+## [0.3.5](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.4...v0.3.5) -- 2026-05-21 (prealpha)
 
 Directory-scope search: `csb search -d <path>` (and `-D` for folder-only) ranks every indexed session that touched files under PATH by SUM(strength) of those file-operations, then runs FTS5 MATCH for the user's pattern within each ranked session. The killer-use-case feature of the v0.3.x track -- "I'm in folder X, which past sessions actually worked on it, and what did they say about Y?" -- finally lands. New `--min-strength {1,2,3}` filter trims out low-signal rows (Grep probes, read-only). Two small ergonomic refinements ride along: matched query terms now render in bold green inside excerpt lines, and the `--all` / `--deleted` flag pair is unified into a single `--deleted {only,all}` argument. 571/571 tests pass (was 547 at v0.3.4; +24 net new).
 
@@ -996,7 +1004,7 @@ Directory-scope search: `csb search -d <path>` (and `-D` for folder-only) ranks 
 ### Carried over from v0.3.4
 - The auto-mode default preference (`effective_default_preference`) still adapts to vault state for non-dir-scope searches. Dir-scope mode pins source to `fts5` regardless because the ranking SQL only exists in the per-project FTS5 DB.
 
-## [0.3.4] -- 2026-05-18 (prealpha)
+## [0.3.4](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.3...v0.3.4) -- 2026-05-18 (prealpha)
 
 Logger-side parity: csb can now derive file-operation metadata from `claude-session-logger`'s output channels (`.sesslog_*`, `.tools_*`, `.fileio_*`) without walking the raw JSONL or building the FTS5 index. The search dispatcher's default preference adapts to the vault -- users without the logger see `("fts5", "jsonl")` as their auto-mode preference instead of the full list. 547/547 tests pass (was 519 at v0.3.3; +28 net).
 
@@ -1018,7 +1026,7 @@ Logger-side parity: csb can now derive file-operation metadata from `claude-sess
 ### Carried over from v0.3.3
 - Search dispatcher logic unchanged; the new `default_preference` parameter is the only signature change. Existing `--source fts5` / `--source convo` / etc. behavior identical.
 
-## [0.3.3] -- 2026-05-18 (prealpha)
+## [0.3.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.2...v0.3.3) -- 2026-05-18 (prealpha)
 
 The keystone v0.3.x deliverable: `csb search` now actually queries FTS5. Designed source-agnostic from the start -- FTS5 is a first-class peer in the preference list alongside `.convo` / `.sesslog` / `.jsonl`, not a layer bolted on top. A single uniform dispatcher walks the preference order per session and returns the first source that's available for that session. Each source is independently optional: a user without claude-session-logger automatically skips `.convo` / `.sesslog`; a user who hasn't run `csb build-fts5` skips `fts5`; a user with only raw transcripts falls through to `jsonl`. New `--source fts5` choice for users who want FTS5-only semantics. 519/519 tests pass (was 510 at v0.3.2; +9 net).
 
@@ -1043,7 +1051,7 @@ The keystone v0.3.x deliverable: `csb search` now actually queries FTS5. Designe
 ### Carried over from v0.3.2
 - Migration framework + visible auto-upgrade notice unchanged. `csb search` opens FTS5 DBs RAW for its freshness check and the actual MATCH query, so it never trips the migration runner -- migrations only happen via `csb build-fts5` (which is the right place).
 
-## [0.3.2] -- 2026-05-18 (prealpha)
+## [0.3.2](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.1...v0.3.2) -- 2026-05-18 (prealpha)
 
 Maintenance step ahead of the v0.3.3 search dispatcher work: refactor the per-project FTS5 DB migration logic from an inline conditional in `fts5_db.py` into a registry-pattern module matching the main DB's `migrations.py`. Same shape, same convention -- adding future per-project schema versions is now "write a function, register it" instead of editing a branch. Per-project migrations now also print a user-visible notice on auto-upgrade (matching the main DB's existing audit-trail style). 510/510 tests pass (was 496 at v0.3.1; +14 net).
 
@@ -1069,7 +1077,7 @@ Maintenance step ahead of the v0.3.3 search dispatcher work: refactor the per-pr
 ### Why a separate release
 Per the project's per-commit-version-bump convention. This is a pure refactor with one new module + framework tests; bundling it with the v0.3.3 dispatcher work would mix unrelated concerns and make either step harder to revert. The framework lands first so v0.3.3 can write its dispatcher tests against a stable migration foundation.
 
-## [0.3.1] -- 2026-05-17 (prealpha)
+## [0.3.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.0...v0.3.1) -- 2026-05-17 (prealpha)
 
 Foundation step for the v0.3.x parity story (issue #3): extract the JSONL walker into a shared module that both the FTS5 importer AND Phase 1 grep search consume, add a `strength` weighting to the `file_operations` table for future ranking, and close a long-standing parity bug where `csb search --source jsonl` silently missed Task-launched sub-agent content. 496/496 tests pass (was 487 at v0.3.0). FTS5 still NOT wired into the search dispatcher -- that ships in v0.3.2.
 
@@ -1093,7 +1101,7 @@ Foundation step for the v0.3.x parity story (issue #3): extract the JSONL walker
 ### Carried over from v0.3.0
 - `csb build-fts5` and per-project FTS5 DB convention unchanged. Existing v0.3.0 DBs get migrated to v2 on next open (transparently); a `csb build-fts5 --force` will produce identical row content with the new strength column populated.
 
-## [0.3.0] -- 2026-05-17 (prealpha)
+## [0.3.0](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0) -- 2026-05-17 (prealpha)
 
 Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Adds the `csb build-fts5` command that imports each session's JSONL transcript into `~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db` with role-aware classification, sub-agent attribution, and file-operation metadata. `csb search` behavior is **unchanged in v0.3.0** -- this is the data-layer foundation; v0.3.1 will wire it into the search dispatcher. 487/487 tests pass.
 
@@ -1119,7 +1127,7 @@ Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Ad
 - Per-project DBs (not one monolithic vault): smaller files, faster targeted queries, per-project archive/move/delete, multi-user safety via the `_<USER>` filename suffix.
 - Schema migration: **NO** `schema_version=4` bump on the main DB. Per-project DBs are self-contained; main DB stays at v3. The reserved slot remains available for a future cross-DB linker table if one is ever needed.
 
-## [0.2.10] -- 2026-05-17 (prealpha)
+## [0.2.10](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10) -- 2026-05-17 (prealpha)
 
 `csb search` polish pass to bring it to parity with `csb list` and `csb scan`: per-session sort order, escalating richer-info levels (`-f` / `-ff`), readable date format by default, visual block separation. 420/420 tests pass.
 
@@ -1138,7 +1146,7 @@ Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Ad
 ### Notes
 - 36 new tests across `test_search.py` (6 for --sort + 3 for fetch_folders/Hit fields), `test_cli.py` (6 for --sort + 6 for -f / -ff levels), and `test_search_render.py` (12 for --full-info level 1 / human-readable default / bold-cyan ANSI / blank-line separator + 8 for level-2 folder list / meta line / sessions-only no-duplicate-start-at / level-0-omits-all). Total 420/420 pass (was 384 at v0.2.9).
 
-## [0.2.9] -- 2026-05-17 (prealpha)
+## [0.2.9](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.8...v0.2.9) -- 2026-05-17 (prealpha)
 
 `csb search --sessions-only` for "which sessions mention X" summary queries, plus a small CLI cleanup: `--session` is renamed to `--session-id` and now accepts comma-separated UUID prefixes for multi-session OR-match. The three output modes (`--json`, `--files-only`, `--sessions-only`) are now wrapped in an argparse mutex group so accidental combinations fail loud at parse time. 384/384 tests pass.
 
@@ -1155,7 +1163,7 @@ Phase 2 infrastructure for issue #3: per-project SQLite FTS5 content indices. Ad
 - `--files-only`, `--json`, and `--sessions-only` are now mutually exclusive via argparse's `add_mutually_exclusive_group()`. Combining them fails at parse time with a clear error. The default (no flag) remains the grouped human-readable excerpt mode.
 - Why `--sessions-only` auto-raises the limit: with `--limit 20` (the search default), a single session with 25+ matches would yield all 20 hits before the iterator visited the second session. Sessions-only mode's semantic is "show me ALL sessions that mention this," not "show me 20 hits' worth of sessions." If the user explicitly passes `--limit N`, that value is respected.
 
-## [0.2.8] -- 2026-05-17 (prealpha)
+## [0.2.8](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.8) -- 2026-05-17 (prealpha)
 
 Phase 3 of the restore shoring-up plan. Closes #27 by surfacing deleted sessions in `csb scan` and `csb list`, adding a filter-aware "N deleted hidden" footer to `csb list`, and adding bulk-restore via `csb scan --deleted --restore`. Test count 304 → 322 (+18 Phase 3 tests). README now has a Recovery section (closes the deferred README AC from #29). Version renumbered from 0.2.7 to 0.2.8 to clear the slot for main's `v0.2.7` (short-UUID sugar) work, which merged in concurrently.
 
@@ -1174,7 +1182,7 @@ Phase 3 of the restore shoring-up plan. Closes #27 by surfacing deleted sessions
 ### Plan reference
 Phase 3 of the four-phase restore shoring-up plan (`2026-05-16__16-30-43__claude-plan__shore-up-csb-restore-subsystem.md`). Phase 4 (end-to-end hand-runnable checklist, closes #13) ships next and converts the Phase 0 `restore_reality_check.py` evidence into a permanent procedure including `claude --resume` validation.
 
-## [0.2.7] -- 2026-05-17 (prealpha)
+## [0.2.7](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7) -- 2026-05-17 (prealpha)
 
 Short-UUID sugar: type `csb show 7250ddce` (prefix), `csb resume c6793d73adaf` (suffix), or even `csb show 916441e6-...-1d090ef5` (the compact display form copied from `csb list --shortid` / `csb search`) instead of typing the full 36-char UUID. One shared resolver and one shared display helper, used by every csb command that takes or shows a session ID. `csb show` output is now Rich-colorized to match the `csb list` / `csb scan` visual style, and `Started:` / `Last active:` / `DELETED at:` timestamps now show local time alongside the original ISO 8601 UTC string for easier reading without losing exact searchability. 361/361 tests pass.
 
@@ -1195,7 +1203,7 @@ Short-UUID sugar: type `csb show 7250ddce` (prefix), `csb resume c6793d73adaf` (
 - 4 chars is the minimum length per half (head or tail). Below that, matching is meaningless across 100+ sessions; we reject early with a clear error rather than degrade to "guess from many candidates".
 - Collision UX is non-interactive: print candidates, exit 2. Scripts can detect ambiguity by exit code and resolve programmatically.
 
-## [0.2.6] -- 2026-05-16 (prealpha)
+## [0.2.6](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6) -- 2026-05-16 (prealpha)
 
 `csb search` now searches transcript content. Phase 1 of #3 (FTS5 epic) is complete -- the breaking change to `csb search`'s semantics is live, and `cmd_search` walks the `session_sources` paths populated by 0.2.5's backup integration. Metadata search (which `csb search` used to do) lives in `csb list <filter>` and `csb scan <term>`. 327/327 tests pass.
 
@@ -1215,7 +1223,7 @@ Short-UUID sugar: type `csb show 7250ddce` (prefix), `csb resume c6793d73adaf` (
 - AGENT tag support is forward-compatible: when claude-session-logger emits `{AGENT:explore: ...}` blocks, `csb search` will find their content. Bare `{AGENT: ...}` also works.
 - Phase 2 (FTS5 + Porter stemming over per-project DBs) closes #3 fully and ships in a follow-up; the `fts_paths.py` contract is locked so Phase 2 only adds the indexer + a small `messages_fts_meta` linker table.
 
-## [0.2.6] -- 2026-05-16 (prealpha, restore Phase 2 / #28 -- parallel work, same version slot as the search rewrite above)
+## [0.2.6](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6) -- 2026-05-16 (prealpha, restore Phase 2 / #28 -- parallel work, same version slot as the search rewrite above)
 
 Phase 2 of the restore shoring-up plan. Closes #28 by letting `csb restore` fall back to git history when the DB has no row for the requested session. Affects users post-`rebuild-index`, on a fresh machine (DB lost / never built), or restoring sessions committed by something other than csb. Test count: 250 → 304 (+12 Phase 2 tests on top of v0.2.5's +41).
 
@@ -1233,7 +1241,7 @@ Phase 2 of the restore shoring-up plan. Closes #28 by letting `csb restore` fall
 ### Plan reference
 Phase 2 of the four-phase restore shoring-up plan (`2026-05-16__16-30-43__claude-plan__shore-up-csb-restore-subsystem.md`). Phase 3 (`csb scan --deleted` + bulk restore + filter-aware "N deleted hidden" footer, #27) ships next. Phase 4 (end-to-end hand-runnable checklist closing #13) ships after Phase 3.
 
-## [0.2.5] -- 2026-05-16 (prealpha)
+## [0.2.5](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.4...v0.2.5) -- 2026-05-16 (prealpha)
 
 Phase 1 infrastructure for transcript content search (#3). This release lands the schema and data-collection layer that the upcoming `csb search` rewrite will read from -- the user-facing CLI surface change ships in a later commit. Existing behavior is unchanged; the only observable difference is a one-line `csb: migrated DB schema to v3` notice on the first invocation after upgrade and a small extra cost during `csb backup` to register transcript source paths. 267/267 tests pass.
 
@@ -1252,7 +1260,7 @@ Coordinates with the parallel `claude-session-backup__restore-shoring-up` branch
 - The FTS5-ready columns (`fts5_indexed_at`, `content_hash`) are intentional dead weight in Phase 1 so Phase 2's per-project FTS5 indexer can populate them without a schema migration.
 - Per-project FTS5 databases (Phase 2) will live at `~/.claude/csb-fts/<project>__<slug-hash>_<USER>.db`. The path convention is locked in the plan doc; `fts_paths.py` and the FTS5 indexer ship in a later commit.
 
-## [0.2.4] -- 2026-05-16 (prealpha)
+## [0.2.4](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.4) -- 2026-05-16 (prealpha)
 
 Phase 1 of the restore shoring-up plan. Closes #29 (alpha-blocker) by making `csb restore` byte-pure on Windows. Adds the first 24 automated tests against the restore code path (previously zero coverage). Phase 0 reality-check (`tests/one-offs/restore_reality_check.py`) confirmed two stacked bugs in `csb restore`; this release fixes both.
 
@@ -1276,7 +1284,7 @@ Phase 1 of the restore shoring-up plan. Closes #29 (alpha-blocker) by making `cs
 ### Plan reference
 Phase 1 of the four-phase restore shoring-up plan (`2026-05-16__16-30-43__claude-plan__shore-up-csb-restore-subsystem.md`, design analysis at `2026-05-16__14-57-24__csb-deleted-session-discovery-and-recovery.md`), tracked across issues #27 / #28 / #29 as sub-issues of #13. Phase 2 (git-history fallback for missing DB rows, #28) and Phase 3 (`csb scan --deleted` + bulk restore, #27) land in subsequent releases.
 
-## [0.2.3] -- 2026-05-06 (prealpha)
+## [0.2.3](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...v0.2.3) -- 2026-05-06 (prealpha)
 
 Closes the v0.2.3 epic bundle: pathkit `start at` semantics (#19), folder-usage long tail with `--top N` / `--all-folders` (#21), `display_top_folders` config (#21 follow-up), `csb scan` term-vs-folder disambiguation with `-d` / `-D` / `-s` flags (#20), pathkit multi-candidate slug disambiguation (#23), and `csb resume` cd + Windows TTY-handoff fix (#24). The release is grounded in a senior-eng upstream-source audit (#25, closed) that ruled out the file-relocation hypothesis and confirmed the slug encoder behavior. 226/226 tests pass.
 
@@ -1305,12 +1313,12 @@ Closes the v0.2.3 epic bundle: pathkit `start at` semantics (#19), folder-usage 
 - **Existing index rows are still truncated until re-indexed.** Run `csb rebuild-index` to backfill the long tail across all sessions; new sessions and any session touched by `csb backup` will pick up the new behavior on the next pass without a full rebuild.
 - **Breaking: `csb scan <positional>` now means "filter by term", not "treat as path"**. To preserve pre-v0.2.3 semantics, switch to `csb scan -d <positional>`. The bare `csb scan` (no positional) still defaults to cwd path-prefix; this is the only invocation pattern that is fully backwards-compatible. `csb scan` is prealpha; this break is documented and intentional. (#20)
 
-## [0.2.2] -- 2026-04-15
+## [0.2.2](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...v0.2.2) -- 2026-04-15
 
 ### Fixed
 - **Stats dashboard showed "unable to load statistics"** -- `docs/stats/index.html` and `docs/stats/README.md` had orphan gist IDs hardcoded by a stray `ghtraf --configure` run. Replaced with the authoritative badge (`7aa669e4...`) and archive (`6ee098fb...`) gist IDs that `.ghtraf.json` and the repo variables point at.
 
-## [0.2.1] -- 2026-04-15
+## [0.2.1](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.0...v0.2.1) -- 2026-04-15
 
 First release with the repository public. Focus: make the install path work today (GitHub-based `pip install` and URL-based Claude Code plugin install), fix broken or inaccurate pieces of the published surface, and set up repo infrastructure for later automation.
 
@@ -1333,59 +1341,6 @@ First release with the repository public. Focus: make the install path work toda
 ### Documentation
 - Full README restructure so the "install → set up hooks → start using it" flow is linear and obvious to a first-time reader.
 
-## [0.2.0] -- 2026-04-11 (prealpha)
+## [0.2.0](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) -- 2026-04-11 (prealpha)
 
 First public release. `csb list --sort`, `csb scan` with folder-usage search, cross-platform Claude Code plugin with Node.js bootstrapper, two-commit backup model, timeline view with purge countdown, session resume and restore. 73/73 tests pass. See the [v0.2.0 release notes](https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0) for the full highlight list.
-
-[Unreleased]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.9...HEAD
-[0.7.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.4...v0.7.5
-[0.7.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.7.3...v0.7.4
-[0.7.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.3...v0.7.0
-[0.6.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.2...v0.6.3
-[0.6.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.1...v0.6.2
-[0.6.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.6.0...v0.6.1
-[0.6.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.1...v0.6.0
-[0.5.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.5.0...v0.5.1
-[0.5.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.7...v0.5.0
-[0.4.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.6...v0.4.7
-[0.4.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.5...v0.4.6
-[0.4.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.4...v0.4.5
-[0.4.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.3...v0.4.4
-[0.4.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.2...v0.4.3
-[0.4.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.1...v0.4.2
-[0.4.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.4.0...v0.4.1
-[0.4.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.22...v0.4.0
-[0.3.22]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.21...v0.3.22
-[0.3.21]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.20...v0.3.21
-[0.3.20]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.19...v0.3.20
-[0.3.19]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.18...v0.3.19
-[0.3.18]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.17...v0.3.18
-[0.3.17]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.16...v0.3.17
-[0.3.16]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.15...v0.3.16
-[0.3.15]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.14...v0.3.15
-[0.3.14]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.13...v0.3.14
-[0.3.13]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.12...v0.3.13
-[0.3.12]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.11...v0.3.12
-[0.3.11]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.10...v0.3.11
-[0.3.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.9...v0.3.10
-[0.3.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.8...v0.3.9
-[0.3.8]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.7...v0.3.8
-[0.3.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.6...v0.3.7
-[0.3.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.5...v0.3.6
-[0.3.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.4...v0.3.5
-[0.3.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.3...v0.3.4
-[0.3.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.2...v0.3.3
-[0.3.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.1...v0.3.2
-[0.3.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.10...v0.3.0
-[0.2.10]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.9...v0.2.10
-[0.2.9]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.8...v0.2.9
-[0.2.8]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.7...v0.2.8
-[0.2.7]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.6...v0.2.7
-[0.2.6]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.5...v0.2.6
-[0.2.5]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.4...v0.2.5
-[0.2.4]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.3...v0.2.4
-[0.2.3]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.2...v0.2.3
-[0.2.2]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.1...v0.2.2
-[0.2.1]: https://github.com/DazzleML/Claude-Session-Backup/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/DazzleML/Claude-Session-Backup/releases/tag/v0.2.0

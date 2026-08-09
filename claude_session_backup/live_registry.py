@@ -65,7 +65,41 @@ def live_dir(claude_dir) -> Path:
     return Path(claude_dir) / LIVE_DIRNAME
 
 
+def is_safe_entry_id(session_id) -> bool:
+    """True when ``session_id`` is safe to build a FILENAME from.
+
+    An entry's session id reaches us from a JSON body that rides the
+    backup store's git commits -- so it can arrive from another machine
+    or a restored store, not only from a local hook. Anything that
+    becomes part of a path and is later UNLINKED must therefore be
+    treated as untrusted input: a crafted id like ``../../secrets``
+    would otherwise escape ``csb-live/`` entirely.
+
+    Deliberately strict rather than clever: a session id is a UUID-
+    shaped token, so require a plain non-empty token with no path
+    separators, no parent references, and no drive/UNC punctuation.
+    """
+    if not session_id or not isinstance(session_id, str):
+        return False
+    if len(session_id) > 128:
+        return False
+    if any(sep in session_id for sep in ("/", "\\", ":")):
+        return False
+    if ".." in session_id or session_id.startswith("."):
+        return False
+    return all(ch.isalnum() or ch in "-_" for ch in session_id)
+
+
 def entry_path(claude_dir, session_id: str) -> Path:
+    """The registry file for a session. Rejects unsafe ids (see above).
+
+    Raises ValueError rather than returning a path outside the registry
+    -- callers unlink what this returns, so failing loudly beats
+    resolving somewhere unexpected.
+    """
+    if not is_safe_entry_id(session_id):
+        raise ValueError(
+            f"unsafe session id for a registry path: {session_id!r}")
     return live_dir(claude_dir) / f"{session_id}.json"
 
 
@@ -253,7 +287,14 @@ def read_entries(claude_dir) -> list[dict]:
                 started_at = raw.get("started_at")
                 source = raw.get("source") or ""
                 cwd = raw.get("cwd") or ""
-                session_id = raw.get("session_id") or session_id
+                # The BODY may name a different session than the
+                # filename (historically it won outright). Honour it
+                # only when it is a safe token: the id becomes a
+                # filename elsewhere, and entries travel between
+                # machines via the store's commits.
+                claimed = raw.get("session_id")
+                if claimed and is_safe_entry_id(claimed):
+                    session_id = claimed
                 try:
                     pid = int(raw.get("pid"))
                 except (TypeError, ValueError):
