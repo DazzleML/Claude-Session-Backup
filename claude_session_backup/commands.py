@@ -537,9 +537,107 @@ def _style_print(segments, err=False):
 # files, so setup surfaces it as a considered choice, not a requirement.
 _PLUGIN_KEY = ClaudePaths.PLUGIN_SPEC          # one home: pathkit (#75 U5)
 _MARKETPLACE_KEY = ClaudePaths.PLUGIN_MARKETPLACE
+_MARKETPLACE_REPO = "DazzleML/Claude-Session-Backup"   # same rule as U5
 _LOGGER_PLUGIN_KEY = "session-logger@dazzle-claude-plugins"
 _LOGGER_MARKETPLACE_KEY = "dazzle-claude-plugins"
 _LOGGER_MARKETPLACE_REPO = "DazzleML/claude-session-logger"
+
+
+def _read_plugin_json(path):
+    """Parse one of Claude Code's plugin registries, BOM and all.
+
+    utf-8-sig: tolerate a BOM (e.g. a registry rewritten by PowerShell
+    5.1 Set-Content), which plain utf-8 + json.loads rejects -- and a
+    rejected registry reads as "not installed", re-instructing an
+    already-done step (the #53 sin).
+    """
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def _version_key(text):
+    """``(0, 9, 10)`` from ``"0.9.10"``, or None when not orderable.
+
+    None is the honest answer for anything this rule cannot rank -- a
+    pre-release suffix (``0.9.10b1``), a git describe string, garbage.
+    Callers must then report the mismatch WITHOUT naming a direction,
+    because "these differ" is provable and "yours is older" is not.
+    """
+    if not text:
+        return None
+    try:
+        return tuple(int(part) for part in str(text).split("."))
+    except (TypeError, ValueError):
+        return None
+
+
+#: A plugin BEHIND the CLI needs the plugin updated; a plugin AHEAD
+#: needs the CLI upgraded. Recommending the plugin fix in both
+#: directions is a closed loop: `claude plugin update` reports "already
+#: current", the checklist stays unticked, and nothing ever names the
+#: half that is actually stale.
+PLUGIN_BEHIND_FIX = "csb setup update"
+CLI_BEHIND_FIX = "pip install -U claude-session-backup"
+
+
+def plugin_drift(installed, base):
+    """``(state, remedy)`` for a plugin/CLI version pair.
+
+    State is one of ``absent`` / ``same`` / ``behind`` (the PLUGIN
+    trails) / ``ahead`` (the CLI trails) / ``unordered``. The last one
+    is the honest floor: the two differ, but at least one cannot be
+    ranked (a pre-release, a garbage directory name), so csb reports
+    the pair and names NO remedy rather than guessing a direction.
+
+    Note what this does NOT establish: ``same`` means the two halves
+    agree with each other, never that either is current with what
+    exists upstream. Callers must not spend the word "current" on it.
+    """
+    if installed is None:
+        return "absent", None
+    if installed == base:
+        return "same", None
+    key_installed, key_base = _version_key(installed), _version_key(base)
+    if key_installed is None or key_base is None:
+        return "unordered", None
+    # Zero-pad to equal width before ranking. "0.9" and "0.9.0" are one
+    # version written two ways, but raw tuple comparison ranks the
+    # longer one higher -- which reported drift, and prescribed a
+    # remedy, between a version and itself.
+    width = max(len(key_installed), len(key_base))
+    key_installed += (0,) * (width - len(key_installed))
+    key_base += (0,) * (width - len(key_base))
+    if key_installed == key_base:
+        # Equal by value, unequal as text. Padding alone would not have
+        # caught this: with no explicit branch the equal case falls
+        # through to the final return and reports "ahead".
+        return "same", None
+    if key_installed < key_base:
+        return "behind", PLUGIN_BEHIND_FIX
+    return "ahead", CLI_BEHIND_FIX
+
+
+def active_plugin_version(claude_dir, plugin_key=_PLUGIN_KEY):
+    """The plugin version Claude Code actually LOADS, from its registry.
+
+    Authoritative, unlike the cache-directory scan below: the cache
+    accumulates every version ever fetched (8 of them on the author's
+    box, none ever pruned), so its numeric max answers "what has been
+    downloaded", not "what runs". Claude Code records the loaded
+    version in ``installed_plugins.json``; that is the one whose hook
+    scripts fire, so that is the one drift must be measured against.
+    """
+    base = ClaudePaths.from_dir(claude_dir).plugins
+    try:
+        registry = _read_plugin_json(base / "installed_plugins.json")
+    except (OSError, ValueError):
+        return None
+    records = (registry or {}).get("plugins", {}).get(plugin_key)
+    if not isinstance(records, list):
+        return None
+    for record in records:
+        if isinstance(record, dict) and record.get("version"):
+            return str(record["version"])
+    return None
 
 
 def _plugin_status(claude_dir, marketplace_key=_MARKETPLACE_KEY,
@@ -554,20 +652,13 @@ def _plugin_status(claude_dir, marketplace_key=_MARKETPLACE_KEY,
     marketplace = False
     plugin = False
 
-    def _read_json(path):
-        # utf-8-sig: tolerate a BOM (e.g. a registry rewritten by
-        # PowerShell 5.1 Set-Content), which plain utf-8 + json.loads
-        # rejects -- and a rejected registry reads as "not installed",
-        # re-instructing an already-done step (the #53 sin).
-        return json.loads(path.read_text(encoding="utf-8-sig"))
-
     try:
-        m = _read_json(base / "known_marketplaces.json")
+        m = _read_plugin_json(base / "known_marketplaces.json")
         marketplace = marketplace_key in (m or {})
     except (OSError, ValueError):
         pass
     try:
-        p = _read_json(base / "installed_plugins.json")
+        p = _read_plugin_json(base / "installed_plugins.json")
         plugin = bool((p or {}).get("plugins", {}).get(plugin_key))
     except (OSError, ValueError):
         pass
@@ -643,18 +734,21 @@ def _setup_checklist(config, claude_dir, repo_note):
         # Drift surfaces here too (#75 U3): installed-but-stale withholds
         # hook-side fixes just as surely as not-installed withholds hooks.
         from ._version import get_base_version
+        base_ver = get_base_version()
         installed_ver = installed_plugin_version(claude_dir)
-        if installed_ver is not None and installed_ver != get_base_version():
+        state, remedy = plugin_drift(installed_ver, base_ver)
+        if state in ("behind", "ahead", "unordered"):
             _checklist_todo(
                 "auto-backup plugin",
-                f"({installed_ver} installed -- csb is {get_base_version()})")
-            _checklist_cmd("csb setup update")
+                f"({installed_ver} installed -- csb is {base_ver})")
+            if remedy:
+                _checklist_cmd(remedy)
         else:
             _checklist_done("auto-backup plugin", f"{_PLUGIN_KEY} installed")
     else:
         _checklist_todo("auto-backup plugin", "(fires on PreCompact + SessionEnd)")
         if not marketplace:
-            _checklist_cmd('claude plugin marketplace add "DazzleML/Claude-Session-Backup"')
+            _checklist_cmd(f'claude plugin marketplace add "{_MARKETPLACE_REPO}"')
         _checklist_cmd(f"claude plugin install {_PLUGIN_KEY}")
 
     # claude-session-logger (#53): OPTIONAL companion. Plugin presence is
@@ -1135,14 +1229,23 @@ def _schedule_status_report(backend, config) -> int:
 
 
 def installed_plugin_version(claude_dir):
-    """Newest installed csb-plugin version from the cache layout, or None.
+    """The csb-plugin version in force, or None.
 
     Filesystem-only by design (#75 U2): drift detection must stay fast
     and never depend on the claude CLI. Tolerates a missing tree
     (CLI-only users are first-class -> None, never a warning),
     unparseable directory names (skipped), and multiple cached versions
     (numeric max wins).
+
+    Claude Code's own registry is asked FIRST, because it names the
+    version that actually loads. The cache scan below is the fallback
+    for registries that are missing or unreadable -- it answers "what
+    has been downloaded", which equals the loaded version only while
+    the newest download happens to be the active one.
     """
+    active = active_plugin_version(claude_dir)
+    if active:
+        return active
     cache = ClaudePaths.from_dir(claude_dir).plugin_cache
     best = None
     best_key = None
@@ -1183,9 +1286,21 @@ def cmd_setup_update(args) -> int:
         print("The csb plugin is not installed -- nothing to update.")
         print("  Install it (registers the backup + registry hooks):",
               file=sys.stderr)
-        print('    claude plugin marketplace add '
-              '"DazzleML/Claude-Session-Backup"', file=sys.stderr)
+        print(f'    claude plugin marketplace add "{_MARKETPLACE_REPO}"',
+              file=sys.stderr)
         print(f"    claude plugin install {spec}", file=sys.stderr)
+        return 3
+
+    base_ver = get_base_version()
+    if plugin_drift(installed, base_ver)[0] == "ahead":
+        # The plugin is NEWER than this csb. `claude plugin update` has
+        # nothing to fetch, would exit 0, and would leave the checklist
+        # unticked forever while the genuinely stale half -- this
+        # program -- went unnamed. Send the user to the right remedy.
+        print(f"The plugin ({installed}) is already ahead of this csb "
+              f"({base_ver}) -- updating it again changes nothing.")
+        print("  Upgrade the CLI instead:", file=sys.stderr)
+        print(f"    {CLI_BEHIND_FIX}", file=sys.stderr)
         return 3
 
     claude_cli = shutil.which("claude")
@@ -1204,14 +1319,28 @@ def cmd_setup_update(args) -> int:
               file=sys.stderr)
         return 1
     after = installed_plugin_version(claude_dir)
+    _no_restarts = ("  No session restarts needed -- hooks resolve the "
+                    "installed plugin at fire time.")
     if result.returncode == 0:
         if after != installed:
             print(f"Updated: {installed} -> {after}")
-        else:
-            print(f"Already current: {after}")
-        print("  No session restarts needed -- hooks resolve the "
-              "installed plugin at fire time.", file=sys.stderr)
-        return 0
+            print(_no_restarts, file=sys.stderr)
+            return 0
+        if plugin_drift(after, base_ver)[0] == "same":
+            print(f"Already matching this csb: {after}")
+            print(_no_restarts, file=sys.stderr)
+            return 0
+        # Clean run, nothing fetched, gap still open: the MARKETPLACE is
+        # the stale link. "Already current" here was the closed loop --
+        # rc 0 and a reassuring word while the checklist stayed unticked
+        # and nothing named what to do next.
+        print(f"No change: still {after}, and csb is {base_ver}.")
+        print("  The marketplace has nothing newer to offer. Refresh it, "
+              "then retry:", file=sys.stderr)
+        print(f'    claude plugin marketplace add "{_MARKETPLACE_REPO}"',
+              file=sys.stderr)
+        print("    csb setup update", file=sys.stderr)
+        return 1
     print(f"`claude plugin update` exited {result.returncode} -- its "
           "output above has the detail.", file=sys.stderr)
     return result.returncode or 1
@@ -1952,14 +2081,22 @@ def cmd_status(args) -> int:
 
         installed = installed_plugin_version(claude_dir)
         base = get_base_version()
-        if installed is None:
+        state, remedy = plugin_drift(installed, base)
+        if state == "absent":
             _sline("Plugin", "not installed (optional -- hook automation "
                    "off)", "dim")
-        elif installed == base:
-            _sline("Plugin", f"{installed} (current)", "green")
-        else:
+        elif state == "same":
+            # "matches CLI" is what the filesystem proves. "current"
+            # would assert agreement with what EXISTS upstream, which
+            # nothing on this path has looked at -- the same overclaim
+            # `[no exit observed]` exists to avoid, one axis over.
+            _sline("Plugin", f"{installed} (matches CLI)", "green")
+        elif remedy:
             _sline("Plugin", f"{installed} installed -- csb is {base}; "
-                   "run `csb setup update`", "yellow")
+                   f"run `{remedy}`", "yellow")
+        else:
+            _sline("Plugin", f"{installed} installed -- csb is {base}",
+                   "yellow")
     except Exception:  # noqa: BLE001 -- ambient line is best-effort
         pass
 

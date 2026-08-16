@@ -1,6 +1,6 @@
 # Naming sessions
 
-The single highest-leverage habit for using csb. A session's **name** is what `csb list`, `csb scan`, `csb tree`, and `csb resume` all match against — so a well-named vault is something you *browse*, and an unnamed one is something you *excavate*.
+The single highest-leverage habit for using csb is to run `/rename <PROJECT>__<YYYY-MM-DD>__<topic-words>` when you first start a new Claude Code session. A session's **name** is what `csb list`, `csb scan`, `csb tree`, and `csb resume` all match against. So a well-named vault is something you *browse*, and an unnamed one is something you *excavate*.
 
 Claude Code gives every session a UUID. That's fine for one project. Across dozens, over months, `3b0924e5-52f2-4eb5-8764-45c9883727d5` tells you nothing, and finding last spring's work means content-searching every transcript. Naming is what turns that back into a lookup.
 
@@ -13,7 +13,7 @@ csb can find sessions two ways, and they are not equally cheap:
 | **Metadata** | `csb list <filter>`, `csb scan <term>`, `csb tree <filter>` | the SQLite index (names, projects, folders) | instant |
 | **Content** | `csb search "<text>"` | every transcript, message by message | seconds to minutes |
 
-`csb search` is the right tool for *"which session discussed the retry backoff?"* — a question only the conversation can answer. It is the wrong tool for *"where's my work on the parser?"*, which a name should have answered instantly.
+`csb search` is the right tool for *"which session discussed the retry backoff?"*, a question only the conversation can answer. It is the wrong tool for *"where's my work on the parser?"*, which a name should have answered instantly.
 
 **Name your sessions and the second question stops needing a search at all.**
 
@@ -22,7 +22,7 @@ csb can find sessions two ways, and they are not equally cheap:
 Retrieval is the long game. The short game is knowing where you are *right now*: Claude Code prints the session name at the **top-right of the input bar**, so the name you set is on screen the whole time you work.
 
 ```
-                                    CLAUDE-SESSION-BACKUP__2026-7-26__add-tree-functionality
+                                              CLAUDE-SESSION-BACKUP__2026-7-26__add-tree-functionality
 > your prompt here
 ```
 

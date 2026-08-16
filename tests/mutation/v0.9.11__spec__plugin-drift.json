@@ -1,0 +1,95 @@
+{
+  "test_command": [
+    "python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_setup_update.py"
+  ],
+  "mutations": [
+    {
+      "id": "M1",
+      "file": "claude_session_backup/commands.py",
+      "original": "    if key_installed < key_base:\r\n        return \"behind\", PLUGIN_BEHIND_FIX",
+      "mutated": "    if key_installed <= key_base:\r\n        return \"behind\", PLUGIN_BEHIND_FIX",
+      "note": "Boundary flip: equal keys report 'behind' instead of 'ahead', prescribing the wrong remedy."
+    },
+    {
+      "id": "M2",
+      "file": "claude_session_backup/commands.py",
+      "original": "    if key_installed is None or key_base is None:\r\n        return \"unordered\", None",
+      "mutated": "    if key_installed is None and key_base is None:\r\n        return \"unordered\", None",
+      "note": "or/and swap: one unrankable side falls through to comparing None against a tuple instead of reporting 'unordered'."
+    },
+    {
+      "id": "M3",
+      "file": "claude_session_backup/commands.py",
+      "original": "    key_installed, key_base = _version_key(installed), _version_key(base)",
+      "mutated": "    key_installed, key_base = _version_key(base), _version_key(installed)",
+      "note": "Swapped arguments: drift direction inverts, so 'behind'/'ahead' and their remedies are reported backwards."
+    },
+    {
+      "id": "M4",
+      "file": "claude_session_backup/commands.py",
+      "original": "    if installed is None:\r\n        return \"absent\", None",
+      "mutated": "    if not installed:\r\n        return \"absent\", None",
+      "note": "None-vs-truthiness: an empty-string version reads as 'absent' rather than being compared."
+    },
+    {
+      "id": "M5",
+      "file": "claude_session_backup/commands.py",
+      "original": "    if not text:\r\n        return None\r\n    try:\r\n        return tuple(int(part) for part in str(text).split(\".\"))",
+      "mutated": "    if text is None:\r\n        return None\r\n    try:\r\n        return tuple(int(part) for part in str(text).split(\".\"))",
+      "note": "Dropped normalization guard: empty string no longer short-circuits, changing the unordered/ranked boundary for blank versions."
+    },
+    {
+      "id": "M6",
+      "file": "claude_session_backup/commands.py",
+      "original": "        if isinstance(record, dict) and record.get(\"version\"):",
+      "mutated": "        if isinstance(record, dict) or record.get(\"version\"):",
+      "note": "and/or swap in the registry record filter: non-dict entries reach record.get() and raise."
+    },
+    {
+      "id": "M7",
+      "file": "claude_session_backup/commands.py",
+      "original": "    active = active_plugin_version(claude_dir)\r\n    if active:\r\n        return active",
+      "mutated": "    active = active_plugin_version(claude_dir)\r\n    if active is not None:\r\n        return active\r\n    return None",
+      "note": "Removed the cache fallback: a missing/unreadable registry returns None instead of scanning the cache."
+    },
+    {
+      "id": "M8",
+      "file": "claude_session_backup/commands.py",
+      "original": "        if best_key is None or key > best_key:\r\n            best_key, best = key, entry.name",
+      "mutated": "        if best_key is None or key < best_key:\r\n            best_key, best = key, entry.name",
+      "note": "Comparison flip in the cache scan: picks the LOWEST cached version instead of the highest."
+    },
+    {
+      "id": "M9",
+      "file": "claude_session_backup/commands.py",
+      "original": "        if state in (\"behind\", \"ahead\", \"unordered\"):\r\n            _checklist_todo(",
+      "mutated": "        if state in (\"behind\", \"unordered\"):\r\n            _checklist_todo(",
+      "note": "Setup checklist stops flagging the 'ahead' case; renders a DONE row as if the halves matched."
+    },
+    {
+      "id": "M10",
+      "file": "claude_session_backup/commands.py",
+      "original": "        elif state == \"same\":\r\n            # \"matches CLI\" is what the filesystem proves.",
+      "mutated": "        elif state != \"same\":\r\n            # \"matches CLI\" is what the filesystem proves.",
+      "note": "Boolean flip in csb status: every drifted pair reports green 'matches CLI'."
+    },
+    {
+      "id": "M11",
+      "file": "claude_session_backup/commands.py",
+      "original": "        print(f\"    {CLI_BEHIND_FIX}\", file=sys.stderr)\r\n        return 3",
+      "mutated": "        print(f\"    {CLI_BEHIND_FIX}\", file=sys.stderr)\r\n        return 0",
+      "note": "Changed exit code: the refused 'plugin already ahead' path reports success, hiding the no-op from scripts."
+    },
+    {
+      "id": "M12",
+      "file": "claude_session_backup/commands.py",
+      "original": "        if after != installed:\r\n            print(f\"Updated: {installed} -> {after}\")",
+      "mutated": "        if after == installed:\r\n            print(f\"Updated: {installed} -> {after}\")",
+      "note": "Comparison flip after the update runs: a no-change update announces 'Updated: X -> X'."
+    }
+  ]
+}

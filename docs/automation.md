@@ -70,10 +70,13 @@ The hook writes its own diagnostics to `<claude-dir>/csb-logs/`. Relocated setup
 
 ### Keeping the plugin current: `csb setup update`
 
-The plugin is the delivery vehicle for the hook *scripts*, so hook-side improvements only reach you when the installed plugin updates -- `pip install -U` alone is not enough. Two features keep this accurate and up-to-date:
+The plugin is the delivery vehicle for the hook *scripts*, so hook-side improvements only reach you when the installed plugin updates -- `pip install -U` alone is not enough. The converse is equally true: `csb setup update` alone is not enough either, since it syncs the plugin and never touches the CLI. Keeping csb healthy means keeping *both* halves moving.
 
-- **`csb status`** shows a `Plugin:` line -- green `(current)` when matched, a yellow drift line naming the fix when the installed version trails csb, and a calm "not installed (optional)" for CLI-only users.
-- **`csb setup update`** runs the update for you (the exact `claude plugin update <name>@<marketplace>` incantation is easy to forget) and reports the before/after versions. No session restarts are needed afterwards: hooks resolve the installed plugin at fire time.
+- **`csb status`** shows a `Plugin:` line: `<version> (matches CLI)` in green when the two agree, a yellow drift line when they do not, and a calm "not installed (optional)" for CLI-only users. The version it names is the one Claude Code actually loads, read from Claude Code's own plugin registry -- not merely the newest one sitting in the plugin cache, which keeps every version ever fetched and prunes none.
+- **Drift has two directions with different fixes.** When the plugin trails the CLI, the fix is `csb setup update`. When the CLI trails the plugin, the fix is `pip install -U claude-session-backup` -- updating the plugin again would change nothing. csb names whichever one applies. When the two versions cannot be ranked against each other (a pre-release, say), it reports the pair and deliberately names no fix rather than guessing a direction.
+- **`csb setup update`** runs the update for you (the exact `claude plugin update <name>@<marketplace>` incantation is easy to forget) and reports the before/after versions. No session restarts are needed afterwards: hooks resolve the installed plugin at fire time. If it completes cleanly without fetching anything while a gap remains, the marketplace is the stale link -- re-add it with `claude plugin marketplace add "DazzleML/Claude-Session-Backup"` and retry.
+
+Note what none of this checks: whether a newer csb exists at all. `(matches CLI)` means the two halves agree with each other -- not that either is current with what has been released.
 
 ## Manual hook installation
 

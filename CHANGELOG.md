@@ -7,7 +7,19 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.10...HEAD)
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.11...HEAD)
+
+## [0.9.11](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.10...v0.9.11) -- 2026-08-15 (beta)
+
+### Fixed
+- **Plugin drift now reports the version Claude Code actually loads.** The check read the newest directory in the plugin cache -- but that cache keeps every version ever fetched and prunes none, so a newer download could mask an older active plugin. `csb setup` would show a satisfied row while the hooks went on running the older code. csb now reads the version from Claude Code's own plugin registry, and falls back to the cache scan only when that registry is missing or unreadable.
+- **Drift names the remedy that matches its direction.** When the plugin trails the CLI the fix is `csb setup update`, as before. When the CLI trails the plugin, the fix is `pip install -U claude-session-backup`. Previously both directions suggested updating the plugin, which fetches nothing, reports success, and leaves the setup row unticked no matter how many times it is run.
+- **Versions differing only in width are no longer reported as drift.** `0.9` and `0.9.0` are one version written two ways, but ranking them segment by segment made the longer one look newer -- so csb reported drift, and prescribed a fix, between a version and itself.
+- **`csb setup update` stops reporting success when nothing changed.** A clean update that fetches nothing while a gap remains now exits non-zero and names the marketplace as the stale link, with the command to refresh it. It also refuses outright, instead of running a no-op, when the plugin is already ahead of the CLI.
+- **Unrankable version pairs get no invented remedy.** When either side cannot be ordered (a pre-release, say), csb reports both versions and deliberately names no fix, rather than guessing a direction.
+
+### Changed
+- **`csb status` says `(matches CLI)` where it said `(current)`.** The check establishes that the plugin and this csb agree with each other -- not that either is current with what has been released. Nothing in csb asks what exists upstream, so it no longer uses a word that claims otherwise.
 
 ## [0.9.10](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.9...v0.9.10) -- 2026-08-09 (beta)
 

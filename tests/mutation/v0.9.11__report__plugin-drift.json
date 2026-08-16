@@ -1,0 +1,122 @@
+{
+  "harness": {
+    "name": "mutation_sweep.py",
+    "version": "0.1.0"
+  },
+  "environment": {
+    "python": "3.12.0",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "root": ".",
+    "test_command": [
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_setup_update.py"
+    ],
+    "timestamp": "2026-08-15T14:04:05-04:00"
+  },
+  "results": [
+    {
+      "id": "M1",
+      "file": "claude_session_backup/commands.py",
+      "note": "Boundary flip: equal keys report 'behind' instead of 'ahead', prescribing the wrong remedy.",
+      "verdict": "survived",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M2",
+      "file": "claude_session_backup/commands.py",
+      "note": "or/and swap: one unrankable side falls through to comparing None against a tuple instead of reporting 'unordered'.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M3",
+      "file": "claude_session_backup/commands.py",
+      "note": "Swapped arguments: drift direction inverts, so 'behind'/'ahead' and their remedies are reported backwards.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M4",
+      "file": "claude_session_backup/commands.py",
+      "note": "None-vs-truthiness: an empty-string version reads as 'absent' rather than being compared.",
+      "verdict": "survived",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M5",
+      "file": "claude_session_backup/commands.py",
+      "note": "Dropped normalization guard: empty string no longer short-circuits, changing the unordered/ranked boundary for blank versions.",
+      "verdict": "survived",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M6",
+      "file": "claude_session_backup/commands.py",
+      "note": "and/or swap in the registry record filter: non-dict entries reach record.get() and raise.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M7",
+      "file": "claude_session_backup/commands.py",
+      "note": "Removed the cache fallback: a missing/unreadable registry returns None instead of scanning the cache.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M8",
+      "file": "claude_session_backup/commands.py",
+      "note": "Comparison flip in the cache scan: picks the LOWEST cached version instead of the highest.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M9",
+      "file": "claude_session_backup/commands.py",
+      "note": "Setup checklist stops flagging the 'ahead' case; renders a DONE row as if the halves matched.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M10",
+      "file": "claude_session_backup/commands.py",
+      "note": "Boolean flip in csb status: every drifted pair reports green 'matches CLI'.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M11",
+      "file": "claude_session_backup/commands.py",
+      "note": "Changed exit code: the refused 'plugin already ahead' path reports success, hiding the no-op from scripts.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M12",
+      "file": "claude_session_backup/commands.py",
+      "note": "Comparison flip after the update runs: a no-change update announces 'Updated: X -> X'.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    }
+  ],
+  "summary": {
+    "survived": 3,
+    "killed": 9
+  },
+  "anomalies": []
+}

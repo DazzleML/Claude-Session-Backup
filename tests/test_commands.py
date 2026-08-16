@@ -1250,10 +1250,18 @@ def test_setup_missing_dir_errors(tmp_path, capsys):
 
 
 def _write_plugin_registries(claude_dir, marketplace=True, plugin=True,
-                             logger_marketplace=False, logger_plugin=False):
+                             logger_marketplace=False, logger_plugin=False,
+                             version=None):
     """Fake Claude Code plugin registries. csb plugin flags default present;
-    the optional session-logger (#53) defaults absent."""
+    the optional session-logger (#53) defaults absent.
+
+    ``version`` defaults to this csb's own, so "plugin installed" in a
+    fixture means installed AND matching -- otherwise every checklist
+    test inherits a drift row it never asked to test. Pass an explicit
+    version to exercise drift.
+    """
     import json as _json
+    from claude_session_backup._version import get_base_version
     base = Path(claude_dir) / "plugins"
     base.mkdir(parents=True, exist_ok=True)
     markets = {}
@@ -1269,7 +1277,7 @@ def _write_plugin_registries(claude_dir, marketplace=True, plugin=True,
     plugins = {}
     if plugin:
         plugins["claude-session-backup@dazzle-claude-session-backup"] = [
-            {"scope": "user", "version": "0.6.0"}]
+            {"scope": "user", "version": version or get_base_version()}]
     if logger_plugin:
         plugins["session-logger@dazzle-claude-plugins"] = [
             {"scope": "user", "version": "0.3.6"}]
