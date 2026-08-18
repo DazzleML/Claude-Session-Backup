@@ -285,8 +285,30 @@ def verify_entry(scan_result: LiveScan, entry: dict,
         if info.created is not None:
             from .live_registry import parse_entry_ts
 
-            started = parse_entry_ts(entry.get("started_at"))
-            if started is not None and info.created > started + timedelta(
+            # Anchor the reuse guard on WHEN THE PID WAS RECORDED, not on
+            # when the session opened. A RESUMED session's host is
+            # legitimately younger than the session -- that is what
+            # resuming means -- so anchoring on ``started_at`` rejected a
+            # host 39 hours "too young" and reported `[no exit observed]`
+            # for the very process csb was running inside of (measured
+            # 2026-08-17 against a session resumed after a forced
+            # restart). ``pid_at`` is the pid's own provenance: a process
+            # created AFTER csb recorded that pid cannot be the one csb
+            # saw, which is precisely what pid reuse means. Falls back to
+            # ``started_at`` for pre-#72 entries that carry no pid_at.
+            # The LATER of the two, never simply "pid_at if present".
+            # pid_at cannot legitimately precede started_at -- a session's
+            # pid is recorded at or after it opens -- so an earlier pid_at
+            # means the entry is internally inconsistent. Letting it win
+            # there permanently rejects a genuinely live host, and this
+            # module's stated posture is that a false "not running" is the
+            # worse error: liveness is advisory, and hiding a live session
+            # is exactly the failure the pid ladder exists to end.
+            stamps = [t for t in (parse_entry_ts(entry.get("pid_at")),
+                                  parse_entry_ts(entry.get("started_at")))
+                      if t is not None]
+            anchor = max(stamps) if stamps else None
+            if anchor is not None and info.created > anchor + timedelta(
                     seconds=_CREATION_SKEW_S):
                 return None  # pid reused by a younger claude process
         return pid

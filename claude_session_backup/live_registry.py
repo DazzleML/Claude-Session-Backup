@@ -315,22 +315,61 @@ def read_entries(claude_dir) -> list[dict]:
     return entries
 
 
+def seen_alive_after_boot(entry: dict, boot_utc: Optional[datetime]) -> bool:
+    """True when csb CONFIRMED this session's host after ``boot_utc``.
+
+    ``pid_at`` is the liveness field: the hook stamps it every fire with
+    the moment it resolved the session's host process. ``started_at`` is
+    the IDENTITY field -- when the session first opened -- and the hook
+    deliberately preserves it across restarts so /compact cannot reset a
+    session's open time. The two answer different questions, and a
+    RESUMED session makes them disagree: pre-boot identity, post-boot
+    liveness. Asking the identity field about liveness is what let the
+    sweep delete a running session (2026-08-12).
+
+    A timestamp, not a pid comparison -- so this is immune to pid reuse
+    across the boot. The claim is only ever "csb saw this session's host
+    alive at time T", which a reboot cannot forge.
+    """
+    if boot_utc is None:
+        return False
+    # A pid_at with no pid is not evidence: "csb saw the host alive at T"
+    # is meaningless without knowing WHICH host, and nothing can ever
+    # verify it. Such an entry would otherwise survive every sweep on a
+    # liveness claim no verifier can confirm -- accumulating exactly the
+    # graveyard the clearing step exists to prevent.
+    if entry.get("pid") is None:
+        return False
+    seen = parse_entry_ts(entry.get("pid_at"))
+    return seen is not None and seen >= boot_utc
+
+
 def split_by_boot(entries: list[dict], boot_utc: Optional[datetime]
                   ) -> tuple[list[dict], list[dict]]:
     """(this_boot, pre_boot). Unknown boot time -> everything this_boot.
+
+    This answers the LIVENESS question -- who is running now -- so a
+    session whose host was confirmed after the boot is this_boot no
+    matter how old its ``started_at`` is (see seen_alive_after_boot).
+    The historical question ("whose entry predates the boot?") belongs
+    to sweep_boundary and is deliberately NOT this partition.
 
     Erring toward this_boot when the boundary is unknowable is the safe
     direction: a pre-boot entry misfiled as current shows as "no exit
     observed" (true), while a current entry misfiled as pre-boot would
     be swept into the shutdown snapshot while its session is still open.
     Entries with unparseable timestamps stay this_boot for the same
-    reason.
+    reason -- and an unparseable ``pid_at`` proves nothing, so it falls
+    through to ``started_at`` rather than pinning an entry open.
     """
     if boot_utc is None:
         return list(entries), []
     this_boot: list[dict] = []
     pre_boot: list[dict] = []
     for entry in entries:
+        if seen_alive_after_boot(entry, boot_utc):
+            this_boot.append(entry)
+            continue
         ts = parse_entry_ts(entry.get("started_at"))
         if ts is not None and ts < boot_utc:
             pre_boot.append(entry)
@@ -357,20 +396,45 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
     were open when the machine went down -- a clean close would have
     removed them -- so they become the exact "open at shutdown" record
     for the boundary just crossed, then their files are removed so the
-    registry never accumulates like a flag graveyard.
+    registry never accumulates like a flag graveyard. Clearing is also
+    what keeps each boundary's evidence attributable to THAT boundary:
+    an entry left behind would be re-recorded at the next shutdown,
+    crediting a session's death to a reboot it did not attend.
+
+    RECORDING and CLEARING are separate decisions, because a session
+    RESUMED after the boot answers yes to both questions -- it was open
+    at the shutdown (record it) and it is open right now (do NOT delete
+    its registration). Deleting one cost a running session two days of
+    invisibility on 2026-08-12; recording is keyed on ``started_at``
+    (identity, historical) and deletion on ``pid_at`` (liveness).
 
     One snapshot, overwritten per boundary; deeper history is the
-    deferred event log's job. Returns how many entries were swept.
-    Never raises (hook context).
+    deferred event log's job. Returns how many entries were RECORDED
+    (which is >= the number deleted). Never raises (hook context).
     """
     try:
         if boot_utc is _DETECT_BOOT:
             boot_utc = current_boot_utc()
         if boot_utc is None:
             return 0  # cannot place the boundary; sweep nothing
-        _, pre_boot = split_by_boot(read_entries(claude_dir), boot_utc)
-        if not pre_boot:
+        entries = read_entries(claude_dir)
+        # The historical question -- deliberately NOT split_by_boot,
+        # which answers liveness and would drop a resumed session out
+        # of the record it belongs in.
+        pre_boot = []
+        for entry in entries:
+            ts = parse_entry_ts(entry.get("started_at"))
+            if ts is not None and ts < boot_utc:
+                pre_boot.append(entry)
+        if not live_dir(claude_dir).is_dir():
+            # csb was never watching this machine -- recording "nobody was
+            # open" would be an overclaim, not a measurement.
             return 0
+        # NOTE: no `if not pre_boot: return 0`. A boundary csb swept and
+        # found empty is EVIDENCE ("nobody was open"), and it must not
+        # look like a boundary csb never examined. Writing the record
+        # unconditionally is what lets the reader tell proven-zero from
+        # unknown -- measured: before this, both returned None.
         snapshot = {
             "version": SNAPSHOT_VERSION,
             "boot_at": _iso(boot_utc),
@@ -394,15 +458,45 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
             btmp = bdir / f"boundary-{stamp}.tmp-{os.getpid()}"
             btmp.write_text(payload, encoding="utf-8")
             os.replace(btmp, bpath)
-            kept = sorted(bdir.glob("boundary-*.json"))
-            for stale in kept[:-BOUNDARY_RETENTION]:
+            # Retention prefers EVIDENCE over recency. Now that empty
+            # records are written, a purely chronological prune would
+            # evict a boundary that still names open sessions in favour
+            # of newer boundaries that name nobody -- measured, not
+            # feared: a probe watched four empty records push a real one
+            # out of the K slots. So: keep the newest K non-empty
+            # records first, then fill any remaining slots with the
+            # newest empty ones. An unreadable record carries no
+            # recoverable evidence and is evicted with the empties.
+            nonempty: list[Path] = []
+            empty: list[Path] = []
+            for p in sorted(bdir.glob("boundary-*.json")):
+                try:
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    names = data.get("open_at_shutdown") or []
+                except (OSError, json.JSONDecodeError):
+                    names = []
+                (nonempty if names else empty).append(p)
+            keep = set(nonempty[-BOUNDARY_RETENTION:])
+            slots = BOUNDARY_RETENTION - len(keep)
+            if slots > 0:
+                keep.update(empty[-slots:])
+            for stale in nonempty + empty:
+                if stale in keep:
+                    continue
                 try:
                     stale.unlink()
                 except OSError:
                     pass
         except OSError:
             pass  # boundary history is an extra; the alias already wrote
+        # Clear the board -- EXCEPT for sessions csb confirmed alive on
+        # this side of the boot. Their entry is now in the record above
+        # (they were open at the shutdown) AND still on disk (they are
+        # open now). Both statements are true; neither may evict the
+        # other.
         for entry in pre_boot:
+            if seen_alive_after_boot(entry, boot_utc):
+                continue
             try:
                 entry_path(claude_dir, entry["session_id"]).unlink()
             except OSError:
@@ -410,6 +504,53 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
         return len(pre_boot)
     except Exception:  # noqa: BLE001 -- hook context; never break a session
         return 0
+
+
+def open_at_shutdown(claude_dir, boot_utc: Optional[datetime] = None,
+                     shutdown_utc: Optional[datetime] = None,
+                     tolerance_s: int = _SNAPSHOT_TOLERANCE_S
+                     ) -> Optional[list[dict]]:
+    """Who was open at a boundary: the persisted snapshot, or derived.
+
+    The snapshot is a DURABLE COPY of something the registry still knows
+    until the sweep clears it. Between a reboot and the first sweep that
+    copy does not exist, and a reader consulting only the snapshot shows
+    a badge-less roster -- which is exactly how `csb set last` came to be
+    silently wrong for 27 minutes after the 2026-08-12 restart, with the
+    evidence sitting unread on disk the whole time.
+
+    So: the snapshot when one covers the boundary; otherwise, when the
+    boundary IS the current boot, the same answer derived from entries
+    still on disk. **Read-only** -- deriving never writes, so a display
+    path stays a display path and two concurrent readers cannot race.
+
+    Only the CURRENT boot may be derived. An entry records when a session
+    opened, never which boundary it died at, so deriving for an older
+    epoch would credit every unswept entry to the wrong shutdown.
+
+    Returns None when the answer is genuinely unknown -- callers must
+    render that as ignorance, never as "nobody was open".
+    """
+    snapshot = read_snapshot(claude_dir, boot_utc=boot_utc,
+                             shutdown_utc=shutdown_utc,
+                             tolerance_s=tolerance_s)
+    if snapshot is not None:
+        return snapshot.get("open_at_shutdown") or []
+    if boot_utc is None:
+        return None
+    current = current_boot_utc()
+    if current is None:
+        return None
+    if abs((boot_utc - current).total_seconds()) > tolerance_s:
+        return None  # an older boundary -- only a snapshot can answer
+    if not live_dir(claude_dir).is_dir():
+        return None  # csb was never watching; claiming zero would lie
+    derived: list[dict] = []
+    for entry in read_entries(claude_dir):
+        ts = parse_entry_ts(entry.get("started_at"))
+        if ts is not None and ts < current:
+            derived.append(entry)
+    return derived or None
 
 
 def read_snapshot(claude_dir, boot_utc: Optional[datetime] = None,

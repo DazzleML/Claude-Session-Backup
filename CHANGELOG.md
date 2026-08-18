@@ -7,7 +7,22 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.11...HEAD)
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.12...HEAD)
+
+## [0.9.12](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.11...v0.9.12) -- 2026-08-17 (beta)
+
+### Fixed
+- **A session resumed after a restart is no longer deleted from the live registry.** csb records every open session on disk and clears those records after a restart -- whatever is left behind was open when the machine went down. A resumed session keeps its original open time (deliberately, so compaction cannot reset it) but gets a brand-new host process, and the clearing step read only the open time. It therefore erased the record of a session that was running, which then vanished from `csb set current` until that session next started -- two days, in the case that prompted this fix.
+- **Liveness verification no longer refuses to confirm a resumed session.** The guard against recycled process IDs compared the host's creation time against the *session's* open time, but a resumed session's host is legitimately younger than the session. Sessions reclaimed after a restart read `[no exit observed]` indefinitely -- indistinguishable from crash evidence, and it disarmed the warning that stops a second client from joining one transcript. The guard now compares against when csb actually recorded that process ID.
+- **`csb set last` no longer renders a blank where it means "unknown".** With no boundary record yet, every row simply lacked its open-at-shutdown mark and nothing said why, so "nobody was open" and "csb has not looked yet" were indistinguishable. It now says so, and names `csb backup` as the remedy.
+- **`csb set last` is correct immediately after a restart**, before any Claude Code session is launched. The evidence was already on disk; only the persisted copy was missing, so the roster now reads through to it. Display commands still never write.
+
+### Changed
+- `csb backup` now clears the restart boundary as well, so the scheduled backup covers a machine that reboots and is then left alone. Previously only a Claude Code session start did this.
+- A restart where nothing was open is now recorded as such, rather than leaving nothing behind -- "csb looked and found nobody" is evidence, and is no longer reported as ignorance. Retention keeps records that name open sessions in preference to empty ones.
+
+### Known issue
+- An entry whose filename disagrees with the session id inside it is recorded correctly but never cleared, so it reappears in every later boundary record. It cannot arise from normal operation and predates this release; it is pinned by a failing-on-purpose test until fixed.
 
 ## [0.9.11](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.10...v0.9.11) -- 2026-08-15 (beta)
 

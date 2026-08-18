@@ -103,6 +103,65 @@ class TestVerifyEntry:
         scan = lv.LiveScan(by_pid={100: lv.ProcInfo(cmdline="claude")})
         assert lv.verify_entry(scan, _entry(UUID_GHOST, pid=100), None) == 100
 
+    # ── the resumed-session shape (2026-08-17) ────────────────────────
+    # A session RESUMED after a reboot keeps its original started_at --
+    # the hook preserves it so /compact cannot reset the open time -- but
+    # its host process is BRAND NEW. Anchoring the reuse guard on
+    # started_at therefore rejected a host that was merely younger than
+    # the session, which every resumed session's host is. Measured live:
+    # pid 11516, created 39.2h after started_at and 3s before pid_at,
+    # reported `[no exit observed]` while csb ran inside it.
+    #
+    # pid_at is the pid's own provenance -- a process created AFTER csb
+    # recorded that pid cannot be the process csb saw.
+    def test_resumed_session_host_younger_than_session_verifies(self):
+        entry = _entry(UUID_GHOST, pid=100)
+        # Real ordering, as measured on 2026-08-17: the host process is
+        # created, and the hook stamps pid_at seconds later (11516 was
+        # born 3s before its pid_at). Both are ~2 days after started_at.
+        entry["pid_at"] = "2026-08-03T12:15:00Z"
+        scan = lv.LiveScan(by_pid={100: lv.ProcInfo(
+            cmdline="claude",
+            created=STARTED_DT + timedelta(days=2))})  # 2026-08-03T12:10Z
+        assert lv.verify_entry(scan, entry, None) == 100
+
+    def test_pid_reuse_after_pid_at_still_rejected(self):
+        """The guard must keep working: a process born AFTER csb recorded
+        the pid is a different process wearing a recycled number."""
+        entry = _entry(UUID_GHOST, pid=100)
+        entry["pid_at"] = "2026-08-03T12:00:00Z"
+        scan = lv.LiveScan(by_pid={100: lv.ProcInfo(
+            cmdline="claude",
+            created=datetime(2026, 8, 3, 13, 0, 0, tzinfo=timezone.utc))})
+        assert lv.verify_entry(scan, entry, None) is None
+
+    def test_corrupt_early_pid_at_does_not_shadow_started_at(self):
+        """A pid_at EARLIER than started_at is internally inconsistent --
+        a session's pid is recorded at or after it opens. Letting the
+        earlier stamp win permanently rejects a genuinely live host, and
+        a false "not running" is the worse error here: hiding a live
+        session is the failure the pid ladder exists to end.
+
+        Regression introduced by v0.9.12's own anchor change and caught
+        by the pre-ship sweep -- the anchor is the LATER of the two.
+        """
+        created = datetime(2026, 8, 12, 16, 23, 48, tzinfo=timezone.utc)
+        scan = lv.LiveScan(by_pid={100: lv.ProcInfo(
+            cmdline="claude", created=created)})
+        # started_at POSTDATES the process -- the started_at anchor accepts.
+        entry = _entry(UUID_GHOST, pid=100,
+                       started_at="2026-08-13T00:00:00Z")
+        assert lv.verify_entry(scan, dict(entry), None) == 100, "precondition"
+        entry["pid_at"] = "2020-01-01T00:00:00Z"      # absurdly early
+        assert lv.verify_entry(scan, entry, None) == 100
+
+    def test_entry_without_pid_at_still_anchors_on_started_at(self):
+        """Pre-#72 entries carry a pid but no pid_at -- the fallback keeps
+        their guard behaviour exactly as it was."""
+        scan = lv.LiveScan(by_pid={100: lv.ProcInfo(
+            cmdline="claude", created=STARTED_DT + timedelta(hours=1))})
+        assert lv.verify_entry(scan, _entry(UUID_GHOST, pid=100), None) is None
+
     def test_garbage_pid_is_no_proof(self):
         scan = lv.LiveScan(by_uuid={UUID_GHOST.lower(): 200})
         entry = _entry(UUID_GHOST)

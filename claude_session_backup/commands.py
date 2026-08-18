@@ -243,6 +243,22 @@ def cmd_backup(args) -> int:
             if log_path is not None:
                 _append_run_log(log_path, "skipped-lock", 0, started, claude_dir)
             return 0  # Not an error -- another instance is running
+        # Boundary sweep (#64) also rides the BACKUP path, not just the
+        # SessionStart health check. The hook only fires when someone
+        # launches Claude Code, so a machine that reboots and is then left
+        # alone never persisted its open-at-shutdown record -- and the
+        # scheduled backup, the one thing that DOES run on an idle box,
+        # was not sweeping. Read-through covers the display side for the
+        # current boot; this is what makes the evidence durable.
+        try:
+            from . import live_registry as _lr
+            swept = _lr.sweep_boundary(claude_dir)
+            if swept and not quiet:
+                print(f"[live-registry] recorded {swept} open-at-shutdown "
+                      f"entr{'y' if swept == 1 else 'ies'} into the "
+                      "boundary snapshot.", file=sys.stderr)
+        except Exception:  # noqa: BLE001 -- bookkeeping never fails a backup
+            pass
         try:
             rc = _cmd_backup_inner(args, config, claude_dir, quiet)
         except BaseException:
@@ -4305,18 +4321,21 @@ def _materialize_set_roster(config, name):
         # same roster `show` displays (the H8 lesson).
         from . import live_registry as _lr
 
-        snapshot = _lr.read_snapshot(
+        # Read THROUGH to the registry when the snapshot does not exist
+        # yet: right after a reboot the evidence is still on disk, unswept,
+        # and consulting only the persisted copy renders a badge-less
+        # roster that cannot be told apart from "nothing was open".
+        open_entries = _lr.open_at_shutdown(
             config["claude_dir"], boot_utc=epoch.boot_utc,
             shutdown_utc=epoch.shutdown_utc,
         )
         snapshot_ids: set = set()
         snap_entries: dict = {}
-        if snapshot:
-            for e in snapshot["open_at_shutdown"]:
-                sid = e.get("session_id")
-                if sid:
-                    snapshot_ids.add(sid)
-                    snap_entries[sid] = e
+        for e in (open_entries or []):
+            sid = e.get("session_id")
+            if sid:
+                snapshot_ids.add(sid)
+                snap_entries[sid] = e
         for m in members:
             if m["session_id"] in snapshot_ids:
                 m["open_at_shutdown"] = True
@@ -4359,7 +4378,11 @@ def _materialize_set_roster(config, name):
             "fallthrough_exhausted": exhausted,
             "activity_floor": activity_floor,
             "nearest_working": nearest_working,
-            "snapshot_available": bool(snapshot_ids),
+            # "csb KNOWS the answer" -- not "csb found somebody". An empty
+            # boundary record is a measurement ("nobody was open"), so it
+            # must not be reported as ignorance; bool(snapshot_ids) would
+            # collapse proven-zero back into unknown.
+            "snapshot_available": open_entries is not None,
             "members": members, "missing_timestamps": missing,
             "window_lo": lo, "window_hi": hi,
             "window_hours": (hi - lo).total_seconds() / 3600.0,
@@ -5269,18 +5292,27 @@ def cmd_set_show(args) -> int:
     display_window = getattr(args, "window", None)
     members, hidden = _filter_roster_for_display(
         all_members, epoch.shutdown_utc, display_window)
-    if getattr(args, "open_only", False):
-        if not snapshot_available:
-            print(
-                "Note: no boundary snapshot covers this epoch -- `--open` "
-                "needs the live registry to have been active before the "
-                "shutdown. Showing the full roster.",
-                file=sys.stderr,
-            )
-        else:
-            before = len(members)
-            members = [m for m in members if m.get("open_at_shutdown")]
-            hidden += before - len(members)
+    open_only = getattr(args, "open_only", False)
+    if not snapshot_available:
+        # Absence of the snapshot is IGNORANCE, not evidence of an empty
+        # shutdown -- and this note must NOT be gated behind --open. A
+        # bare `set show last` rendered every row badge-less and silent,
+        # making "nothing was open" and "csb has not looked yet"
+        # indistinguishable: the exact ambiguity the tier ladder exists
+        # to forbid. Observed 2026-08-12 -- 27 minutes of confidently
+        # blank output between a forced restart and the first hook fire.
+        print(
+            "Note: no boundary snapshot covers this epoch -- which "
+            "sessions were open at this shutdown is UNKNOWN, not none "
+            "(the live registry had not been swept yet). Run "
+            "`csb backup` to capture it."
+            + (" Showing the full roster." if open_only else ""),
+            file=sys.stderr,
+        )
+    elif open_only:
+        before = len(members)
+        members = [m for m in members if m.get("open_at_shutdown")]
+        hidden += before - len(members)
     missing = roster["missing_timestamps"]
     lo = roster["window_lo"]
     window_hours = roster["window_hours"]

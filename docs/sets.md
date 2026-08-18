@@ -35,6 +35,8 @@ Every roster row says only what can be shown, never more:
 
 The asymmetry is the design: a clean close *erases*; an unclean one *testifies*. Leftover registry entries with no process behind them are crash evidence, not garbage. One pid belongs to one row: when claims collide (a fork's frozen command line naming its parent; a switched session's stale identity), captured evidence beats command-line matching and the freshest capture wins.
 
+**A roster with no `[open at shutdown]` marks at all means one of two different things, and csb tells you which.** If it has examined that restart and found nobody open, the rows simply carry no mark. If it has not examined it yet -- the record is written by the hooks and by `csb backup`, so a machine that reboots and is then left alone has none -- a note says the answer is *unknown, not none*, and points at `csb backup`. Absence of evidence is never rendered as evidence of absence.
+
 ## Restart recovery, end to end
 
 ```bash

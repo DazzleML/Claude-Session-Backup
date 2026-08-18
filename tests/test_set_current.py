@@ -328,6 +328,52 @@ class TestLastIntegration:
         assert rc == 0
         assert "no boundary snapshot covers this epoch" in captured.err
 
+    def test_missing_snapshot_notes_even_without_open(self, env, capsys,
+                                                      monkeypatch):
+        """AC5. The note must NOT be gated behind `--open`.
+
+        A bare `set show last` used to render every row badge-less and
+        say nothing, so "nobody was open" and "csb has not swept yet"
+        looked identical -- the exact ambiguity the tier ladder exists
+        to forbid. Observed 2026-08-12: 27 minutes of confidently blank
+        output between a forced restart and the first hook fire.
+        """
+        import claude_session_backup.epochs as epochs
+        monkeypatch.setattr(epochs.sys, "platform", "win32")
+        monkeypatch.setattr(epochs, "_run_powershell", lambda *a, **k: (
+            "2026-07-25T16:17:18.0000000Z|6005\n"
+            "2026-07-25T16:16:32.0000000Z|6006\n"
+            "2026-07-15T08:18:17.0000000Z|6005\n"
+        ))
+        rc = _run(env, "set", "show", "last")  # NO --open
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "UNKNOWN, not none" in captured.err
+
+    def test_proven_empty_boundary_is_not_reported_as_unknown(
+            self, env, capsys, monkeypatch):
+        """AC12. A boundary csb swept and found empty is a MEASUREMENT.
+        Reporting it as ignorance would waste the evidence the sweep
+        just produced."""
+        import claude_session_backup.epochs as epochs
+        import claude_session_backup.live_registry as lr
+        monkeypatch.setattr(epochs.sys, "platform", "win32")
+        monkeypatch.setattr(epochs, "_run_powershell", lambda *a, **k: (
+            "2026-07-25T16:17:18.0000000Z|6005\n"
+            "2026-07-25T16:16:32.0000000Z|6006\n"
+            "2026-07-15T08:18:17.0000000Z|6005\n"
+        ))
+        # A swept boundary that named nobody, keyed to this epoch's boot.
+        boot = datetime(2026, 7, 25, 16, 17, 18, tzinfo=timezone.utc)
+        lr.live_dir(env.claude_dir).mkdir(parents=True, exist_ok=True)
+        lr.sweep_boundary(env.claude_dir, boot)
+
+        rc = _run(env, "set", "show", "last", "--json")
+        payload = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert payload["snapshot_available"] is True, (
+            "proven-zero must not collapse back into 'unknown'")
+
 
 class TestSetForget:
     """`csb set forget` -- the user testifying about what csb cannot know.

@@ -5,7 +5,9 @@ filesystem fixtures or rendering. End-to-end CLI behavior is covered by the
 human test checklist at ``tests/checklists/v0.2.3__Feature__csb-scan-disambiguation.md``.
 """
 
+import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -692,6 +694,83 @@ def test_check_exclude_skips_session(mock_claude_dir, tmp_path):
     db = tmp_path / "check.db"
     rc = cmd_check(_check_args(mock_claude_dir, db, exclude=[_CONFTEST_SID]))
     assert rc == 0
+
+
+def test_check_does_not_sweep_away_a_resumed_session(mock_claude_dir,
+                                                     tmp_path, monkeypatch):
+    """AC4 -- the 2026-08-12 incident, end to end through cmd_check.
+
+    This is the seam the defect actually crossed. A forced restart left
+    an entry behind; the resume refreshed its pid (post-boot) but left
+    ``started_at`` at its pre-boot value, because the hook deliberately
+    preserves the open time across restarts; then `csb _check` -- fired
+    by the SAME SessionStart, one second later -- swept it as dead and
+    deleted the registration of a session that was running. The session
+    stayed invisible to `csb set current` for two days.
+
+    Unit tests cover ``sweep_boundary`` directly; only this one proves
+    the hook -> check path a real session travels.
+    """
+    import claude_session_backup.live_registry as lr
+
+    boot = datetime(2026, 8, 12, 15, 56, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(lr, "current_boot_utc", lambda: boot)
+
+    sid = "71eacb1a-60b1-45e6-bc52-be42a4f717a4"
+    lr.live_dir(mock_claude_dir).mkdir(parents=True, exist_ok=True)
+    lr.entry_path(mock_claude_dir, sid).write_text(json.dumps({
+        "session_id": sid,
+        "started_at": "2026-08-11T01:12:31Z",   # PRE-boot: first opened
+        "source": "resume",
+        "cwd": r"C:\code",
+        "pid": 11516,
+        "pid_at": "2026-08-12T16:23:51Z",       # POST-boot: seen alive
+    }), encoding="utf-8")
+
+    cmd_check(_check_args(mock_claude_dir, tmp_path / "check.db"))
+
+    assert lr.entry_path(mock_claude_dir, sid).exists(), (
+        "cmd_check swept away a session whose pid_at proves it was alive "
+        "after the boot -- the 2026-08-12 defect has returned")
+    live_ids = [e["session_id"] for e in
+                lr.split_by_boot(lr.read_entries(mock_claude_dir), boot)[0]]
+    assert sid in live_ids, "resumed session is not visible as live"
+    # ...and it is STILL recorded as open at that shutdown. Both truths.
+    assert sid in {e["session_id"] for e in
+                   lr.read_snapshot(mock_claude_dir)["open_at_shutdown"]}
+
+
+def test_backup_sweeps_the_boundary(mock_claude_dir, tmp_path, monkeypatch):
+    """AC7 -- the sweep rides `csb backup`, not only the SessionStart hook.
+
+    The hook fires when someone launches Claude Code. A machine that
+    reboots and is then left alone never persisted its open-at-shutdown
+    record, and the scheduled task -- the one thing that DOES run on an
+    idle box -- was not sweeping (it runs `backup --quiet`).
+    """
+    import claude_session_backup.live_registry as lr
+    from claude_session_backup.commands import cmd_backup
+
+    boot = datetime(2026, 8, 12, 15, 56, 25, tzinfo=timezone.utc)
+    monkeypatch.setattr(lr, "current_boot_utc", lambda: boot)
+
+    sid = "dddddddd-1111-2222-3333-444444444444"
+    lr.live_dir(mock_claude_dir).mkdir(parents=True, exist_ok=True)
+    lr.entry_path(mock_claude_dir, sid).write_text(json.dumps({
+        "session_id": sid, "started_at": "2026-08-10T09:00:00Z",
+        "source": "startup", "cwd": r"C:\code",
+    }), encoding="utf-8")
+
+    cmd_backup(SimpleNamespace(
+        claude_dir=str(mock_claude_dir), db=str(tmp_path / "b.db"),
+        quiet=True, no_commit=True, log_file=None, exclude=None,
+        note=None, full=False,
+    ))
+
+    snap = lr.read_snapshot(mock_claude_dir)
+    assert snap is not None, "csb backup did not sweep the boundary"
+    assert sid in {e["session_id"] for e in snap["open_at_shutdown"]}
+    assert not lr.entry_path(mock_claude_dir, sid).exists()
 
 
 def test_check_not_git_repo_runs_detection_anyway(monkeypatch, tmp_path, capsys):
