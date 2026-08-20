@@ -10,6 +10,12 @@ Only separated-generation runs (a fresh-context generator with no access to the 
 
 ## claude_session_backup/commands.py @ 7775a8f5cf63
 
+> **STALE as of 2026-08-19.** The file is now `e12c3a1dd957` -- v0.9.12
+> changed it. Every entry below is therefore expired: **re-triage before
+> reuse, and do not feed them to a generator as "known equivalents".**
+> They are kept rather than deleted because the reasoning is still worth
+> reading; only the verdicts have expired.
+
 *Triaged 2026-08-15, generation mode 1 (fresh subagent, zero tool uses), sweep `v0.9.11__report__plugin-drift.json`.*
 
 ### M1 -- `equivalent`

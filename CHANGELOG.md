@@ -7,7 +7,19 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.12...HEAD)
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.13...HEAD)
+
+## [0.9.13](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.12...v0.9.13) -- 2026-08-20 (beta)
+
+### Fixed
+- **One restart, one record -- and it never shrinks.** csb names each restart's record after a boot time it *calculates*, and that calculation drifts by seconds over days. csb concluded it was seeing a new restart, wrote a second record for the same boot, and -- because each pass has fewer leftover session files to read -- the newer record named fewer sessions. Eight recorded sessions degraded to one on a real machine, one day after 0.9.12 shipped. The sweep now merges across every record describing a boundary, reuses the oldest one's identity, collapses the duplicates, and skips the write entirely when the record is already complete -- so a record can gain names but never lose them, and repeated backups stop churning files that ride every backup commit.
+- **Retention judges a record's age by its contents, not its filename.** The pruning that keeps the newest five restart records sorted them by filename -- and a record whose name disagrees with the boot time inside it (a hand repair, an older build, a store synced from another machine) could sort into the wrong era and be deleted *by the same sweep that had just added names to it*. Retention now orders records by the boot time they themselves declare, falls back to the filename only when that is missing, and never deletes the record the current sweep just extended. The sweep also heals the disagreement: the surviving record is renamed to match its own contents.
+- **A damaged record can no longer silently stop restart recording.** If a record's session list was structurally malformed, reading it raised an error that the hook's safety net swallowed -- so the sweep aborted, reported success, and kept aborting on every later run: sessions open at that restart were never recorded anywhere. Every reader now shares one tolerant policy -- recover the readable entries, treat the rest as absent -- so damage degrades to a smaller answer instead of no answer, and the next sweep rewrites the record well-formed.
+- **Entries without a session id are all kept.** Merging deduplicated entries by session id alone, so two distinct entries that both lacked one collapsed into a single entry. They are now told apart by their content -- counted, never dropped.
+
+### Notes
+- The merge that repairs already-damaged records is a recovery path with a planned retirement (tracked on the sunset register); the tolerant reading and content-based retention above are permanent.
+- The hook safety net that converts internal errors into silent success is now tracked as its own issue -- this release removes the two known error sites inside it, not the silence itself.
 
 ## [0.9.12](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.11...v0.9.12) -- 2026-08-17 (beta)
 

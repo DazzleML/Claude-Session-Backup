@@ -1,0 +1,121 @@
+{
+  "harness": {
+    "name": "mutation_sweep.py",
+    "version": "0.1.0"
+  },
+  "environment": {
+    "python": "3.12.0",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "root": ".",
+    "test_command": [
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_live_registry.py"
+    ],
+    "timestamp": "2026-08-20T00:08:23-04:00"
+  },
+  "results": [
+    {
+      "id": "M1",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Drops the non-dict guard so a malformed record (None/list/string) raises AttributeError, which the sweep's hook-context handler swallows into a permanent silent no-op instead of tolerating the garbage.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M2",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Removes the canonical-content fallback so all keyless entries share key None and distinct entries collapse into one, violating counted-never-dropped during merge/dedup.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M3",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Derived boundary filenames lose the trailing Z, never match _BOUNDARY_STAMP_RE or existing records' names, so the heal path renames healthy records to malformed names and the filename-stamp retention fallback goes dead.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M4",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Orders covering records by filename (the label) instead of boot_at content, so a record whose label lies becomes 'oldest' and the sweep adopts the wrong boot_at for the boundary.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M5",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Entries with unparseable started_at are swept as pre-boot, recorded into the snapshot and their files deleted, instead of erring toward this_boot as the tolerance rule requires.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M6",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Inverts merge membership so existing-record entries are never unioned in, shrinking the sealed record back to the current pre_boot set -- the exact never-shrink invariant violation.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M7",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Adopts the NEWEST covering record's boot_at instead of the oldest, so drift-duplicated boundaries get re-keyed to the drifted instant rather than the first record that named them.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M8",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Drops the filename-agrees-with-content check from the no-op short-circuit, so a record whose label lies about its boot_at is treated as complete and never gets its one healing rewrite.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M9",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Dated-but-empty records classify as evidence, so empty boundaries compete for the K retention slots and can evict a record that still names open sessions.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M10",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "Removes the liveness guard from the clearing loop, deleting the registration of a session resumed after the boot -- reintroducing the 2026-08-12 running-session-deleted regression.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M11",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "The derive branch returns [] instead of None when nothing predates the current boot, presenting 'nobody was open' (proven-zero) where the contract requires ignorance.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    },
+    {
+      "id": "M12",
+      "file": "claude_session_backup/live_registry.py",
+      "note": "The shutdown_utc re-keying pass picks the NEWEST snapshot after the shutdown instead of the oldest, misattributing Claude-less-reboot testimony to the wrong epoch or failing the all-started-before condition.",
+      "verdict": "killed",
+      "restore_ok": true,
+      "output_tail": ""
+    }
+  ],
+  "summary": {
+    "killed": 12
+  },
+  "anomalies": []
+}

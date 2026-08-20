@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -380,6 +381,140 @@ def split_by_boot(entries: list[dict], boot_utc: Optional[datetime]
 
 # ── the boundary sweep ───────────────────────────────────────────────────
 
+def _snapshot_entries(record) -> list[dict]:
+    """The recoverable session entries in a boundary/snapshot record.
+
+    FOR reading records defensively: returns the dict-shaped members of
+    ``open_at_shutdown`` when it is a list, and ``[]`` for every other
+    shape -- a top-level non-dict, a dict-valued field, a string --
+    without ever raising. NOT for telling proven-zero from unknown
+    (that is the caller's question; this answers only "what evidence
+    can be read out of this record").
+
+    Every reader shares this ONE tolerance policy. Before it existed
+    each reader had its own: ``read_snapshot`` skipped malformed
+    records entirely while the sweep's merge loop crashed on them --
+    and the crash was swallowed by the hook-context handler into a
+    permanent silent no-op for that boundary (found 2026-08-19,
+    pre-release, by the v0.9.13 adversarial sweep).
+    """
+    if not isinstance(record, dict):
+        return []
+    entries = record.get("open_at_shutdown")
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _entry_key(entry: dict):
+    """Identity key for merging/deduplicating snapshot entries.
+
+    FOR set-membership in the sweep's merge and no-op comparison:
+    ``session_id`` when the entry has one, else the entry's canonical
+    content. Two DISTINCT entries that both lack ``session_id`` must
+    not collapse onto a shared ``None`` (counted-never-dropped, the
+    same rule ``read_entries`` honours for unparseable files); two
+    COPIES of one entry across duplicate records still must collapse.
+    NOT a session identifier -- never use it to build a filename or
+    resolve a path.
+    """
+    sid = entry.get("session_id")
+    if sid is not None:
+        return sid
+    return json.dumps(entry, sort_keys=True)
+
+
+_BOUNDARY_STAMP_RE = re.compile(r"^boundary-(\d{8}T\d{6}Z)\.json$")
+_EPOCH_UTC = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _boundary_filename(boot_at) -> Optional[str]:
+    """The filename a boundary record SHOULD have, from its own boot_at.
+
+    The record's content is the fact; the filename is a label derived
+    from it. Deriving the name here (instead of inheriting whatever
+    name an existing record carried) is what lets the sweep HEAL a
+    hand-repaired or foreign record whose label lies about its content.
+    """
+    ts = parse_entry_ts(boot_at)
+    if ts is None:
+        return None
+    stamp = ts.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"boundary-{stamp}.json"
+
+
+def _record_instant(path: Path, data) -> Optional[datetime]:
+    """When the boundary this record describes happened.
+
+    FOR retention ordering only. The record's own ``boot_at`` (the
+    fact) wins; the filename stamp (the label) is only a fallback for
+    a record whose content lost its timestamp. NOT for addressing or
+    boundary-identity -- ``covering_records`` answers "which records
+    describe this boundary". Retention once ordered by filename alone
+    and deleted a record it had just extended, because the record's
+    label lied about its era (Finding A, 2026-08-19).
+    """
+    if isinstance(data, dict):
+        at = parse_entry_ts(data.get("boot_at"))
+        if at is not None:
+            return at
+    m = _BOUNDARY_STAMP_RE.match(path.name)
+    if m:
+        try:
+            return datetime.strptime(
+                m.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def covering_records(claude_dir, boot_utc: datetime,
+                     tolerance_s: int = _SNAPSHOT_TOLERANCE_S
+                     ) -> list[tuple]:
+    """Every retained boundary record describing THIS boundary, oldest first.
+
+    Plural on purpose. The boundary key is a *derived* instant on Windows
+    and Linux (`now - uptime`), and that derivation drifts -- ~6s over two
+    days, measured. A drifted key mints a second record for one boot, and
+    because each later sweep sees strictly less (entries it already
+    cleared are gone), the newer record holds fewer sessions and the alias
+    takes the smaller set.
+
+    Returning only the FIRST match is the trap: on a machine that already
+    holds duplicates it selects an arbitrary member, and merging with an
+    arbitrary member of a duplicate set preserves nothing. A POC caught
+    exactly that before it shipped.
+
+    Returns [(path, parsed_record), ...] sorted by each record's own
+    ``boot_at`` (filename as tiebreak), so callers can union across all
+    of them and collapse to the oldest. Ordering by CONTENT matters:
+    on well-formed records it equals filename order, but a record whose
+    filename lies about its content (a hand repair, a foreign build)
+    must not be "oldest" merely because its label says so.
+    """
+    out: list[tuple] = []
+    bdir = boundary_dir(claude_dir)
+    if boot_utc is None or not bdir.is_dir():
+        return out
+    for path in sorted(bdir.glob("boundary-*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            # A bare JSON list/string/number is not a record. Skipping
+            # (rather than raising into the hook-context handler, which
+            # would silently abort the whole sweep) leaves it to age out
+            # with the empties -- it holds no locatable evidence.
+            continue
+        at = parse_entry_ts(data.get("boot_at"))
+        if at is not None and abs(
+                (at - boot_utc).total_seconds()) <= tolerance_s:
+            out.append((at, path, data))
+    out.sort(key=lambda t: (t[0], t[1].name))
+    return [(path, data) for _at, path, data in out]
+
+
 _DETECT_BOOT = object()  # sentinel: "detect the boot time yourself"
 
 
@@ -435,11 +570,88 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
         # look like a boundary csb never examined. Writing the record
         # unconditionally is what lets the reader tell proven-zero from
         # unknown -- measured: before this, both returned None.
+        # THE INVARIANT: a boundary record is SEALED except to ADD.
+        #
+        # It describes a moment that has already happened -- "was open when
+        # the machine went down" -- and nothing observed later can falsify
+        # it. So a sweep may add a session to the record; it may never
+        # remove one, and never replace the record with a smaller set.
+        #
+        # This is not a merge for tidiness. Each sweep sees strictly LESS
+        # than the one before it (entries it already cleared are gone from
+        # disk), so an overwriting sweep walks the record down toward the
+        # single session that happened to survive. Eight recorded sessions
+        # became one that way, in the wild, one day after v0.9.12 shipped.
+        #
+        # Ideally the record would simply be written once and never
+        # reopened. It is append-only rather than write-once ONLY so that
+        # records already damaged in the wild can be repaired; once no
+        # such record remains, sealing outright is the simpler design.
+        #
+        # SUNSET: 2027-02-19 (#92) -- the merge below is a REPAIR PATH and
+        # is expected to be a no-op on every healthy machine. Do not read
+        # its idleness as deadness: it exists because v0.9.12 shipped a
+        # defect that shrank records on real installs, and removing it
+        # before those installs have converged turns a recoverable state
+        # into permanent evidence loss. Retire it once currency checks
+        # (#94) show the fleet past v0.9.12, or on the date above,
+        # whichever comes first -- and prefer sealing the record outright
+        # at that point rather than leaving a merge nobody exercises.
+        covering = covering_records(claude_dir, boot_utc)
+        merged = list(pre_boot)
+        seen = {_entry_key(e) for e in merged}
+        boot_at = _iso(boot_utc)
+        for _path, existing in covering:
+            # _snapshot_entries never raises on a malformed record --
+            # an AttributeError here once reached the hook-context
+            # handler below and silently aborted the ENTIRE sweep,
+            # permanently, for that boundary (Finding B, 2026-08-19).
+            for entry in _snapshot_entries(existing):
+                key = _entry_key(entry)
+                if key not in seen:
+                    merged.append(entry)
+                    seen.add(key)
+        if covering:
+            # Adopt the OLDEST covering record's boot_at -- oldest by
+            # CONTENT (covering_records orders by it): the first record
+            # to describe a boundary names it. The filename is then
+            # re-derived from the adopted boot_at below, so file and
+            # content always agree even when the oldest covering record
+            # arrived with a lying label.
+            adopted = covering[0][1].get("boot_at")
+            if adopted:
+                boot_at = adopted
+        # The filename the surviving record SHOULD have. boot_at is
+        # parseable on both paths (covering_records only admits records
+        # whose boot_at parses; the fallback is _iso(boot_utc)) -- the
+        # `or` guard is belt-and-braces for the hook context.
+        bname = _boundary_filename(boot_at) or (
+            "boundary-" + boot_utc.astimezone(timezone.utc).strftime(
+                "%Y%m%dT%H%M%SZ") + ".json")
+        # Already complete? Then LEAVE IT ALONE. The record describes a
+        # settled moment, so re-writing identical contents is not merely
+        # wasteful -- it churns `captured_at` (which should mean "when
+        # csb froze this", not "when csb last looked") and dirties a file
+        # that rides every backup commit. In steady state this is the
+        # branch that runs, and the merge below never fires at all.
+        # A record whose FILENAME disagrees with its own boot_at is not
+        # complete -- it gets one healing rewrite, then no-ops forever.
+        if len(covering) == 1 and covering[0][0].name == bname:
+            existing_ids = {_entry_key(e)
+                            for e in _snapshot_entries(covering[0][1])}
+            if existing_ids == {_entry_key(e) for e in merged}:
+                alias = read_snapshot(claude_dir)
+                alias_ids = ({_entry_key(e)
+                              for e in _snapshot_entries(alias)}
+                             if alias else None)
+                if alias_ids == existing_ids:
+                    return len(merged)
+
         snapshot = {
             "version": SNAPSHOT_VERSION,
-            "boot_at": _iso(boot_utc),
+            "boot_at": boot_at,
             "captured_at": _iso(_utc_now()),
-            "open_at_shutdown": pre_boot,
+            "open_at_shutdown": merged,
         }
         payload = json.dumps(snapshot, indent=2) + "\n"
         path = snapshot_path(claude_dir)
@@ -452,10 +664,26 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
         try:
             bdir = boundary_dir(claude_dir)
             bdir.mkdir(parents=True, exist_ok=True)
-            stamp = boot_utc.astimezone(timezone.utc).strftime(
-                "%Y%m%dT%H%M%SZ")
-            bpath = bdir / f"boundary-{stamp}.json"
-            btmp = bdir / f"boundary-{stamp}.tmp-{os.getpid()}"
+            # The FACT names the file: bname derives from the adopted
+            # boot_at, and every covering duplicate -- including a
+            # covering record whose old filename lied about its own
+            # content -- COLLAPSES into it. (Reusing covering[0]'s
+            # filename verbatim inherited hand-repair mismatches, and
+            # filename-sorted retention then deleted the record in the
+            # same call that extended it -- Finding A's amplifier.)
+            bpath = bdir / bname
+            for stale_path, _d in covering:
+                if stale_path == bpath:
+                    continue
+                try:
+                    stale_path.unlink()
+                except OSError:
+                    pass
+            # Derive the temp name from bpath (one source of truth --
+            # a branch-local variable referenced here once raised a
+            # NameError that this function's hook-context `except
+            # Exception` turned into a silent no-op).
+            btmp = bpath.with_suffix(f".tmp-{os.getpid()}")
             btmp.write_text(payload, encoding="utf-8")
             os.replace(btmp, bpath)
             # Retention prefers EVIDENCE over recency. Now that empty
@@ -467,20 +695,41 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
             # records first, then fill any remaining slots with the
             # newest empty ones. An unreadable record carries no
             # recoverable evidence and is evicted with the empties.
-            nonempty: list[Path] = []
-            empty: list[Path] = []
+            #
+            # "Newest" comes from each record's own boot_at (falling
+            # back to the filename stamp) -- the FACT, not the label.
+            # Retention once sorted by filename and deleted a record
+            # whose label lied about its era in the same call that had
+            # just extended it (Finding A). A record with names but no
+            # locatable instant classifies with the empties: evidence
+            # that cannot be placed cannot be ranked.
+            nonempty: list[tuple] = []
+            empty: list[tuple] = []
             for p in sorted(bdir.glob("boundary-*.json")):
                 try:
                     data = json.loads(p.read_text(encoding="utf-8"))
-                    names = data.get("open_at_shutdown") or []
                 except (OSError, json.JSONDecodeError):
-                    names = []
-                (nonempty if names else empty).append(p)
-            keep = set(nonempty[-BOUNDARY_RETENTION:])
+                    data = None
+                instant = _record_instant(p, data)
+                names = _snapshot_entries(data)
+                item = ((instant or _EPOCH_UTC, p.name), p)
+                (nonempty if (names and instant is not None)
+                 else empty).append(item)
+            nonempty.sort(key=lambda t: t[0])
+            empty.sort(key=lambda t: t[0])
+            keep = {p for _k, p in nonempty[-BOUNDARY_RETENTION:]}
+            if merged:
+                # Never delete a record this call just extended. On
+                # real machines the current boundary is content-newest
+                # and already kept; this guard only matters for stores
+                # holding future-dated records (hand edits, clock
+                # jumps), where it may briefly hold K+1 -- losing the
+                # freshest evidence to a rigid K would be the worse bug.
+                keep.add(bpath)
             slots = BOUNDARY_RETENTION - len(keep)
             if slots > 0:
-                keep.update(empty[-slots:])
-            for stale in nonempty + empty:
+                keep.update(p for _k, p in empty[-slots:])
+            for _k, stale in nonempty + empty:
                 if stale in keep:
                     continue
                 try:
@@ -501,7 +750,7 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
                 entry_path(claude_dir, entry["session_id"]).unlink()
             except OSError:
                 pass
-        return len(pre_boot)
+        return len(merged)
     except Exception:  # noqa: BLE001 -- hook context; never break a session
         return 0
 
@@ -535,7 +784,9 @@ def open_at_shutdown(claude_dir, boot_utc: Optional[datetime] = None,
                              shutdown_utc=shutdown_utc,
                              tolerance_s=tolerance_s)
     if snapshot is not None:
-        return snapshot.get("open_at_shutdown") or []
+        # Tolerant read: display callers iterate these as dicts, and a
+        # malformed member must degrade to absence, not a traceback.
+        return _snapshot_entries(snapshot)
     if boot_utc is None:
         return None
     current = current_boot_utc()
@@ -610,7 +861,7 @@ def read_snapshot(claude_dir, boot_utc: Optional[datetime] = None,
         if newer:
             _boot, oldest_newer = min(newer, key=lambda t: t[0])
             starts = [parse_entry_ts(e.get("started_at"))
-                      for e in oldest_newer["open_at_shutdown"]]
+                      for e in _snapshot_entries(oldest_newer)]
             if starts and all(s is not None and s <= shutdown_utc
                               for s in starts):
                 return oldest_newer

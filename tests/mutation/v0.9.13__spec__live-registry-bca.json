@@ -1,0 +1,95 @@
+{
+  "test_command": [
+    "python",
+    "-m",
+    "pytest",
+    "-q",
+    "tests/test_live_registry.py"
+  ],
+  "mutations": [
+    {
+      "id": "M1",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "    if not isinstance(record, dict):\r\n        return []\r\n    entries = record.get(\"open_at_shutdown\")",
+      "mutated": "    entries = record.get(\"open_at_shutdown\")",
+      "note": "Drops the non-dict guard so a malformed record (None/list/string) raises AttributeError, which the sweep's hook-context handler swallows into a permanent silent no-op instead of tolerating the garbage."
+    },
+    {
+      "id": "M2",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "    sid = entry.get(\"session_id\")\r\n    if sid is not None:\r\n        return sid\r\n    return json.dumps(entry, sort_keys=True)",
+      "mutated": "    return entry.get(\"session_id\")",
+      "note": "Removes the canonical-content fallback so all keyless entries share key None and distinct entries collapse into one, violating counted-never-dropped during merge/dedup."
+    },
+    {
+      "id": "M3",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "    stamp = ts.astimezone(timezone.utc).strftime(\"%Y%m%dT%H%M%SZ\")",
+      "mutated": "    stamp = ts.astimezone(timezone.utc).strftime(\"%Y%m%dT%H%M%S\")",
+      "note": "Derived boundary filenames lose the trailing Z, never match _BOUNDARY_STAMP_RE or existing records' names, so the heal path renames healthy records to malformed names and the filename-stamp retention fallback goes dead."
+    },
+    {
+      "id": "M4",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "    out.sort(key=lambda t: (t[0], t[1].name))",
+      "mutated": "    out.sort(key=lambda t: t[1].name)",
+      "note": "Orders covering records by filename (the label) instead of boot_at content, so a record whose label lies becomes 'oldest' and the sweep adopts the wrong boot_at for the boundary."
+    },
+    {
+      "id": "M5",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "        pre_boot = []\r\n        for entry in entries:\r\n            ts = parse_entry_ts(entry.get(\"started_at\"))\r\n            if ts is not None and ts < boot_utc:\r\n                pre_boot.append(entry)",
+      "mutated": "        pre_boot = []\r\n        for entry in entries:\r\n            ts = parse_entry_ts(entry.get(\"started_at\"))\r\n            if ts is None or ts < boot_utc:\r\n                pre_boot.append(entry)",
+      "note": "Entries with unparseable started_at are swept as pre-boot, recorded into the snapshot and their files deleted, instead of erring toward this_boot as the tolerance rule requires."
+    },
+    {
+      "id": "M6",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "                key = _entry_key(entry)\r\n                if key not in seen:\r\n                    merged.append(entry)\r\n                    seen.add(key)",
+      "mutated": "                key = _entry_key(entry)\r\n                if key in seen:\r\n                    merged.append(entry)\r\n                    seen.add(key)",
+      "note": "Inverts merge membership so existing-record entries are never unioned in, shrinking the sealed record back to the current pre_boot set -- the exact never-shrink invariant violation."
+    },
+    {
+      "id": "M7",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "            adopted = covering[0][1].get(\"boot_at\")",
+      "mutated": "            adopted = covering[-1][1].get(\"boot_at\")",
+      "note": "Adopts the NEWEST covering record's boot_at instead of the oldest, so drift-duplicated boundaries get re-keyed to the drifted instant rather than the first record that named them."
+    },
+    {
+      "id": "M8",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "        if len(covering) == 1 and covering[0][0].name == bname:",
+      "mutated": "        if len(covering) == 1:",
+      "note": "Drops the filename-agrees-with-content check from the no-op short-circuit, so a record whose label lies about its boot_at is treated as complete and never gets its one healing rewrite."
+    },
+    {
+      "id": "M9",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "                (nonempty if (names and instant is not None)\r\n                 else empty).append(item)",
+      "mutated": "                (nonempty if (names or instant is not None)\r\n                 else empty).append(item)",
+      "note": "Dated-but-empty records classify as evidence, so empty boundaries compete for the K retention slots and can evict a record that still names open sessions."
+    },
+    {
+      "id": "M10",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "        for entry in pre_boot:\r\n            if seen_alive_after_boot(entry, boot_utc):\r\n                continue\r\n            try:\r\n                entry_path(claude_dir, entry[\"session_id\"]).unlink()",
+      "mutated": "        for entry in pre_boot:\r\n            try:\r\n                entry_path(claude_dir, entry[\"session_id\"]).unlink()",
+      "note": "Removes the liveness guard from the clearing loop, deleting the registration of a session resumed after the boot -- reintroducing the 2026-08-12 running-session-deleted regression."
+    },
+    {
+      "id": "M11",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "    return derived or None",
+      "mutated": "    return derived",
+      "note": "The derive branch returns [] instead of None when nothing predates the current boot, presenting 'nobody was open' (proven-zero) where the contract requires ignorance."
+    },
+    {
+      "id": "M12",
+      "file": "claude_session_backup/live_registry.py",
+      "original": "            _boot, oldest_newer = min(newer, key=lambda t: t[0])",
+      "mutated": "            _boot, oldest_newer = max(newer, key=lambda t: t[0])",
+      "note": "The shutdown_utc re-keying pass picks the NEWEST snapshot after the shutdown instead of the oldest, misattributing Claude-less-reboot testimony to the wrong epoch or failing the all-started-before condition."
+    }
+  ]
+}
