@@ -87,12 +87,51 @@ def test_extraction_ignores_boundary_without_forkedfrom():
     assert meta.parent_session_id is None
 
 
-def test_extraction_ignores_forkedfrom_outside_boundary():
-    """A conversation that merely MENTIONS forkedFrom (or any non-boundary
-    event carrying the key) is not a fork."""
+def test_extraction_reads_forkedfrom_from_any_carrier():
+    """#97: Claude Code has carried the identical forkedFrom payload on at
+    least four event shapes across CLI versions. The payload is the
+    contract; the carrier is a moving label. Gating on compact_boundary
+    dropped 51% of declared forks on a real machine.
+
+    (Replaces test_extraction_ignores_forkedfrom_outside_boundary, whose
+    premise its own fixture disproved: a TOP-LEVEL forkedFrom key on a
+    user event is a real fork marker written by CLI 2.1.6x-8x -- merely
+    "mentioning" forkedFrom happens inside message content, which the
+    extractor never reads.)"""
+    carriers = [
+        {"type": "attachment", "timestamp": "2026-06-01T12:00:00Z"},
+        {"type": "user", "timestamp": "2026-06-01T12:00:00Z",
+         "message": {"content": "hi"}},
+        {"type": "system", "subtype": "local_command",
+         "timestamp": "2026-06-01T12:00:00Z"},
+    ]
+    for ev in carriers:
+        ev["forkedFrom"] = {"sessionId": "p-uuid", "messageUuid": "m-uuid"}
+        meta = extract_metadata_from_bytes(jsonl(ev), "child", "proj")
+        assert meta.is_fork is True, f"carrier missed: {ev['type']}"
+        assert meta.parent_session_id == "p-uuid"
+        assert meta.forked_at == "2026-06-01T12:00:00Z"
+
+
+def test_extraction_takes_the_first_forkedfrom_only():
+    """First match wins: the first pointer is the fork that minted THIS
+    file; later ones (however they arise) must not reassign the parent."""
+    first = {"type": "attachment", "timestamp": "2026-06-01T12:00:00Z",
+             "forkedFrom": {"sessionId": "real-parent",
+                            "messageUuid": "m1"}}
+    later = boundary(parent="impostor", ts="2026-06-02T12:00:00Z")
+    meta = extract_metadata_from_bytes(jsonl(first, later), "child", "proj")
+    assert meta.parent_session_id == "real-parent"
+    assert meta.forked_at == "2026-06-01T12:00:00Z"
+
+
+def test_extraction_ignores_forkedfrom_without_session_id():
+    """The payload check still discriminates: a forkedFrom that names no
+    session (malformed, or a non-dict) is not a parent edge."""
     blob = jsonl({"type": "user", "timestamp": "2026-06-01T12:00:00Z",
-                  "forkedFrom": {"sessionId": "nope"},
-                  "message": {"content": "talking about forkedFrom"}})
+                  "forkedFrom": {"messageUuid": "m-only"}},
+                 {"type": "user", "timestamp": "2026-06-01T12:00:01Z",
+                  "forkedFrom": "not-a-dict"})
     meta = extract_metadata_from_bytes(blob, "s", "proj")
     assert meta.is_fork is False
     assert meta.parent_session_id is None

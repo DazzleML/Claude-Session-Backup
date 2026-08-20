@@ -7,7 +7,12 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.13...HEAD)
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.14...HEAD)
+
+## [0.9.14](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.13...v0.9.14) -- 2026-08-20 (beta)
+
+### Fixed
+- **`csb tree` sees every declared fork, not just one carrier's.** A forked session's transcript names its parent in an explicit `forkedFrom` pointer -- but Claude Code has carried that identical pointer on at least four different event shapes across CLI versions, and csb read only one of them. On a real machine, half the declared forks (18 of 35) were invisible, rendered as unrelated never-forked sessions. Extraction is now keyed on the pointer itself, whatever event carries it; after `csb update rebuild-index` the recovered families appear (8 -> 19 trees on the machine that found it). Non-forks (in-place compaction, `/clear`) are unaffected -- they carry no pointer at all.
 
 ## [0.9.13](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.12...v0.9.13) -- 2026-08-20 (beta)
 

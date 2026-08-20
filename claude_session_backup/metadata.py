@@ -117,15 +117,24 @@ def _parse_jsonl_lines(lines, meta: SessionMetadata) -> SessionMetadata:
         if event.get("type") == "custom-title":
             session_name = event.get("customTitle")
 
-        # Fork lineage (v0.7.0): a forked session's boundary row carries a
-        # top-level forkedFrom pointer at its parent. Take the FIRST one --
-        # it is the fork that minted THIS file. In practice it is line 1,
-        # but we don't assume position: some sessions lead with
-        # custom-title / agent-name rows. In-place compaction and
-        # microcompact write boundary rows WITHOUT forkedFrom, and /clear
-        # mints a fresh UUID with no boundary at all -- neither is a fork,
-        # and both are correctly skipped by the forkedFrom requirement.
-        if fork_parent is None and event.get("subtype") == "compact_boundary":
+        # Fork lineage (v0.7.0): a forked session carries a top-level
+        # forkedFrom pointer at its parent. Take the FIRST one -- it is
+        # the fork that minted THIS file. In practice it is line 1, but
+        # we don't assume position: some sessions lead with custom-title
+        # / agent-name rows. In-place compaction and microcompact write
+        # boundary rows WITHOUT forkedFrom, and /clear mints a fresh
+        # UUID with no boundary at all -- neither is a fork, and both
+        # are correctly skipped by the forkedFrom requirement.
+        #
+        # Keyed on the PAYLOAD, not the carrier (#97): Claude Code has
+        # moved the identical {sessionId, messageUuid} payload across at
+        # least four event shapes over CLI versions (system/
+        # compact_boundary, attachment, user, system/local_command).
+        # Gating on one subtype silently dropped 51% of declared forks
+        # on a real machine -- the carrier is a moving label; the
+        # payload is the stable contract, and it discriminates on its
+        # own (non-fork boundaries carry no forkedFrom at all).
+        if fork_parent is None:
             forked = event.get("forkedFrom")
             if isinstance(forked, dict) and forked.get("sessionId"):
                 fork_parent = forked.get("sessionId")
