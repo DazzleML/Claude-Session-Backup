@@ -388,19 +388,12 @@ class TestFilenameSessionIdMismatchDefeatsCleanup:
     to THAT boundary") and currently does not deliver for this shape.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="KNOWN DEFECT, pre-existing (verified byte-identical at "
-               "9791f15): sweep_boundary unlinks entry_path(<body-claimed "
-               "session_id>) rather than the file read_entries actually "
-               "read, so an entry whose filename and body disagree is "
-               "recorded but never cleared. Deliberately NOT fixed in "
-               "v0.9.12 -- the body-claim it rides on is the v0.9.10 "
-               "registry-id hardening, a security-adjacent surface that "
-               "deserves its own review rather than a tack-on. strict=True "
-               "so this flips to a FAILURE the moment someone fixes it "
-               "without retiring the marker.")
     def test_recorded_entry_is_actually_removed_from_disk(self, tmp_path):
+        """#90, FIXED (strict xfail retired). The sweep now unlinks the
+        file read_entries actually read (carried as ``_path``), not a
+        path rebuilt from the body-claimed id. Identity and location
+        are separate questions: the safe body claim still names the
+        session in the record; the path read is what cleanup targets."""
         lr.live_dir(tmp_path).mkdir(parents=True, exist_ok=True)
         # Filename deliberately does NOT match the body's session_id --
         # read_entries() honours the body per its own documented rule.
@@ -475,3 +468,77 @@ class TestLargeRegistries:
             f"sweep with {n_boundaries} preexisting boundary files took "
             f"{elapsed:.2f}s -- check for quadratic behaviour in the "
             "retention scan")
+
+
+class TestMismatchCleanupContract:
+    """#90's remaining acceptance criteria beyond the retired anchor."""
+
+    def _mismatched(self, tmp_path):
+        lr.live_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+        p = lr.live_dir(tmp_path) / "weird-filename.json"
+        p.write_text(json.dumps({
+            "session_id": "aaaaaaaa-bbbb-cccc-dddd-000000000001",
+            "started_at": "2026-07-30T10:00:00Z",
+            "source": "startup", "cwd": "C:/w",
+        }), encoding="utf-8")
+        return p
+
+    def test_resweep_does_not_rerecord(self, tmp_path):
+        """AC: once cleared, the entry attends no further boundaries --
+        the record holds it exactly once after any number of sweeps."""
+        self._mismatched(tmp_path)
+        lr.sweep_boundary(tmp_path, BOOT)
+        lr.sweep_boundary(tmp_path, BOOT)
+        snap = lr.read_snapshot(tmp_path)
+        ids = [e.get("session_id") for e in snap["open_at_shutdown"]]
+        assert ids == ["aaaaaaaa-bbbb-cccc-dddd-000000000001"]
+
+    def test_containment_recheck_refuses_paths_outside_the_registry(
+            self, tmp_path, monkeypatch):
+        """AC: the deletion re-check stays. Even if an entry arrives
+        claiming a _path outside csb-live/ (entries ride git-synced
+        stores), the sweep must not unlink it."""
+        victim = tmp_path / "precious.json"
+        victim.write_text("{}", encoding="utf-8")
+        lr.live_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+        real = dict(session_id="aaaaaaaa-bbbb-cccc-dddd-000000000001",
+                    started_at="2026-07-30T10:00:00Z", source="", cwd="",
+                    pid=None, pid_at=None, _path=str(victim))
+        monkeypatch.setattr(lr, "read_entries", lambda _cd: [real])
+        lr.sweep_boundary(tmp_path, BOOT)
+        assert victim.exists(), (
+            "a _path outside the registry directory must never be "
+            "unlinked, whatever the entry claims")
+
+    def test_records_and_derived_answers_never_carry_path(self, tmp_path):
+        """AC hygiene: _path is cleanup targeting, not evidence -- it
+        must not appear in the written record."""
+        self._mismatched(tmp_path)
+        lr.sweep_boundary(tmp_path, BOOT)
+        snap = lr.read_snapshot(tmp_path)
+        assert all("_path" not in e for e in snap["open_at_shutdown"])
+
+
+class TestFailedReplaceLeavesNoTemp:
+    """CI 2026-08-20 (Windows, py3.11): a sharing-violation on
+    os.replace during racing sweeps orphaned a boundary .tmp file.
+    Deterministic pin: when the replace fails, the temp is cleaned."""
+
+    def test_boundary_replace_failure_cleans_its_temp(
+            self, tmp_path, monkeypatch):
+        lr.live_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+        _write(tmp_path, "dead-1", started_at="2026-07-30T10:00:00Z",
+               source="startup", cwd="C:/w")
+        real_replace = lr.os.replace
+
+        def flaky(src, dst):
+            if "boundaries" in str(dst):
+                raise PermissionError("sharing violation")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(lr.os, "replace", flaky)
+        lr.sweep_boundary(tmp_path, BOOT)
+        leftovers = (list(lr.live_dir(tmp_path).glob("*.tmp-*"))
+                     + list(lr.boundary_dir(tmp_path).glob("*.tmp-*")))
+        assert leftovers == [], (
+            f"a failed replace must not orphan its temp: {leftovers}")

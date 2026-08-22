@@ -7,7 +7,13 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.14...HEAD)
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.15...HEAD)
+
+## [0.9.15](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.14...v0.9.15) -- 2026-08-20 (beta)
+
+### Fixed
+- **The restart sweep deletes the file it actually read.** A registry entry whose filename and internal session id disagree (a hand edit, corruption, or files moved by another tool) was recorded correctly and then never cleared: the cleanup step rebuilt a filename from the id inside the file and deleted that -- a path that did not exist -- so the real file survived and was re-recorded at every future restart, indefinitely. Each entry now remembers the file it was read from and cleanup deletes exactly that, still refusing to touch anything outside the registry directory. The id inside the file remains the session's identity in the record; only what cleanup targets changed.
+- **Racing sweeps no longer orphan temp files on Windows.** A Claude Code hook and a scheduled backup can sweep concurrently in one process; both built the same temp filename (process id only), and on Windows a replace onto a file the other sweep held open failed with a sharing violation, leaving the temp file behind -- caught by CI. Temp names now include the thread id, and a failed replace cleans up after itself.
 
 ## [0.9.14](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.13...v0.9.14) -- 2026-08-20 (beta)
 

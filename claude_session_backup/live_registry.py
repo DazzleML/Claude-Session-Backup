@@ -38,6 +38,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -268,6 +269,14 @@ def read_entries(claude_dir) -> list[dict]:
     that started (the filename is the UUID); it is returned with a null
     ``started_at`` rather than dropped -- consistent with the epic's
     counted-never-dropped rule.
+
+    Each entry carries ``_path``: the file it was ACTUALLY read from.
+    FOR cleanup targeting only (#90) -- the sweep must unlink the file
+    it read, not a path rebuilt from the body-claimed id, or an entry
+    whose filename and body disagree is recorded forever and cleared
+    never. NOT identity (that is ``session_id``, where a safe body
+    claim wins -- content is the fact), and never written into records
+    or JSON output: strip it at every exit.
     """
     directory = live_dir(claude_dir)
     if not directory.is_dir():
@@ -310,6 +319,7 @@ def read_entries(claude_dir) -> list[dict]:
             "cwd": cwd,
             "pid": pid,
             "pid_at": pid_at,
+            "_path": str(path),
         })
     entries.sort(key=lambda e: (e["started_at"] is None,
                                 e["started_at"] or "", e["session_id"]))
@@ -651,7 +661,12 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
             "version": SNAPSHOT_VERSION,
             "boot_at": boot_at,
             "captured_at": _iso(_utc_now()),
-            "open_at_shutdown": merged,
+            # _path is cleanup targeting, not evidence -- a record rides
+            # git-synced stores across machines, where a local path is
+            # noise at best and a layout leak at worst.
+            "open_at_shutdown": [
+                {k: v for k, v in e.items() if k != "_path"}
+                for e in merged],
         }
         payload = json.dumps(snapshot, indent=2) + "\n"
         path = snapshot_path(claude_dir)
@@ -683,9 +698,19 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
             # a branch-local variable referenced here once raised a
             # NameError that this function's hook-context `except
             # Exception` turned into a silent no-op).
-            btmp = bpath.with_suffix(f".tmp-{os.getpid()}")
+            btmp = bpath.with_suffix(
+                f".tmp-{os.getpid()}-{threading.get_ident()}")
             btmp.write_text(payload, encoding="utf-8")
-            os.replace(btmp, bpath)
+            try:
+                os.replace(btmp, bpath)
+            except OSError:
+                try:
+                    btmp.unlink()
+                except OSError:
+                    pass
+                # boundary history is best-effort; the loser's content
+                # is equivalent to the winner's -- do not re-raise
+
             # Retention prefers EVIDENCE over recency. Now that empty
             # records are written, a purely chronological prune would
             # evict a boundary that still names open sessions in favour
@@ -743,11 +768,29 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
         # (they were open at the shutdown) AND still on disk (they are
         # open now). Both statements are true; neither may evict the
         # other.
+        ldir = live_dir(claude_dir).resolve()
         for entry in pre_boot:
             if seen_alive_after_boot(entry, boot_utc):
                 continue
+            # Unlink the file that was READ (#90). Rebuilding the path
+            # from the body-claimed id unlinked a name that never
+            # existed whenever filename and body disagreed -- silently
+            # (FileNotFoundError is an OSError), so the entry was
+            # re-recorded at every future boundary, forever. Identity
+            # and location are separate questions: the body's safe id
+            # remains the session's IDENTITY in the record above; the
+            # path read is what cleanup targets. The containment
+            # re-check stays -- entries ride git-synced stores, and a
+            # path is deleted only if it still resolves inside the
+            # registry directory.
             try:
-                entry_path(claude_dir, entry["session_id"]).unlink()
+                target = entry.get("_path")
+                if target:
+                    p = Path(target).resolve()
+                    if p.parent == ldir:
+                        p.unlink()
+                else:  # entries from older callers without _path
+                    entry_path(claude_dir, entry["session_id"]).unlink()
             except OSError:
                 pass
         return len(merged)
@@ -800,7 +843,9 @@ def open_at_shutdown(claude_dir, boot_utc: Optional[datetime] = None,
     for entry in read_entries(claude_dir):
         ts = parse_entry_ts(entry.get("started_at"))
         if ts is not None and ts < current:
-            derived.append(entry)
+            # _path never leaves the module (cleanup targeting only).
+            derived.append({k: v for k, v in entry.items()
+                            if k != "_path"})
     return derived or None
 
 
