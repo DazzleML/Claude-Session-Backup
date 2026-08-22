@@ -7,7 +7,12 @@ and this project adheres to a PEP 440 versioning scheme (see `_version.py`).
 
 Status: **beta** (as of v0.6.0; alpha v0.3.17-v0.5.1). The core -- backup, deletion detection, FTS5 content search, end-to-end session restore, and guided onboarding -- is complete and in real daily use. Beta describes maturity, not frozen surfaces: breaking changes may still land between versions when the design calls for it. Each entry that changes observable behavior is flagged accordingly.
 
-## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.15...HEAD)
+## [Unreleased](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.16...HEAD)
+
+## [0.9.16](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.15...v0.9.16) -- 2026-08-21 (beta)
+
+### Fixed
+- **The racing-sweeps temp-file fix now covers both write sites.** 0.9.15 claimed to fix the orphaned temp file for racing sweeps on Windows but patched only the boundary-history write; the alias write (`last-shutdown.json`) still used a process-id-only temp name with no cleanup, and CI caught the same leftover again on the next push. Both sites now use thread-unique names and clean up after a failed replace, and each is pinned by its own test so a half-fix cannot pass again.
 
 ## [0.9.15](https://github.com/DazzleML/Claude-Session-Backup/compare/v0.9.14...v0.9.15) -- 2026-08-20 (beta)
 

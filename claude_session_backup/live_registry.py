@@ -670,9 +670,24 @@ def sweep_boundary(claude_dir, boot_utc=_DETECT_BOOT) -> int:
         }
         payload = json.dumps(snapshot, indent=2) + "\n"
         path = snapshot_path(claude_dir)
-        tmp = path.with_suffix(f".tmp-{os.getpid()}")
+        # tmp names carry thread id as well as pid: a hook and a
+        # scheduled backup can sweep concurrently IN ONE PROCESS, and
+        # two threads sharing one tmp name tear each other's writes.
+        tmp = path.with_suffix(
+            f".tmp-{os.getpid()}-{threading.get_ident()}")
         tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, path)
+        try:
+            os.replace(tmp, path)
+        except OSError:
+            # Windows: replacing a file another thread holds open for
+            # read fails with a sharing violation. Never orphan the tmp
+            # (CI caught exactly that leftover, twice); the other
+            # sweep's content is equivalent, so the alias is not lost.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
         # R3 (H3): the same snapshot also lands in boundaries/, keyed by
         # the boot instant, pruned to the newest BOUNDARY_RETENTION --
         # this is what lets `last~N --open` badge exactly within K.

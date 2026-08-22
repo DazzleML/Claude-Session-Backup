@@ -542,3 +542,26 @@ class TestFailedReplaceLeavesNoTemp:
                      + list(lr.boundary_dir(tmp_path).glob("*.tmp-*")))
         assert leftovers == [], (
             f"a failed replace must not orphan its temp: {leftovers}")
+
+    def test_alias_replace_failure_cleans_its_temp(
+            self, tmp_path, monkeypatch):
+        """CI 2026-08-22 (Windows, py3.13): the FIRST fix patched only
+        the boundary-history site; the alias write still used a
+        pid-only temp name and orphaned it on a sharing violation.
+        Pin both sites independently so a half-fix cannot pass again."""
+        lr.live_dir(tmp_path).mkdir(parents=True, exist_ok=True)
+        _write(tmp_path, "dead-1", started_at="2026-07-30T10:00:00Z",
+               source="startup", cwd="C:/w")
+        real_replace = lr.os.replace
+
+        def flaky(src, dst):
+            if str(dst).endswith(lr.SNAPSHOT_FILENAME):
+                raise PermissionError("sharing violation")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(lr.os, "replace", flaky)
+        lr.sweep_boundary(tmp_path, BOOT)  # never raises (hook context)
+        leftovers = (list(lr.live_dir(tmp_path).glob("*.tmp-*"))
+                     + list(lr.boundary_dir(tmp_path).glob("*.tmp-*")))
+        assert leftovers == [], (
+            f"a failed alias replace must not orphan its temp: {leftovers}")
